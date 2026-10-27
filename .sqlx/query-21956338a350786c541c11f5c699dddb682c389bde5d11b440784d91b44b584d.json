@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE shopping_items SET bought_by = ?, bought_at = ?\n         WHERE id = ? AND chat_id = ? AND bought_at IS NULL\n         RETURNING name",
+  "describe": {
+    "columns": [
+      {
+        "name": "name",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "shopping_items",
+            "name": "name"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "21956338a350786c541c11f5c699dddb682c389bde5d11b440784d91b44b584d"
+}

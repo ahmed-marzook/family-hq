@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM shopping_items WHERE chat_id = ? AND bought_at IS NOT NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "2085cc759a577b2aa28874ed0c1f8b8625f6104c13c042935d84d85f944bb0a0"
+}

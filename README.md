@@ -17,7 +17,7 @@ stages and schema. To run GOWA locally and experiment with WhatsApp, see
 [docs/GOWA.md](docs/GOWA.md). To run it on a home server from the Docker Hub
 image, see [docs/DEPLOY.md](docs/DEPLOY.md).
 
-## Phase 1 commands (planned)
+## Commands
 
 Each group the bot is in has its own lists; a DM with the bot is your own
 private list.
@@ -25,7 +25,8 @@ private list.
 | Message | Effect |
 |---|---|
 | `+shop milk, eggs` | Add to this chat's shopping list |
-| `/shop` | Show the list; reply `1 3` to tick items off |
+| `/shop` | Show the list; reply `1 3` to tick items off, `remove 2` to delete one |
+| `/shop clear` | Delete the ticked-off items |
 | `+todo fix the tap` | Add a todo, assigned to you |
 | `+todo @Khadija book dentist` | Add a todo assigned to someone in the group |
 | `/todo` | Show todos; reply `done 2` to complete one |

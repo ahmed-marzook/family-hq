@@ -1,0 +1,21 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT EXISTS(\n               SELECT 1 FROM shopping_items\n               WHERE chat_id = ? AND bought_at IS NULL AND name = ? COLLATE NOCASE\n           ) AS \"on_list: bool\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "on_list: bool",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "d9ae9aeb6226bf01d1e3478ba33cef73ee1351dcf9b5c8524eadafe5d418aa12"
+}

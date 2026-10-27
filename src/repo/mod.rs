@@ -13,5 +13,6 @@
 pub mod chats;
 pub mod messages;
 pub mod prayers;
+pub mod shop;
 pub mod todos;
 pub mod users;

@@ -240,13 +240,17 @@ async fn handle_message(
         Outcome::Reply(text) => {
             send(state, &msg, &text).await;
         }
-        Outcome::TodoList { text, todo_ids } => {
+        Outcome::List {
+            text,
+            item_type,
+            item_ids,
+        } => {
             // Remember what each number in this list means, so replies like
-            // `done 2` can find the right todo later.
+            // `done 2` or `1 3` can find the right rows later.
             if let Some(list_id) = send(state, &msg, &text).await {
                 let mut conn = state.db.acquire().await?;
-                let todo = handlers::TODO_ITEM;
-                messages::save_list(&mut conn, &list_id, chat_id, todo, &todo_ids, now).await?;
+                messages::save_list(&mut conn, &list_id, chat_id, item_type, &item_ids, now)
+                    .await?;
             }
         }
     }
