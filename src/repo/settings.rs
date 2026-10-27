@@ -19,7 +19,10 @@ pub struct ChatSettings {
 /// `/settings everyone`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MemberSettings {
+    pub user_id: i64,
     pub display_name: String,
+    /// Phone-number ID, e.g. `447700900001@s.whatsapp.net`, for @mentions.
+    pub wa_jid: String,
     /// `None` if they've never messaged the bot privately.
     pub settings: Option<ChatSettings>,
 }
@@ -60,7 +63,7 @@ pub async fn members(
     // settings row (if any). `s.chat_id AS "has_row?"` tells the two apart:
     // NULL means no settings row at all.
     let rows = sqlx::query!(
-        r#"SELECT u.display_name,
+        r#"SELECT u.id AS user_id, u.display_name, u.wa_jid,
                   s.chat_id AS "has_row?",
                   s.prayer_reminders AS "prayer_reminders?: bool",
                   s.timezone, s.city, s.country,
@@ -79,7 +82,9 @@ pub async fn members(
     Ok(rows
         .into_iter()
         .map(|r| MemberSettings {
+            user_id: r.user_id,
             display_name: r.display_name,
+            wa_jid: r.wa_jid,
             settings: r.has_row.map(|_| ChatSettings {
                 prayer_reminders: r.prayer_reminders.unwrap_or(false),
                 overrides: Overrides {
@@ -93,6 +98,27 @@ pub async fn members(
             }),
         })
         .collect())
+}
+
+/// A person's own settings: the ones stored for their DM with the bot.
+/// `None` if they've never messaged the bot privately (or never changed
+/// anything there).
+pub async fn personal(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+) -> Result<Option<ChatSettings>, sqlx::Error> {
+    let dm = sqlx::query_scalar!("SELECT id FROM chats WHERE dm_user_id = ?", user_id)
+        .fetch_optional(&mut *conn)
+        .await?;
+    match dm {
+        Some(dm) => {
+            let settings = get(conn, dm).await?;
+            // A DM that never changed anything reads as the default, which
+            // is the same as having no personal settings.
+            Ok((settings != ChatSettings::default()).then_some(settings))
+        }
+        None => Ok(None),
+    }
 }
 
 // The setters below all "upsert": `INSERT ... ON CONFLICT (chat_id) DO

@@ -1,0 +1,45 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, name, FALSE AS \"bought!: bool\" FROM shopping_items\n           WHERE chat_id = ? AND bought_at IS NULL\n           ORDER BY created_at, id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "shopping_items",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "name",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "shopping_items",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "bought!: bool",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "151458097d3a01424531f74f3c235f501ca52bbe980273e3fe9bacaaca2cf35c"
+}

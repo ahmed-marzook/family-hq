@@ -4,7 +4,7 @@
 //! changes, change its page here. Pure functions, no database.
 
 /// The topics `/help <topic>` knows, and the words that lead to each.
-const TOPICS: [(&str, &[&str]); 4] = [
+const TOPICS: [(&str, &[&str]); 5] = [
     ("shop", &["shop", "shopping", "buy", "got", "list"]),
     ("todo", &["todo", "todos", "task", "tasks"]),
     (
@@ -15,6 +15,7 @@ const TOPICS: [(&str, &[&str]); 4] = [
         "settings",
         &["settings", "setting", "city", "timezone", "location"],
     ),
+    ("weather", &["weather", "forecast", "rain"]),
 ];
 
 const OVERVIEW: &str = "🤖 *Family HQ help*
@@ -23,10 +24,11 @@ I keep shared lists for each group I'm in, and private ones when you message me 
 🛒 *Shopping*: `+shop milk, eggs` · `/shop` · `+got milk`
 📝 *Todos*: `+todo fix the tap` · `/todo` · reply `done 2`
 🕌 *Prayers*: `/prayers` · `/prayers on` · `+prayed asr`
-⚙️ *Settings*: `/settings` · `/settings city Leicester, GB`
+⚙️ *Settings*: `/settings` · `/settings city Leicester, GB` · or share your location with me
+🌤️ *Weather*: `/weather` · `/weather tomorrow` · `/weather week`
 
 For the full page on a topic, with examples:
-`/help shop` · `/help todo` · `/help prayers` · `/help settings`
+`/help shop` · `/help todo` · `/help prayers` · `/help settings` · `/help weather`
 
 I react 👍 to every command I understand. No reaction means I didn't recognise it.";
 
@@ -47,7 +49,8 @@ Each group has its own list; in a DM with me it's your private list.
 • Reply `remove 2` to a list to delete an item instead.
 
 *Tidy up*
-`/shop clear`: deletes the ticked-off items.";
+`/shop clear`: empties the whole list.
+`/shop clear bought`: removes only the ticked-off items.";
 
 const TODO: &str = "📝 *Help: todos*
 Each group has its own todos; in a DM with me they're your private ones.
@@ -70,7 +73,8 @@ const PRAYERS: &str = "🕌 *Help: prayers*
 
 *Reminders*
 `/prayers on`: in this chat, a reminder when each prayer starts, and another shortly before it ends (20 min by default). `/prayers off` stops them.
-In a DM with me, the reminders follow *your* settings (city, method, timezone), and the \"ending soon\" one is skipped if you've already prayed.
+In a group, everyone is @mentioned on *their own* times: someone abroad gets their own reminder at their local time. Set yours by messaging me privately (`/settings city …`, or just share your location). People who haven't use the group's settings.
+The \"ending soon\" reminder only goes to people who haven't prayed yet.
 
 *Mark a prayer as prayed*
 • React to its reminder with any emoji (remove the reaction to undo).
@@ -88,6 +92,7 @@ Settings belong to a chat: in a DM with me they're *your own*; in a group they'r
 `/settings everyone`: in a group, each member's own settings.
 
 *Location and time*
+📎 *Share your location* with me (in a private chat): I'll use the nearest town and its timezone. The easiest way.
 `/settings city Leicester, GB`: sets the city and its timezone to match. Leave out the country to keep the current one.
 `/settings timezone Europe/London`: only if the city's timezone is wrong for you.
 
@@ -97,6 +102,13 @@ Settings belong to a chat: in a DM with me they're *your own*; in a group they'r
 `/settings ending 20`: how many minutes before a prayer ends the last reminder comes.
 
 `/settings reset`: back to the defaults (reminders stay on or off).";
+
+const WEATHER: &str = "🌤️ *Help: weather*
+`/weather`: the weather now, and the rest of today.
+`/weather tomorrow` (or `tmr`): tomorrow's forecast.
+`/weather week`: the next seven days.
+
+It's for *your* town: the one in your own settings (message me `/settings city …` or share your location privately), or this group's if you haven't set one.";
 
 /// The help text for `/help` (no topic) or `/help <topic>`.
 pub fn page(topic: Option<&str>) -> String {
@@ -116,9 +128,10 @@ pub fn page(topic: Option<&str>) -> String {
         Some("todo") => TODO.to_string(),
         Some("prayers") => PRAYERS.to_string(),
         Some("settings") => SETTINGS.to_string(),
+        Some("weather") => WEATHER.to_string(),
         _ => format!(
             "❓ There's no help page for \"{topic}\". Try `/help shop`, `/help todo`, \
-             `/help prayers` or `/help settings`."
+             `/help prayers`, `/help settings` or `/help weather`."
         ),
     }
 }

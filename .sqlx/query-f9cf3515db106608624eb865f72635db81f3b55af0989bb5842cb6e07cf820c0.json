@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, name FROM shopping_items\n         WHERE chat_id = ? AND bought_at IS NULL\n         ORDER BY created_at, id",
+  "query": "SELECT id, name, bought_at IS NOT NULL AS \"bought!: bool\"\n           FROM shopping_items\n           WHERE chat_id = ?\n           ORDER BY bought_at IS NOT NULL, bought_at, created_at, id",
   "describe": {
     "columns": [
       {
@@ -24,6 +24,12 @@
             "name": "name"
           }
         }
+      },
+      {
+        "name": "bought!: bool",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": "Expression"
       }
     ],
     "parameters": {
@@ -31,8 +37,9 @@
     },
     "nullable": [
       false,
+      false,
       false
     ]
   },
-  "hash": "2101e108d1731e2d0388ba154fc9837cfd86cd1fbc658f750345a31c7d97d468"
+  "hash": "f9cf3515db106608624eb865f72635db81f3b55af0989bb5842cb6e07cf820c0"
 }

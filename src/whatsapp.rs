@@ -60,15 +60,23 @@ impl Gowa {
 
     /// Sends `text` to `chat_id`, as a quoted reply to `reply_to` if given.
     /// Returns the new message's WhatsApp ID (needed to save list numbers).
+    ///
+    /// `mentions` are phone numbers (`447700900001`) to @mention. Write
+    /// `@447700900001` in `text` where each should appear; WhatsApp then
+    /// shows it as the person's name and notifies them.
     pub async fn send_text(
         &self,
         chat_id: &str,
         text: &str,
         reply_to: Option<&str>,
+        mentions: &[String],
     ) -> Result<String, reqwest::Error> {
         let mut body = json!({ "phone": chat_id, "message": text });
         if let Some(id) = reply_to {
             body["reply_message_id"] = json!(id);
+        }
+        if !mentions.is_empty() {
+            body["mentions"] = json!(mentions);
         }
 
         let response: SendResponse = self

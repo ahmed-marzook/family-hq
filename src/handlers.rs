@@ -4,8 +4,10 @@
 use chrono::{DateTime, Utc};
 use sqlx::SqliteConnection;
 
+use crate::Apis;
 use crate::aladhan::PrayerTimes;
 use crate::error::AppError;
+use crate::geo::Coordinates;
 use crate::help;
 use crate::parser::{BotCommand, Got, ReplyCommand, SettingsCommand};
 use crate::person::Assignee;
@@ -17,6 +19,7 @@ use crate::repo::shop::{self, ShopItem};
 use crate::repo::todos::{self, OpenTodo};
 use crate::repo::users::{self, User};
 use crate::settings::Settings;
+use crate::weather::{self, When};
 
 const ADDED: &str = "📝";
 const LIST: &str = "📋";
@@ -73,9 +76,10 @@ pub enum Outcome {
 pub async fn run_command(
     conn: &mut SqliteConnection,
     ctx: &Context,
-    prayer_times: &PrayerTimes,
+    apis: &Apis,
     command: BotCommand,
 ) -> Result<Outcome, AppError> {
+    let prayer_times = &apis.prayer_times;
     let text = match command {
         BotCommand::AddTodo { title, assignee } => add_todo(conn, ctx, &title, assignee).await?,
         BotCommand::ListTodos => {
@@ -88,12 +92,11 @@ pub async fn run_command(
         }
         BotCommand::AddShop(names) => add_shop(conn, ctx, &names).await?,
         BotCommand::ListShop => {
-            let to_buy = shop::list_to_buy(conn, ctx.chat_id).await?;
-            let bought = shop::count_bought(conn, ctx.chat_id).await?;
+            let items = shop::list_all(conn, ctx.chat_id).await?;
             return Ok(Outcome::List {
-                text: format_shop_list(&to_buy, bought),
+                text: format_shop_list(&items),
                 item_type: SHOP_ITEM,
-                item_ids: to_buy.iter().map(|i| i.id).collect(),
+                item_ids: items.iter().map(|i| i.id).collect(),
             });
         }
         BotCommand::GotShop(Got::Numbers(numbers)) => {
@@ -106,19 +109,28 @@ pub async fn run_command(
             }
         }
         BotCommand::GotShop(Got::Names(names)) => got_by_name(conn, ctx, &names).await?,
-        BotCommand::ClearShop => match shop::clear_bought(conn, ctx.chat_id).await? {
-            0 => format!("{SHOP} Nothing bought to clear."),
-            1 => format!("{CLEARED} Cleared 1 bought item."),
-            n => format!("{CLEARED} Cleared {n} bought items."),
-        },
+        BotCommand::ClearShop { bought_only: false } => {
+            match shop::clear_all(conn, ctx.chat_id).await? {
+                0 => format!("{SHOP} The shopping list is already empty."),
+                1 => format!("{CLEARED} Cleared the shopping list (1 item)."),
+                n => format!("{CLEARED} Cleared the shopping list ({n} items)."),
+            }
+        }
+        BotCommand::ClearShop { bought_only: true } => {
+            match shop::clear_bought(conn, ctx.chat_id).await? {
+                0 => format!("{SHOP} Nothing bought to clear."),
+                1 => format!("{CLEARED} Cleared 1 bought item."),
+                n => format!("{CLEARED} Cleared {n} bought items."),
+            }
+        }
         BotCommand::Prayers => {
-            let (settings, _) = chat_settings(conn, ctx, prayer_times).await?;
+            let settings = my_settings(conn, ctx, prayer_times).await?;
             prayer_day(conn, ctx, prayer_times, &settings).await?
         }
         BotCommand::Prayed(names) => {
             // For people who didn't catch the reminder: same effect as
-            // reacting to it, for today (in this chat's timezone).
-            let (settings, _) = chat_settings(conn, ctx, prayer_times).await?;
+            // reacting to it, for today (in the sender's own timezone).
+            let settings = my_settings(conn, ctx, prayer_times).await?;
             let today = settings.today(ctx.now);
             for prayer in names {
                 prayers::mark_prayed(conn, ctx.sender.id, today, prayer, ctx.now).await?;
@@ -129,16 +141,37 @@ pub async fn run_command(
             stored::set_prayer_reminders(conn, ctx.chat_id, on).await?;
             let (settings, _) = chat_settings(conn, ctx, prayer_times).await?;
             if on {
-                format!(
-                    "{BELL} Prayer reminders are on in this chat ({}): when each prayer \
-                     starts, and {} min before it ends. React to a reminder once you've prayed.",
-                    settings.city, settings.prayer_ending_minutes
-                )
+                if ctx.is_group {
+                    format!(
+                        "{BELL} Prayer reminders are on in this group: when each prayer starts, \
+                         and before it ends. Each member is @mentioned on *their own* times \
+                         (set yours by messaging me `/settings city …` privately; otherwise \
+                         this group's {} times are used). React to a reminder once you've prayed.",
+                        settings.city
+                    )
+                } else {
+                    format!(
+                        "{BELL} Prayer reminders are on ({}): when each prayer starts, and {} min \
+                         before it ends. React to a reminder once you've prayed.",
+                        settings.city, settings.prayer_ending_minutes
+                    )
+                }
             } else {
                 format!("{BELL_OFF} Prayer reminders are off in this chat.")
             }
         }
         BotCommand::Settings(command) => settings_command(conn, ctx, prayer_times, command).await?,
+        BotCommand::Weather(when) => weather(conn, ctx, apis, when).await?,
+        BotCommand::SharedLocation {
+            latitude,
+            longitude,
+        } => {
+            let at = Coordinates {
+                latitude,
+                longitude,
+            };
+            shared_location(conn, ctx, apis, at).await?
+        }
         BotCommand::Help(topic) => help::page(topic.as_deref()),
     };
     Ok(Outcome::Reply(text))
@@ -201,6 +234,112 @@ async fn chat_settings(
     ))
 }
 
+/// Checks `city, country` with AlAdhan (which also gives its timezone) and
+/// saves both for this chat. `None` if AlAdhan doesn't know the place.
+async fn save_city(
+    conn: &mut SqliteConnection,
+    ctx: &Context,
+    prayer_times: &PrayerTimes,
+    current: &Settings,
+    city: &str,
+    country: &str,
+) -> Result<Option<chrono_tz::Tz>, AppError> {
+    match prayer_times
+        .timezone_of(city, country, current.today(ctx.now))
+        .await
+    {
+        Ok(timezone) => {
+            stored::set_location(conn, ctx.chat_id, city, country, timezone.name()).await?;
+            Ok(Some(timezone))
+        }
+        // Not found (or AlAdhan unreachable): nothing saved.
+        Err(_) => Ok(None),
+    }
+}
+
+/// A location shared in a DM: find the nearest town, and use the first
+/// name (most specific first) that AlAdhan can calculate prayer times for.
+async fn shared_location(
+    conn: &mut SqliteConnection,
+    ctx: &Context,
+    apis: &Apis,
+    at: Coordinates,
+) -> Result<String, AppError> {
+    let (current, reminders) = chat_settings(conn, ctx, &apis.prayer_times).await?;
+    let Ok(near) = apis.geo.nearest_place(at).await else {
+        return Ok(format!(
+            "{PROBLEM} I couldn't work out which town that is. \
+             Try `/settings city Leicester, GB` instead."
+        ));
+    };
+    for name in &near.names {
+        if let Some(timezone) =
+            save_city(conn, ctx, &apis.prayer_times, &current, name, &near.country).await?
+        {
+            let (settings, _) = chat_settings(conn, ctx, &apis.prayer_times).await?;
+            return Ok(format!(
+                "{PIN} Got it: you're near *{name}, {}* ({timezone}). Prayer times, \
+                 reminders and weather now use it.\n\n{}",
+                near.country,
+                format_settings(&settings, reminders, ctx.is_group)
+            ));
+        }
+    }
+    Ok(format!(
+        "{PROBLEM} I found {}, {} but couldn't get prayer times there. \
+         Try `/settings city …` with the nearest big town.",
+        near.names[0], near.country
+    ))
+}
+
+/// `/weather`: the forecast for the sender's own city (their DM settings,
+/// or this chat's), in their timezone.
+async fn weather(
+    conn: &mut SqliteConnection,
+    ctx: &Context,
+    apis: &Apis,
+    when: When,
+) -> Result<String, AppError> {
+    let settings = my_settings(conn, ctx, &apis.prayer_times).await?;
+    let Ok(at) = apis
+        .geo
+        .coordinates_of(&settings.city, &settings.country)
+        .await
+    else {
+        return Ok(format!(
+            "{PROBLEM} I couldn't find {}, {} for the weather. Check `/settings`.",
+            settings.city, settings.country
+        ));
+    };
+    match apis.weather.forecast(at, settings.timezone).await {
+        Ok(forecast) => Ok(weather::format(&forecast, when, &settings.city)),
+        Err(err) => {
+            println!("weather: {err}");
+            Ok(format!(
+                "{PROBLEM} The weather service isn't answering. Try again in a bit."
+            ))
+        }
+    }
+}
+
+/// The sender's own settings: in a DM, the DM's; in a group, their personal
+/// ones (from their DM with the bot) on top of the group's. Prayer times
+/// and "today" follow the person, so someone abroad sees their own.
+async fn my_settings(
+    conn: &mut SqliteConnection,
+    ctx: &Context,
+    prayer_times: &PrayerTimes,
+) -> Result<Settings, AppError> {
+    let (here, _) = chat_settings(conn, ctx, prayer_times).await?;
+    if !ctx.is_group {
+        return Ok(here);
+    }
+    Ok(match stored::personal(conn, ctx.sender.id).await? {
+        Some(own) => own.overrides.apply(&here),
+        None => here,
+    })
+}
+
 /// Today's prayer times for these settings, with the sender's ticks.
 async fn prayer_day(
     conn: &mut SqliteConnection,
@@ -245,17 +384,9 @@ async fn settings_command(
         SettingsCommand::City { city, country } => {
             // No country typed: keep the one already in use.
             let country = country.unwrap_or_else(|| current.country.clone());
-            // Asking AlAdhan both checks the city exists and gives its
-            // timezone, so nobody has to look that up separately.
-            match prayer_times
-                .timezone_of(&city, &country, current.today(ctx.now))
-                .await
-            {
-                Ok(timezone) => {
-                    stored::set_location(conn, id, &city, &country, timezone.name()).await?;
-                    Some(format!("Timezone set to {timezone} to match."))
-                }
-                Err(_) => {
+            match save_city(conn, ctx, prayer_times, &current, &city, &country).await? {
+                Some(timezone) => Some(format!("Timezone set to {timezone} to match.")),
+                None => {
                     return Ok(format!(
                         "{PROBLEM} I couldn't find {city}, {country}. \
                          Try e.g. `/settings city Leicester, GB`."
@@ -423,26 +554,36 @@ fn format_shop_added(added: &[&str], already: &[&str]) -> String {
     lines.join("\n")
 }
 
-/// The `/shop` reply. Numbers start at 1 and match `item_ids` order.
-fn format_shop_list(to_buy: &[ShopItem], bought: i64) -> String {
-    let cleanup = match bought {
-        0 => String::new(),
-        1 => "\n✔️ 1 bought item; /shop clear removes it.".to_string(),
-        n => format!("\n✔️ {n} bought items; /shop clear removes them."),
-    };
-    if to_buy.is_empty() {
-        return format!("{SHOP} Nothing to buy. Add with `+shop milk, eggs`.{cleanup}");
+/// The `/shop` reply: everything on the list, ⬜ still to buy, ✅ bought
+/// (struck through). Numbers start at 1 and match `item_ids` order.
+fn format_shop_list(items: &[ShopItem]) -> String {
+    if items.is_empty() {
+        return format!("{SHOP} The shopping list is empty. Add with `+shop milk, eggs`.");
     }
 
     let mut text = format!("{SHOP} *Shopping list*\n");
-    for (i, item) in to_buy.iter().enumerate() {
-        text.push_str(&format!("{}. {}\n", i + 1, item.name));
+    for (i, item) in items.iter().enumerate() {
+        // `~text~` is strikethrough in WhatsApp.
+        let line = if item.bought {
+            format!("{DONE} ~{}~", item.name)
+        } else {
+            format!("{NOT_YET} {}", item.name)
+        };
+        text.push_str(&format!("{}. {line}\n", i + 1));
     }
-    text.push_str(
-        "\nTick off what you bought: reply to this message with the numbers \
-         (e.g. `1 3`), or send `+got 1 3` or `+got milk` at any time.",
-    );
-    text.push_str(&cleanup);
+
+    // `.any(...)`: true if at least one item matches.
+    if items.iter().any(|i| !i.bought) {
+        text.push_str(
+            "\nTick off what you bought: reply to this message with the numbers \
+             (e.g. `1 3`), or send `+got 1 3` or `+got milk` at any time.",
+        );
+    } else {
+        text.push_str("\nEverything's bought.");
+    }
+    if items.iter().any(|i| i.bought) {
+        text.push_str(" `/shop clear bought` removes the ✅ ones; `/shop clear` empties the list.");
+    }
     text
 }
 
@@ -713,7 +854,7 @@ mod tests {
         let mut conn = pool.acquire().await.unwrap();
         let ctx = setup(&mut conn).await;
 
-        let mine = run_command(&mut conn, &ctx, &times(), add("go gym", None))
+        let mine = run_command(&mut conn, &ctx, &Apis::new(times()), add("go gym", None))
             .await
             .unwrap();
         assert_eq!(
@@ -722,9 +863,14 @@ mod tests {
         );
 
         let mention = Some(Assignee::Mentioned("khadija".to_string()));
-        let theirs = run_command(&mut conn, &ctx, &times(), add("book dentist", mention))
-            .await
-            .unwrap();
+        let theirs = run_command(
+            &mut conn,
+            &ctx,
+            &Apis::new(times()),
+            add("book dentist", mention),
+        )
+        .await
+        .unwrap();
         assert_eq!(
             theirs,
             Outcome::Reply("📝 Added *book dentist* for Khadija".to_string())
@@ -738,9 +884,10 @@ mod tests {
         let ctx = setup(&mut conn).await;
 
         let mention = Some(Assignee::Mentioned("Yusuf".to_string()));
-        let Outcome::Reply(text) = run_command(&mut conn, &ctx, &times(), add("x", mention))
-            .await
-            .unwrap()
+        let Outcome::Reply(text) =
+            run_command(&mut conn, &ctx, &Apis::new(times()), add("x", mention))
+                .await
+                .unwrap()
         else {
             panic!("expected a reply");
         };
@@ -759,13 +906,13 @@ mod tests {
         let mut conn = pool.acquire().await.unwrap();
         let ctx = setup(&mut conn).await;
         for title in ["go gym", "fix the tap", "book dentist"] {
-            run_command(&mut conn, &ctx, &times(), add(title, None))
+            run_command(&mut conn, &ctx, &Apis::new(times()), add(title, None))
                 .await
                 .unwrap();
         }
 
         let Outcome::List { item_ids, .. } =
-            run_command(&mut conn, &ctx, &times(), BotCommand::ListTodos)
+            run_command(&mut conn, &ctx, &Apis::new(times()), BotCommand::ListTodos)
                 .await
                 .unwrap()
         else {
@@ -822,9 +969,10 @@ mod tests {
             .await
             .unwrap();
 
-        let Outcome::Reply(text) = run_command(&mut conn, &ctx, &times(), BotCommand::Prayers)
-            .await
-            .unwrap()
+        let Outcome::Reply(text) =
+            run_command(&mut conn, &ctx, &Apis::new(times()), BotCommand::Prayers)
+                .await
+                .unwrap()
         else {
             panic!("expected a reply");
         };
@@ -838,16 +986,21 @@ mod tests {
         let mut conn = pool.acquire().await.unwrap();
         let ctx = setup(&mut conn).await;
 
-        let on = run_command(&mut conn, &ctx, &times(), BotCommand::PrayerReminders(true))
-            .await
-            .unwrap();
+        let on = run_command(
+            &mut conn,
+            &ctx,
+            &Apis::new(times()),
+            BotCommand::PrayerReminders(true),
+        )
+        .await
+        .unwrap();
         assert!(matches!(on, Outcome::Reply(t) if t.contains("on")));
         assert_eq!(prayers::reminder_chats(&mut conn).await.unwrap().len(), 1);
 
         run_command(
             &mut conn,
             &ctx,
-            &times(),
+            &Apis::new(times()),
             BotCommand::PrayerReminders(false),
         )
         .await
@@ -863,7 +1016,7 @@ mod tests {
         ctx.now = "2026-10-27T19:00:00Z".parse().unwrap();
 
         let command = BotCommand::Prayed(vec![Prayer::Fajr, Prayer::Isha]);
-        let Outcome::Reply(text) = run_command(&mut conn, &ctx, &times(), command)
+        let Outcome::Reply(text) = run_command(&mut conn, &ctx, &Apis::new(times()), command)
             .await
             .unwrap()
         else {
@@ -892,7 +1045,7 @@ mod tests {
             text,
             item_type,
             item_ids,
-        } = run_command(conn, ctx, &times(), BotCommand::ListShop)
+        } = run_command(conn, ctx, &Apis::new(times()), BotCommand::ListShop)
             .await
             .unwrap()
         else {
@@ -916,11 +1069,28 @@ mod tests {
         let items = [ShopItem {
             id: 1,
             name: "milk".to_string(),
+            bought: false,
         }];
-        let text = format_shop_list(&items, 0);
+        let text = format_shop_list(&items);
         assert!(text.contains("reply to this message"), "{text}");
         assert!(text.contains("`+got 1 3`"), "{text}");
         assert!(text.contains("`+got milk`"), "{text}");
+    }
+
+    #[test]
+    fn shop_list_marks_bought_and_unbought() {
+        let item = |id, name: &str, bought| ShopItem {
+            id,
+            name: name.to_string(),
+            bought,
+        };
+        let text = format_shop_list(&[item(1, "milk", false), item(2, "bread", true)]);
+        assert!(text.contains("1. ⬜ milk\n2. ✅ ~bread~\n"), "{text}");
+        assert!(text.contains("`/shop clear bought`"), "{text}");
+
+        let all_bought = format_shop_list(&[item(2, "bread", true)]);
+        assert!(all_bought.contains("Everything's bought."), "{all_bought}");
+        assert!(!all_bought.contains("Tick off"), "{all_bought}");
     }
 
     #[test]
@@ -941,9 +1111,8 @@ Already on the list: Milk"
     }
 
     #[test]
-    fn empty_shop_list_mentions_bought_items_to_clear() {
-        assert!(format_shop_list(&[], 0).starts_with("🛒 Nothing to buy"));
-        assert!(format_shop_list(&[], 2).contains("2 bought items; /shop clear"));
+    fn empty_shop_list_says_so() {
+        assert!(format_shop_list(&[]).starts_with("🛒 The shopping list is empty."));
     }
 
     #[tokio::test]
@@ -952,13 +1121,13 @@ Already on the list: Milk"
         let mut conn = pool.acquire().await.unwrap();
         let ctx = setup(&mut conn).await;
 
-        run_command(&mut conn, &ctx, &times(), shop_cmd(&["Milk"]))
+        run_command(&mut conn, &ctx, &Apis::new(times()), shop_cmd(&["Milk"]))
             .await
             .unwrap();
         let reply = run_command(
             &mut conn,
             &ctx,
-            &times(),
+            &Apis::new(times()),
             shop_cmd(&["milk", "eggs", "Eggs"]),
         )
         .await
@@ -974,14 +1143,7 @@ Already on the list: milk, Eggs"
 
         let (text, items) = shop_list(&mut conn, &ctx).await;
         assert_eq!(items.len(), 2);
-        assert!(
-            text.contains(
-                "1. Milk
-2. eggs
-"
-            ),
-            "{text}"
-        );
+        assert!(text.contains("1. ⬜ Milk\n2. ⬜ eggs\n"), "{text}");
     }
 
     #[tokio::test]
@@ -992,7 +1154,7 @@ Already on the list: milk, Eggs"
         run_command(
             &mut conn,
             &ctx,
-            &times(),
+            &Apis::new(times()),
             shop_cmd(&["milk", "eggs", "bread", "rice"]),
         )
         .await
@@ -1018,31 +1180,63 @@ Already on the list: milk, Eggs"
             .unwrap();
         assert!(reply.contains("already ticked off"), "{reply}");
 
-        // Only eggs left to buy; milk and bread wait to be cleared.
+        // Eggs still to buy first, then milk and bread, bought.
         let (text, items) = shop_list(&mut conn, &ctx).await;
-        assert_eq!(items.len(), 1);
+        assert_eq!(items.len(), 3);
         assert!(
-            text.contains(
-                "1. eggs
-"
-            ),
+            text.contains("1. ⬜ eggs\n2. ✅ ~milk~\n3. ✅ ~bread~\n"),
             "{text}"
         );
-        assert!(text.contains("2 bought items"), "{text}");
 
-        let cleared = run_command(&mut conn, &ctx, &times(), BotCommand::ClearShop)
+        let clear_bought = || BotCommand::ClearShop { bought_only: true };
+        let cleared = run_command(&mut conn, &ctx, &Apis::new(times()), clear_bought())
             .await
             .unwrap();
         assert_eq!(
             cleared,
             Outcome::Reply("🧹 Cleared 2 bought items.".to_string())
         );
-        let again = run_command(&mut conn, &ctx, &times(), BotCommand::ClearShop)
+        let again = run_command(&mut conn, &ctx, &Apis::new(times()), clear_bought())
             .await
             .unwrap();
         assert_eq!(
             again,
             Outcome::Reply("🛒 Nothing bought to clear.".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn shop_clear_empties_the_whole_list() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let ctx = setup(&mut conn).await;
+        let clear = || BotCommand::ClearShop { bought_only: false };
+
+        // Nothing ticked off: the old behaviour would have kept all three.
+        run_command(
+            &mut conn,
+            &ctx,
+            &Apis::new(times()),
+            shop_cmd(&["milk", "eggs", "bread"]),
+        )
+        .await
+        .unwrap();
+        let cleared = run_command(&mut conn, &ctx, &Apis::new(times()), clear())
+            .await
+            .unwrap();
+        assert_eq!(
+            cleared,
+            Outcome::Reply("🧹 Cleared the shopping list (3 items).".to_string())
+        );
+        let (_, left) = shop_list(&mut conn, &ctx).await;
+        assert!(left.is_empty());
+
+        let again = run_command(&mut conn, &ctx, &Apis::new(times()), clear())
+            .await
+            .unwrap();
+        assert_eq!(
+            again,
+            Outcome::Reply("🛒 The shopping list is already empty.".to_string())
         );
     }
 
@@ -1061,14 +1255,14 @@ Already on the list: milk, Eggs"
             now: ctx.now,
         };
 
-        run_command(&mut conn, &ctx, &times(), shop_cmd(&["milk"]))
+        run_command(&mut conn, &ctx, &Apis::new(times()), shop_cmd(&["milk"]))
             .await
             .unwrap();
         let (_, theirs) = shop_list(&mut conn, &other).await;
         assert!(theirs.is_empty());
 
         // "milk" isn't a duplicate in the other group.
-        let reply = run_command(&mut conn, &other, &times(), shop_cmd(&["milk"]))
+        let reply = run_command(&mut conn, &other, &Apis::new(times()), shop_cmd(&["milk"]))
             .await
             .unwrap();
         assert_eq!(reply, Outcome::Reply("🛒 Added milk".to_string()));
@@ -1079,12 +1273,19 @@ Already on the list: milk, Eggs"
         let pool = test_pool().await;
         let mut conn = pool.acquire().await.unwrap();
         let ctx = setup(&mut conn).await;
-        run_command(&mut conn, &ctx, &times(), shop_cmd(&["Milk", "eggs"]))
-            .await
-            .unwrap();
+        run_command(
+            &mut conn,
+            &ctx,
+            &Apis::new(times()),
+            shop_cmd(&["Milk", "eggs"]),
+        )
+        .await
+        .unwrap();
 
         let got = BotCommand::GotShop(Got::Names(vec!["milk".to_string(), "bread".to_string()]));
-        let reply = run_command(&mut conn, &ctx, &times(), got).await.unwrap();
+        let reply = run_command(&mut conn, &ctx, &Apis::new(times()), got)
+            .await
+            .unwrap();
         assert_eq!(
             reply,
             Outcome::Reply(
@@ -1094,8 +1295,8 @@ Already on the list: milk, Eggs"
             )
         );
 
-        let (_, left) = shop_list(&mut conn, &ctx).await;
-        assert_eq!(left.len(), 1, "only eggs left");
+        let (text, _) = shop_list(&mut conn, &ctx).await;
+        assert!(text.contains("1. ⬜ eggs\n2. ✅ ~Milk~\n"), "{text}");
     }
 
     #[tokio::test]
@@ -1106,15 +1307,22 @@ Already on the list: milk, Eggs"
         let got = || BotCommand::GotShop(Got::Numbers(vec![2]));
 
         // No list sent yet.
-        let reply = run_command(&mut conn, &ctx, &times(), got()).await.unwrap();
+        let reply = run_command(&mut conn, &ctx, &Apis::new(times()), got())
+            .await
+            .unwrap();
         assert!(
             matches!(&reply, Outcome::Reply(t) if t.contains("Send /shop")),
             "{reply:?}"
         );
 
-        run_command(&mut conn, &ctx, &times(), shop_cmd(&["milk", "eggs"]))
-            .await
-            .unwrap();
+        run_command(
+            &mut conn,
+            &ctx,
+            &Apis::new(times()),
+            shop_cmd(&["milk", "eggs"]),
+        )
+        .await
+        .unwrap();
         // What the webhook does after sending a /shop list.
         let (_, items) = shop_list(&mut conn, &ctx).await;
         let ids: Vec<i64> = items.iter().map(|i| i.item_id).collect();
@@ -1122,7 +1330,9 @@ Already on the list: milk, Eggs"
             .await
             .unwrap();
 
-        let reply = run_command(&mut conn, &ctx, &times(), got()).await.unwrap();
+        let reply = run_command(&mut conn, &ctx, &Apis::new(times()), got())
+            .await
+            .unwrap();
         assert_eq!(reply, Outcome::Reply("✅ Bought: *eggs*".to_string()));
     }
 
@@ -1133,9 +1343,14 @@ Already on the list: milk, Eggs"
         ctx: &Context,
         command: SettingsCommand,
     ) -> String {
-        match run_command(conn, ctx, &times(), BotCommand::Settings(command))
-            .await
-            .unwrap()
+        match run_command(
+            conn,
+            ctx,
+            &Apis::new(times()),
+            BotCommand::Settings(command),
+        )
+        .await
+        .unwrap()
         {
             Outcome::Reply(text) => text,
             other => panic!("expected a reply, got {other:?}"),
@@ -1220,9 +1435,10 @@ Already on the list: milk, Eggs"
         };
         let source = PrayerTimes::with_cached(karachi, day());
 
-        let Outcome::Reply(text) = run_command(&mut conn, &ctx, &source, BotCommand::Prayers)
-            .await
-            .unwrap()
+        let Outcome::Reply(text) =
+            run_command(&mut conn, &ctx, &Apis::new(source), BotCommand::Prayers)
+                .await
+                .unwrap()
         else {
             panic!("expected a reply");
         };
@@ -1250,5 +1466,41 @@ Already on the list: milk, Eggs"
         assert!(text.contains("3. Muslim World League\n"));
         assert!(text.contains("23. Ministry of Awqaf, Jordan\n"));
         assert!(!text.contains("\n6. "));
+    }
+
+    #[tokio::test]
+    async fn prayers_in_a_group_use_the_senders_own_settings() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let mut ctx = setup(&mut conn).await;
+        ctx.now = "2026-10-27T15:00:00Z".parse().unwrap();
+
+        // The sender's DM says Karachi time; the group has no settings.
+        let dm = chats::find_or_create(
+            &mut conn,
+            "447700900001@s.whatsapp.net",
+            Some(ctx.sender.id),
+            ctx.now,
+        )
+        .await
+        .unwrap();
+        stored::set_timezone(&mut conn, dm, "Asia/Karachi")
+            .await
+            .unwrap();
+
+        // Times for "Milton Keynes in Karachi time" come from the cache.
+        let karachi = Settings {
+            timezone: chrono_tz::Asia::Karachi,
+            ..defaults()
+        };
+        let source = PrayerTimes::with_cached(karachi, day());
+        let Outcome::Reply(text) =
+            run_command(&mut conn, &ctx, &Apis::new(source), BotCommand::Prayers)
+                .await
+                .unwrap()
+        else {
+            panic!("expected a reply");
+        };
+        assert!(text.contains("Asr 19:16–21:44"), "{text}");
     }
 }

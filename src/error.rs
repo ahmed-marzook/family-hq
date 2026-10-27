@@ -21,6 +21,14 @@ pub enum AppError {
     /// AlAdhan answered, but with something we couldn't use.
     #[error("prayer times: {0}")]
     PrayerTimes(String),
+
+    /// A place lookup found nothing usable.
+    #[error("location: {0}")]
+    Geo(String),
+
+    /// Open-Meteo answered, but with something we couldn't use.
+    #[error("weather: {0}")]
+    Weather(String),
 }
 
 /// Lets a handler return `Result<_, AppError>`: on `Err`, Axum calls this

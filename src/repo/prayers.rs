@@ -48,33 +48,48 @@ pub async fn reminder_chats(conn: &mut SqliteConnection) -> Result<Vec<ReminderC
         .collect())
 }
 
+/// One reminder to claim. A struct rather than eight separate arguments,
+/// so each value is named where it's built and two of the same type (the
+/// two times) can't be swapped by accident. `'a`: `place` is borrowed, so
+/// the struct can't outlive the string it points to.
+#[derive(Debug, Clone)]
+pub struct NewReminder<'a> {
+    pub chat_id: i64,
+    /// The day, in the place's timezone.
+    pub date: NaiveDate,
+    pub prayer: Prayer,
+    pub kind: ReminderKind,
+    /// Which members' times this is for (`Location::key`); '' for a DM.
+    pub place: &'a str,
+    /// When the prayer starts.
+    pub prayer_time: DateTime<Utc>,
+}
+
 /// Claims the right to send one reminder. Returns the new row's id, or
 /// `None` if this chat already got (or is getting) this reminder (this
-/// prayer, this kind) today. Insert-first means two checks can never both send it.
+/// prayer, this kind, this place) today. Insert-first means two checks can
+/// never both send it.
 pub async fn claim_reminder(
     conn: &mut SqliteConnection,
-    chat_id: i64,
-    date: NaiveDate,
-    prayer: Prayer,
-    kind: ReminderKind,
-    prayer_time: DateTime<Utc>,
+    reminder: &NewReminder<'_>,
     now: DateTime<Utc>,
 ) -> Result<Option<i64>, sqlx::Error> {
-    let prayer = prayer.as_db_str();
-    let kind = kind.as_db_str();
+    let prayer = reminder.prayer.as_db_str();
+    let kind = reminder.kind.as_db_str();
     // On a duplicate, `DO NOTHING` inserts no row, so `RETURNING` returns
     // no row either and `fetch_optional` gives `None`. (`AS "id!"`: the id
     // itself is never NULL, which the macro can't work out alone.)
     sqlx::query_scalar!(
-        r#"INSERT INTO prayer_reminders (chat_id, prayer_date, prayer, kind, prayer_time, sent_at)
-           VALUES (?, ?, ?, ?, ?, ?)
-           ON CONFLICT (chat_id, prayer_date, prayer, kind) DO NOTHING
+        r#"INSERT INTO prayer_reminders (chat_id, prayer_date, prayer, kind, place, prayer_time, sent_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT (chat_id, prayer_date, prayer, kind, place) DO NOTHING
            RETURNING id AS "id!""#,
-        chat_id,
-        date,
+        reminder.chat_id,
+        reminder.date,
         prayer,
         kind,
-        prayer_time,
+        reminder.place,
+        reminder.prayer_time,
         now
     )
     .fetch_optional(conn)
@@ -230,11 +245,14 @@ mod tests {
 
         let id = claim_reminder(
             &mut conn,
-            chat,
-            date(),
-            Prayer::Asr,
-            ReminderKind::Start,
-            now,
+            &NewReminder {
+                chat_id: chat,
+                date: date(),
+                prayer: Prayer::Asr,
+                kind: ReminderKind::Start,
+                place: "uk",
+                prayer_time: now,
+            },
             now,
         )
         .await
@@ -242,11 +260,14 @@ mod tests {
         .expect("first claim works");
         let again = claim_reminder(
             &mut conn,
-            chat,
-            date(),
-            Prayer::Asr,
-            ReminderKind::Start,
-            now,
+            &NewReminder {
+                chat_id: chat,
+                date: date(),
+                prayer: Prayer::Asr,
+                kind: ReminderKind::Start,
+                place: "uk",
+                prayer_time: now,
+            },
             now,
         )
         .await
@@ -254,16 +275,37 @@ mod tests {
         assert_eq!(again, None, "second claim is refused");
         let ending = claim_reminder(
             &mut conn,
-            chat,
-            date(),
-            Prayer::Asr,
-            ReminderKind::Ending,
-            now,
+            &NewReminder {
+                chat_id: chat,
+                date: date(),
+                prayer: Prayer::Asr,
+                kind: ReminderKind::Ending,
+                place: "uk",
+                prayer_time: now,
+            },
             now,
         )
         .await
         .unwrap();
         assert!(ending.is_some(), "the other kind is a separate reminder");
+        let elsewhere = claim_reminder(
+            &mut conn,
+            &NewReminder {
+                chat_id: chat,
+                date: date(),
+                prayer: Prayer::Asr,
+                kind: ReminderKind::Start,
+                place: "lk",
+                prayer_time: now,
+            },
+            now,
+        )
+        .await
+        .unwrap();
+        assert!(
+            elsewhere.is_some(),
+            "another place in the same group is separate"
+        );
 
         set_reminder_message(&mut conn, id, "3EB0AA").await.unwrap();
         assert_eq!(

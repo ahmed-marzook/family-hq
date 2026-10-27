@@ -5,6 +5,7 @@ pub mod aladhan;
 pub mod config;
 pub mod db;
 pub mod error;
+pub mod geo;
 pub mod handlers;
 pub mod help;
 pub mod parser;
@@ -14,6 +15,7 @@ pub mod reminders;
 pub mod repo;
 pub mod routes;
 pub mod settings;
+pub mod weather;
 pub mod whatsapp;
 
 use std::sync::Arc;
@@ -27,14 +29,37 @@ use sqlx::SqlitePool;
 
 use aladhan::PrayerTimes;
 use config::Config;
+use geo::Geo;
+use weather::Weather;
 use whatsapp::Gowa;
+
+/// The outside services commands can use, in one place so handlers take
+/// one argument rather than one per service.
+pub struct Apis {
+    /// AlAdhan prayer times (and the default settings).
+    pub prayer_times: PrayerTimes,
+    /// Places and coordinates (Nominatim, Open-Meteo geocoding).
+    pub geo: Geo,
+    /// Open-Meteo forecasts.
+    pub weather: Weather,
+}
+
+impl Apis {
+    pub fn new(prayer_times: PrayerTimes) -> Self {
+        Apis {
+            prayer_times,
+            geo: Geo::new(),
+            weather: Weather::new(),
+        }
+    }
+}
 
 /// Everything the web handlers and the reminder loop share.
 pub struct AppState {
     pub config: Config,
     pub gowa: Gowa,
     pub db: SqlitePool,
-    pub prayer_times: PrayerTimes,
+    pub apis: Apis,
 }
 
 impl AppState {
@@ -52,7 +77,7 @@ impl AppState {
             config,
             gowa,
             db,
-            prayer_times,
+            apis: Apis::new(prayer_times),
         })
     }
 }

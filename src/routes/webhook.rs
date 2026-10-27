@@ -61,6 +61,11 @@ pub struct Message {
     pub body: Option<String>,
     /// When this is a (swipe) reply: the ID of the message it quotes.
     pub replied_to_id: Option<String>,
+    /// A shared location (📎 → Location). GOWA forwards WhatsApp's own
+    /// `LocationMessage`, so the field names are its camelCase ones.
+    pub location: Option<SharedLocation>,
+    /// The same for a *live* location; its first position is used.
+    pub live_location: Option<SharedLocation>,
     /// `true` for messages the bot itself sent. `#[serde(default)]` means
     /// "use `false` if the field is missing".
     #[serde(default)]
@@ -81,6 +86,15 @@ impl Message {
             lid: self.from_lid.clone(),
         }
     }
+}
+
+/// `{"degreesLatitude":52.04,"degreesLongitude":-0.76,"name":"..."}`.
+/// `rename_all = "camelCase"` maps `degrees_latitude` to `degreesLatitude`.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedLocation {
+    pub degrees_latitude: f64,
+    pub degrees_longitude: f64,
 }
 
 /// Someone reacted to a message with an emoji.
@@ -175,10 +189,12 @@ async fn handle_message(
         println!("webhook: skipped own message {}", msg.id);
         return Ok(());
     }
-    let Some(text) = msg.body.as_deref() else {
+    // `.or(...)`: the first of the two that's present.
+    let shared = msg.location.as_ref().or(msg.live_location.as_ref());
+    if msg.body.is_none() && shared.is_none() {
         println!("webhook: skipped message {} with no text", msg.id);
         return Ok(());
-    };
+    }
 
     // Everything below happens in one transaction: if any step fails,
     // none of it is saved. Dropping `tx` without `commit` rolls it back.
@@ -196,7 +212,20 @@ async fn handle_message(
     let chat_id = chats::find_or_create(&mut tx, &msg.chat_id, dm_owner, now).await?;
     chats::add_member(&mut tx, chat_id, user.id, now).await?;
 
-    let Some(action) = action_for(&mut tx, &msg, text, chat_id, sender).await? else {
+    let action = match (msg.body.as_deref(), shared) {
+        (Some(text), _) => action_for(&mut tx, &msg, text, chat_id, sender).await?,
+        // A location shared in a DM sets that person's place. In a group
+        // people share locations for other reasons ("I'm here"), so it's
+        // left alone there.
+        (None, Some(at)) if dm_owner.is_some() => {
+            Some(Action::Command(BotCommand::SharedLocation {
+                latitude: at.degrees_latitude,
+                longitude: at.degrees_longitude,
+            }))
+        }
+        _ => None,
+    };
+    let Some(action) = action else {
         // Ordinary chat: keep the registration, nothing else to do.
         tx.commit().await?;
         println!("webhook: message {} is chat, not a command", msg.id);
@@ -222,7 +251,7 @@ async fn handle_message(
                 "webhook: {} in {}: {command:?}",
                 ctx.sender.display_name, msg.chat_id
             );
-            handlers::run_command(&mut tx, &ctx, &state.prayer_times, command).await?
+            handlers::run_command(&mut tx, &ctx, &state.apis, command).await?
         }
         Action::ListReply(items, reply) => {
             println!(
@@ -343,7 +372,7 @@ async fn react(state: &AppState, msg: &Message) {
 async fn send(state: &AppState, msg: &Message, text: &str) -> Option<String> {
     match state
         .gowa
-        .send_text(&msg.chat_id, text, Some(&msg.id))
+        .send_text(&msg.chat_id, text, Some(&msg.id), &[])
         .await
     {
         Ok(id) => Some(id),
@@ -552,6 +581,26 @@ mod tests {
         assert_eq!(
             assign_to_sender(BotCommand::ListShop, bilal()),
             BotCommand::ListShop
+        );
+    }
+
+    #[test]
+    fn parses_a_shared_location() {
+        // The shape GOWA v9.7.0 forwards: WhatsApp's LocationMessage, with
+        // its camelCase field names. No `body`.
+        let body = r#"{"event":"message","payload":{"chat_id":"447700900002@s.whatsapp.net",
+            "from":"447700900002@s.whatsapp.net","id":"AC0000000000000000000000000000A4",
+            "is_from_me":false,"timestamp":"2026-10-27T21:00:00Z",
+            "location":{"degreesLatitude":52.0406,"degreesLongitude":-0.7594,
+                        "name":"","address":"","JPEGThumbnail":"/9j/4AAQ"}}}"#;
+        let WebhookEvent::Message(msg) = serde_json::from_str(body).unwrap() else {
+            panic!("expected a message");
+        };
+        assert_eq!(msg.body, None);
+        let at = msg.location.expect("location parsed");
+        assert_eq!(
+            (at.degrees_latitude, at.degrees_longitude),
+            (52.0406, -0.7594)
         );
     }
 

@@ -1,11 +1,22 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT u.display_name,\n                  s.chat_id AS \"has_row?\",\n                  s.prayer_reminders AS \"prayer_reminders?: bool\",\n                  s.timezone, s.city, s.country,\n                  s.prayer_method, s.prayer_school, s.prayer_ending_minutes\n           FROM chat_members m\n           JOIN users u ON u.id = m.user_id\n           LEFT JOIN chats dm ON dm.dm_user_id = u.id\n           LEFT JOIN chat_settings s ON s.chat_id = dm.id\n           WHERE m.chat_id = ?\n           ORDER BY u.display_name",
+  "query": "SELECT u.id AS user_id, u.display_name, u.wa_jid,\n                  s.chat_id AS \"has_row?\",\n                  s.prayer_reminders AS \"prayer_reminders?: bool\",\n                  s.timezone, s.city, s.country,\n                  s.prayer_method, s.prayer_school, s.prayer_ending_minutes\n           FROM chat_members m\n           JOIN users u ON u.id = m.user_id\n           LEFT JOIN chats dm ON dm.dm_user_id = u.id\n           LEFT JOIN chat_settings s ON s.chat_id = dm.id\n           WHERE m.chat_id = ?\n           ORDER BY u.display_name",
   "describe": {
     "columns": [
       {
-        "name": "display_name",
+        "name": "user_id",
         "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "display_name",
+        "ordinal": 1,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -15,8 +26,19 @@
         }
       },
       {
+        "name": "wa_jid",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "wa_jid"
+          }
+        }
+      },
+      {
         "name": "has_row?",
-        "ordinal": 1,
+        "ordinal": 3,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -27,7 +49,7 @@
       },
       {
         "name": "prayer_reminders?: bool",
-        "ordinal": 2,
+        "ordinal": 4,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -38,7 +60,7 @@
       },
       {
         "name": "timezone",
-        "ordinal": 3,
+        "ordinal": 5,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -49,7 +71,7 @@
       },
       {
         "name": "city",
-        "ordinal": 4,
+        "ordinal": 6,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -60,7 +82,7 @@
       },
       {
         "name": "country",
-        "ordinal": 5,
+        "ordinal": 7,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -71,7 +93,7 @@
       },
       {
         "name": "prayer_method",
-        "ordinal": 6,
+        "ordinal": 8,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -82,7 +104,7 @@
       },
       {
         "name": "prayer_school",
-        "ordinal": 7,
+        "ordinal": 9,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -93,7 +115,7 @@
       },
       {
         "name": "prayer_ending_minutes",
-        "ordinal": 8,
+        "ordinal": 10,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -109,6 +131,8 @@
     "nullable": [
       false,
       false,
+      false,
+      false,
       true,
       true,
       true,
@@ -118,5 +142,5 @@
       true
     ]
   },
-  "hash": "0a7d0ff307aae6e4dc1f6fdbd540f9777df3cbddf9c563b215a1e59bae0783a4"
+  "hash": "cf3791e207807a2123bffab5efd710a408162832e072c1ec825c3b9c2162e44d"
 }

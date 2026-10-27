@@ -9,6 +9,8 @@ use sqlx::SqliteConnection;
 pub struct ShopItem {
     pub id: i64,
     pub name: String,
+    /// Ticked off, waiting for `/shop clear bought`.
+    pub bought: bool,
 }
 
 /// Adds an item to the chat's list and returns its id.
@@ -80,9 +82,31 @@ pub async fn list_to_buy(
 ) -> Result<Vec<ShopItem>, sqlx::Error> {
     sqlx::query_as!(
         ShopItem,
-        "SELECT id, name FROM shopping_items
-         WHERE chat_id = ? AND bought_at IS NULL
-         ORDER BY created_at, id",
+        r#"SELECT id, name, FALSE AS "bought!: bool" FROM shopping_items
+           WHERE chat_id = ? AND bought_at IS NULL
+           ORDER BY created_at, id"#,
+        chat_id
+    )
+    .fetch_all(conn)
+    .await
+}
+
+/// The whole list, as `/shop` shows it: items still to buy (oldest
+/// first), then bought ones (in the order they were bought). That order is
+/// what the numbers in a `/shop` list refer to.
+pub async fn list_all(
+    conn: &mut SqliteConnection,
+    chat_id: i64,
+) -> Result<Vec<ShopItem>, sqlx::Error> {
+    // `bought_at IS NOT NULL` is 0 for "to buy" and 1 for "bought", so
+    // sorting by it puts the to-buy items first. `as "bought!: bool"` reads
+    // that 0/1 as a Rust bool.
+    sqlx::query_as!(
+        ShopItem,
+        r#"SELECT id, name, bought_at IS NOT NULL AS "bought!: bool"
+           FROM shopping_items
+           WHERE chat_id = ?
+           ORDER BY bought_at IS NOT NULL, bought_at, created_at, id"#,
         chat_id
     )
     .fetch_all(conn)
@@ -138,7 +162,8 @@ pub async fn remove(
     .await
 }
 
-/// Deletes every bought item in the chat (`/shop clear`). Returns how many.
+/// Deletes every bought item in the chat (`/shop clear bought`). Returns
+/// how many.
 pub async fn clear_bought(conn: &mut SqliteConnection, chat_id: i64) -> Result<u64, sqlx::Error> {
     let result = sqlx::query!(
         "DELETE FROM shopping_items WHERE chat_id = ? AND bought_at IS NOT NULL",
@@ -146,6 +171,15 @@ pub async fn clear_bought(conn: &mut SqliteConnection, chat_id: i64) -> Result<u
     )
     .execute(conn)
     .await?;
+    Ok(result.rows_affected())
+}
+
+/// Deletes every item in the chat's list, bought or not (`/shop clear`).
+/// Returns how many.
+pub async fn clear_all(conn: &mut SqliteConnection, chat_id: i64) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query!("DELETE FROM shopping_items WHERE chat_id = ?", chat_id)
+        .execute(conn)
+        .await?;
     Ok(result.rows_affected())
 }
 
@@ -220,7 +254,8 @@ mod tests {
             left,
             [ShopItem {
                 id: eggs,
-                name: "eggs".to_string()
+                name: "eggs".to_string(),
+                bought: false,
             }]
         );
     }

@@ -84,6 +84,18 @@ pub struct Location {
     pub timezone: Tz,
 }
 
+impl Location {
+    /// One text key for "same place, same times", e.g.
+    /// `Milton Keynes|GB|3|0|Europe/London`. Group reminders store it, so a
+    /// group with members in two countries gets one reminder per place.
+    pub fn key(&self) -> String {
+        format!(
+            "{}|{}|{}|{}|{}",
+            self.city, self.country, self.method, self.school, self.timezone
+        )
+    }
+}
+
 /// AlAdhan's `school` values for Asr. Shafi'i is AlAdhan's "standard".
 pub const SHAFII: u8 = 0;
 pub const HANAFI: u8 = 1;
@@ -204,21 +216,29 @@ pub fn due_reminders(
 }
 
 /// The reminder message.
+///
+/// `place` names the city when it matters (in a group whose members are in
+/// different places): "has started in Colombo". `None` leaves it out.
 pub fn reminder_text(
     kind: ReminderKind,
     window: &Window,
     now: DateTime<Utc>,
     settings: &Settings,
+    place: Option<&str>,
 ) -> String {
     let prayer = window.prayer;
     let (start, end) = (settings.clock(window.start), settings.clock(window.end));
+    // `map_or(default, f)`: "" without a place, " in Colombo" with one.
+    let place = place.map_or(String::new(), |p| format!(" in {p}"));
     let first_line = match kind {
-        ReminderKind::Start => format!("🕌 *{prayer}* has started ({start}). It ends at {end}."),
+        ReminderKind::Start => {
+            format!("🕌 *{prayer}* has started{place} ({start}). It ends at {end}.")
+        }
         ReminderKind::Ending => {
             // Rounded up, so 19m30s left reads "20 min", not "19 min".
             let seconds = (window.end - now).num_seconds().max(0);
             let minutes = (seconds + 59) / 60;
-            format!("⏳ *{prayer}* ends in {minutes} min ({end}).")
+            format!("⏳ *{prayer}* ends in {minutes} min{place} ({end}).")
         }
     };
     format!("{first_line}\nReact to this message once you've prayed.")
@@ -352,6 +372,22 @@ mod tests {
     }
 
     #[test]
+    fn reminder_text_can_name_the_place() {
+        let asr = day().windows[2];
+        let text = reminder_text(
+            ReminderKind::Start,
+            &asr,
+            utc("2026-10-27T14:16:00Z"),
+            &defaults(),
+            Some("Colombo"),
+        );
+        assert!(
+            text.starts_with("🕌 *Asr* has started in Colombo (14:16)."),
+            "{text}"
+        );
+    }
+
+    #[test]
     fn reminder_texts() {
         let asr = day().windows[2];
         assert_eq!(
@@ -359,7 +395,8 @@ mod tests {
                 ReminderKind::Start,
                 &asr,
                 utc("2026-10-27T14:16:00Z"),
-                &defaults()
+                &defaults(),
+                None
             ),
             "🕌 *Asr* has started (14:16). It ends at 16:44.\nReact to this message once you've prayed."
         );
@@ -368,7 +405,8 @@ mod tests {
                 ReminderKind::Ending,
                 &asr,
                 utc("2026-10-27T16:24:30Z"),
-                &defaults()
+                &defaults(),
+                None
             ),
             "⏳ *Asr* ends in 20 min (16:44).\nReact to this message once you've prayed."
         );

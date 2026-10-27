@@ -9,6 +9,7 @@
 
 use crate::person::Assignee;
 use crate::prayer::{HANAFI, Prayer, SHAFII};
+use crate::weather::When;
 
 /// A command typed as a normal message.
 #[derive(Debug, PartialEq)]
@@ -17,8 +18,9 @@ pub enum BotCommand {
     AddShop(Vec<String>),
     /// `/shop`
     ListShop,
-    /// `/shop clear`
-    ClearShop,
+    /// `/shop clear` (the whole list) or `/shop clear bought` (only the
+    /// ticked-off items)
+    ClearShop { bought_only: bool },
     /// `+got milk, eggs` or `+got 1 3` (also `+bought`): tick items off
     /// without replying to a list
     GotShop(Got),
@@ -41,6 +43,11 @@ pub enum BotCommand {
     Prayed(Vec<Prayer>),
     /// `/settings ...`: show or change this chat's settings
     Settings(SettingsCommand),
+    /// `/weather`, `/weather tomorrow`, `/weather week`
+    Weather(When),
+    /// A location shared in WhatsApp (📎 → Location). Not typed: the
+    /// webhook builds this from a location message in a DM.
+    SharedLocation { latitude: f64, longitude: f64 },
     /// `/help` (overview) or `/help shop` (one topic's page)
     Help(Option<String>),
 }
@@ -116,7 +123,11 @@ pub fn parse(text: &str) -> Option<BotCommand> {
         // Match guards (`if ...`) pick the arm by what follows the command.
         // `/shop something-else` falls through to `None`.
         "/shop" if rest.is_empty() => Some(BotCommand::ListShop),
-        "/shop" if rest.eq_ignore_ascii_case("clear") => Some(BotCommand::ClearShop),
+        "/shop" => match rest.to_lowercase().as_str() {
+            "clear" => Some(BotCommand::ClearShop { bought_only: false }),
+            "clear bought" => Some(BotCommand::ClearShop { bought_only: true }),
+            _ => None,
+        },
         "/todo" if rest.is_empty() => Some(BotCommand::ListTodos),
         "/prayers" | "/prayer" => match rest.to_lowercase().as_str() {
             "" => Some(BotCommand::Prayers),
@@ -125,6 +136,12 @@ pub fn parse(text: &str) -> Option<BotCommand> {
             _ => None,
         },
         "/settings" | "/setting" => parse_settings(rest).map(BotCommand::Settings),
+        "/weather" => match rest.to_lowercase().as_str() {
+            "" | "now" | "today" => Some(BotCommand::Weather(When::Now)),
+            "tomorrow" | "tmr" | "tmrw" => Some(BotCommand::Weather(When::Tomorrow)),
+            "week" | "7 days" => Some(BotCommand::Weather(When::Week)),
+            _ => None,
+        },
         // Any word after /help is a topic; `help::page` handles unknown ones.
         "/help" => Some(BotCommand::Help(
             (!rest.is_empty()).then(|| rest.to_string()),
@@ -499,8 +516,12 @@ mod tests {
 
     #[test]
     fn shop_clear() {
-        assert_eq!(parse("/shop clear"), Some(BotCommand::ClearShop));
-        assert_eq!(parse("/shop CLEAR"), Some(BotCommand::ClearShop));
+        let all = Some(BotCommand::ClearShop { bought_only: false });
+        let bought = Some(BotCommand::ClearShop { bought_only: true });
+        assert_eq!(parse("/shop clear"), all);
+        assert_eq!(parse("/shop CLEAR"), all);
+        assert_eq!(parse("/shop clear bought"), bought);
+        assert_eq!(parse("/shop clear everything"), None);
     }
 
     #[test]
@@ -625,6 +646,28 @@ mod tests {
         );
         assert_eq!(settings("/settings ending soon"), None);
         assert_eq!(settings("/settings colour blue"), None);
+    }
+
+    #[test]
+    fn weather_commands() {
+        assert_eq!(parse("/weather"), Some(BotCommand::Weather(When::Now)));
+        assert_eq!(
+            parse("/Weather today"),
+            Some(BotCommand::Weather(When::Now))
+        );
+        assert_eq!(
+            parse("/weather tmr"),
+            Some(BotCommand::Weather(When::Tomorrow))
+        );
+        assert_eq!(
+            parse("/weather Tomorrow"),
+            Some(BotCommand::Weather(When::Tomorrow))
+        );
+        assert_eq!(
+            parse("/weather week"),
+            Some(BotCommand::Weather(When::Week))
+        );
+        assert_eq!(parse("/weather in paris"), None);
     }
 
     #[test]
