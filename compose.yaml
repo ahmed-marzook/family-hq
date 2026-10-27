@@ -11,6 +11,17 @@ services:
     restart: unless-stopped
     ports:
       - "3000:3000"
+    environment:
+      # The same secret GOWA signs webhooks with, so we can check them.
+      GOWA_WEBHOOK_SECRET: ${GOWA_WEBHOOK_SECRET:?set GOWA_WEBHOOK_SECRET in .env}
+      # How family-hq calls GOWA (to react, and later to reply). Inside
+      # Compose it's the service name and GOWA's own port, not 3001.
+      GOWA_URL: http://gowa:3000
+      GOWA_BASIC_AUTH: ${GOWA_BASIC_AUTH:?set GOWA_BASIC_AUTH in .env}
+    volumes:
+      # The SQLite database (DATABASE_URL in the Dockerfile points here).
+      # A named volume survives `docker compose down` and rebuilds.
+      - family_hq_data:/data
 
   gowa:
     # Pinned so an upstream release can't change the webhook payload under us.
@@ -47,5 +58,6 @@ services:
       LOG_IGNORE_PATH: /health
 
 volumes:
+  family_hq_data:
   gowa_storages:
   gowa_statics:

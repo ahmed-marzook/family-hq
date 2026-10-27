@@ -8,6 +8,9 @@ WORKDIR /app
 
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+# `sqlx::migrate!()` reads these at compile time and builds them into the
+# binary, so they're needed here but not in the final image.
+COPY migrations ./migrations
 
 # The cache mounts keep downloaded crates and compiled dependencies between
 # builds, so changing one line of our code doesn't recompile axum and tokio.
@@ -25,10 +28,16 @@ FROM debian:bookworm-slim
 # Don't run as root inside the container.
 RUN useradd --system --uid 10001 --no-create-home familyhq
 
+# Where the SQLite file lives. Owned by familyhq so it can write there.
+# Compose mounts a volume here; Docker copies this ownership into a new,
+# empty named volume, so the volume is writable too.
+RUN mkdir /data && chown familyhq /data
+
 COPY --from=builder /usr/local/bin/family-hq /usr/local/bin/family-hq
 
 USER familyhq
 ENV PORT=3000
+ENV DATABASE_URL=sqlite:/data/family-hq.db
 EXPOSE 3000
 
 # `docker stop` (and Ctrl+C on `docker compose up`) sends SIGTERM by default,

@@ -7,6 +7,13 @@ use family_hq::config::Config;
 async fn main() {
     let config = Config::from_env();
 
+    // Opens the database (creating it on first run) and applies any new
+    // migrations before the server accepts a single request.
+    let db = family_hq::db::connect(&config.database_url)
+        .await
+        .expect("failed to open database");
+    println!("database ready at {}", config.database_url);
+
     // 0.0.0.0 = listen on every network interface, which is needed inside
     // Docker. `.await` waits for the bind without blocking the thread.
     let addr = ("0.0.0.0", config.port);
@@ -16,7 +23,7 @@ async fn main() {
 
     println!("listening on http://localhost:{}", config.port);
 
-    axum::serve(listener, family_hq::app())
+    axum::serve(listener, family_hq::app(config, db))
         .with_graceful_shutdown(shutdown_signal())
         .await
         .expect("server error");
