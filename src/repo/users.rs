@@ -12,6 +12,9 @@ pub struct User {
     pub id: i64,
     /// The name used in `+todo @name`.
     pub display_name: String,
+    /// Phone-number ID, e.g. `447700900001@s.whatsapp.net`. Used to
+    /// @mention them (a LID can't be mentioned, so it's never that).
+    pub wa_jid: String,
 }
 
 /// Finds the user behind `sender`, registering them if they're new.
@@ -61,7 +64,11 @@ pub async fn find_or_register(
     .fetch_one(&mut *conn)
     .await?;
 
-    Ok(Some(User { id, display_name }))
+    Ok(Some(User {
+        id,
+        display_name,
+        wa_jid: sender.jid.clone(),
+    }))
 }
 
 /// Looks a sender up by phone-number ID or LID. In a group, `from` may be
@@ -69,7 +76,7 @@ pub async fn find_or_register(
 async fn find(conn: &mut SqliteConnection, sender: &Person) -> Result<Option<User>, sqlx::Error> {
     sqlx::query_as!(
         User,
-        "SELECT id, display_name FROM users
+        "SELECT id, display_name, wa_jid FROM users
          WHERE wa_jid = ?1 OR wa_lid = ?1 OR wa_lid = ?2",
         sender.jid,
         sender.lid
@@ -98,7 +105,7 @@ pub async fn find_member_by_name(
 ) -> Result<Option<User>, sqlx::Error> {
     sqlx::query_as!(
         User,
-        "SELECT u.id, u.display_name FROM users u
+        "SELECT u.id, u.display_name, u.wa_jid FROM users u
          JOIN chat_members m ON m.user_id = u.id
          WHERE m.chat_id = ? AND u.display_name = ?",
         chat_id,

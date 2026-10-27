@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, display_name FROM users\n         WHERE wa_jid = ?1 OR wa_lid = ?1 OR wa_lid = ?2",
+  "query": "SELECT id, display_name, wa_jid FROM users\n         WHERE wa_jid = ?1 OR wa_lid = ?1 OR wa_lid = ?2",
   "describe": {
     "columns": [
       {
@@ -24,6 +24,17 @@
             "name": "display_name"
           }
         }
+      },
+      {
+        "name": "wa_jid",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "wa_jid"
+          }
+        }
       }
     ],
     "parameters": {
@@ -31,8 +42,9 @@
     },
     "nullable": [
       false,
+      false,
       false
     ]
   },
-  "hash": "4a12eeadc8f0a264b6cae30790c37e1e2e90a0d746096690805d131eebf9e9d2"
+  "hash": "62f0df17010e06f6af8282ac44101c2c7931f3cb4064d6a2eaf350795818d11c"
 }

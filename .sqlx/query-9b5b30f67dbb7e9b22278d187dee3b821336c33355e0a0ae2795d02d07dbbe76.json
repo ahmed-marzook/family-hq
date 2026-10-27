@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT u.id, u.display_name FROM users u\n         JOIN chat_members m ON m.user_id = u.id\n         WHERE m.chat_id = ? AND u.display_name = ?",
+  "query": "SELECT u.id, u.display_name, u.wa_jid FROM users u\n         JOIN chat_members m ON m.user_id = u.id\n         WHERE m.chat_id = ? AND u.display_name = ?",
   "describe": {
     "columns": [
       {
@@ -24,6 +24,17 @@
             "name": "display_name"
           }
         }
+      },
+      {
+        "name": "wa_jid",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "wa_jid"
+          }
+        }
       }
     ],
     "parameters": {
@@ -31,8 +42,9 @@
     },
     "nullable": [
       false,
+      false,
       false
     ]
   },
-  "hash": "17fa6c5d684e6ef0d2d10816f2d0f684266046ea7ded704ec97c6721403ac5ff"
+  "hash": "9b5b30f67dbb7e9b22278d187dee3b821336c33355e0a0ae2795d02d07dbbe76"
 }

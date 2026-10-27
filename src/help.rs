@@ -27,6 +27,8 @@ I keep shared lists for each group I'm in, and private ones when you message me 
 ⚙️ *Settings*: `/settings` · `/settings city Leicester, GB` · or share your location with me
 🌤️ *Weather*: `/weather` · `/weather tomorrow` · `/weather week`
 
+Short forms: `+s` shop · `+g` got · `+t` todo · `+p` prayed · `/s` · `/t` · `/p` · `/w` · `/h`
+
 For the full page on a topic, with examples:
 `/help shop` · `/help todo` · `/help prayers` · `/help settings` · `/help weather`
 
@@ -47,6 +49,7 @@ Each group has its own list; in a DM with me it's your private list.
 • Reply (swipe) to a `/shop` list with the numbers: `1 3`
 • Or without replying: `+got milk, eggs` (by name) or `+got 1 3` (numbers from the latest `/shop` list here). `+bought` works too.
 • Reply `remove 2` to a list to delete an item instead.
+In a group, I @mention whoever bought it (\"✅ @Bilal bought *eggs*\"), so everyone knows it's done.
 
 *Tidy up*
 `/shop clear`: empties the whole list.
@@ -79,6 +82,7 @@ The \"ending soon\" reminder only goes to people who haven't prayed yet.
 *Mark a prayer as prayed*
 • React to its reminder with any emoji (remove the reaction to undo).
 • Or type `+prayed asr`. Several: `+prayed fajr, dhuhr`. All five: `+prayed all`. Spellings like zuhr, asar, esha work too.
+• Or by number, 1 (Fajr) to 5 (Isha), as shown in `/prayers`: `+p 3` is Asr, `+p 1 3` is Fajr and Asr.
 
 *When prayers end*
 Fajr ends at sunrise, Dhuhr at Asr, Asr at Maghrib, Maghrib at Isha, and Isha at Islamic midnight.

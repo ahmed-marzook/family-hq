@@ -258,7 +258,7 @@ async fn handle_message(
                 "webhook: {} replied {reply:?} to a list",
                 ctx.sender.display_name
             );
-            Outcome::Reply(handlers::run_list_reply(&mut tx, &ctx, &items, reply).await?)
+            handlers::run_list_reply(&mut tx, &ctx, &items, reply).await?
         }
     };
     tx.commit().await?;
@@ -268,7 +268,10 @@ async fn handle_message(
     react(state, &msg).await;
     match outcome {
         Outcome::Reply(text) => {
-            send(state, &msg, &text).await;
+            send(state, &msg, &text, &[]).await;
+        }
+        Outcome::Mentioning { text, mentions } => {
+            send(state, &msg, &text, &mentions).await;
         }
         Outcome::List {
             text,
@@ -277,7 +280,7 @@ async fn handle_message(
         } => {
             // Remember what each number in this list means, so replies like
             // `done 2` or `1 3` can find the right rows later.
-            if let Some(list_id) = send(state, &msg, &text).await {
+            if let Some(list_id) = send(state, &msg, &text, &[]).await {
                 let mut conn = state.db.acquire().await?;
                 messages::save_list(&mut conn, &list_id, chat_id, item_type, &item_ids, now)
                     .await?;
@@ -369,10 +372,11 @@ async fn react(state: &AppState, msg: &Message) {
 }
 
 /// Replies in the same chat, quoting `msg`. Returns the sent message's ID.
-async fn send(state: &AppState, msg: &Message, text: &str) -> Option<String> {
+/// `mentions` are phone numbers to @mention (see `Gowa::send_text`).
+async fn send(state: &AppState, msg: &Message, text: &str, mentions: &[String]) -> Option<String> {
     match state
         .gowa
-        .send_text(&msg.chat_id, text, Some(&msg.id), &[])
+        .send_text(&msg.chat_id, text, Some(&msg.id), mentions)
         .await
     {
         Ok(id) => Some(id),

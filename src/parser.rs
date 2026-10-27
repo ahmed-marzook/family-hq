@@ -114,7 +114,8 @@ pub fn parse(text: &str) -> Option<BotCommand> {
         None => (text, ""),
     };
 
-    match first.to_lowercase().as_str() {
+    let first = first.to_lowercase();
+    match expand_shorthand(&first) {
         "+shop" | "+buy" => parse_shop_items(rest).map(BotCommand::AddShop),
         "+got" | "+bought" => parse_got(rest).map(BotCommand::GotShop),
         "+todo" => parse_add_todo(rest),
@@ -148,6 +149,28 @@ pub fn parse(text: &str) -> Option<BotCommand> {
         )),
 
         _ => None,
+    }
+}
+
+/// Short forms of the common commands: `+s milk` is `+shop milk`, `/w tmr`
+/// is `/weather tmr`, and so on. Anything else comes back unchanged.
+/// `/settings` has no short form, so it can't be changed by accident.
+///
+/// It returns either `word` itself or a fixed string. No lifetime needs
+/// writing: with exactly one reference in, Rust assumes the reference out
+/// borrows from it ("lifetime elision"), and a `&'static str` fits that too.
+fn expand_shorthand(word: &str) -> &str {
+    match word {
+        "+s" => "+shop",
+        "+g" => "+got",
+        "+t" => "+todo",
+        "+p" => "+prayed",
+        "/s" => "/shop",
+        "/t" => "/todo",
+        "/p" => "/prayers",
+        "/w" => "/weather",
+        "/h" => "/help",
+        other => other,
     }
 }
 
@@ -319,14 +342,17 @@ fn parse_prayed(rest: &str) -> Option<Vec<Prayer>> {
     Some(prayers)
 }
 
-/// A prayer's name as people type it, including common spellings.
+/// A prayer as people type it: its name (including common spellings) or
+/// its number in the day, 1 (Fajr) to 5 (Isha).
 fn prayer_name(word: &str) -> Option<Prayer> {
     match word {
-        "fajr" | "fajar" | "subh" | "fajir" => Some(Prayer::Fajr),
-        "dhuhr" | "zuhr" | "zohr" | "zuhur" | "dhuhur" | "duhr" | "zhuhr" => Some(Prayer::Dhuhr),
-        "asr" | "asar" => Some(Prayer::Asr),
-        "maghrib" | "magrib" | "maghreb" => Some(Prayer::Maghrib),
-        "isha" | "esha" | "ishaa" | "isya" => Some(Prayer::Isha),
+        "fajr" | "fajar" | "subh" | "fajir" | "1" => Some(Prayer::Fajr),
+        "dhuhr" | "zuhr" | "zohr" | "zuhur" | "dhuhur" | "duhr" | "zhuhr" | "2" => {
+            Some(Prayer::Dhuhr)
+        }
+        "asr" | "asar" | "3" => Some(Prayer::Asr),
+        "maghrib" | "magrib" | "maghreb" | "4" => Some(Prayer::Maghrib),
+        "isha" | "esha" | "ishaa" | "isya" | "5" => Some(Prayer::Isha),
         _ => None,
     }
 }
@@ -679,6 +705,65 @@ mod tests {
     }
 
     // ---- ordinary chat ----
+
+    #[test]
+    fn shorthands_mean_the_same_as_the_full_commands() {
+        let same = [
+            ("+s milk, eggs", "+shop milk, eggs"),
+            ("+S milk", "+shop milk"),
+            ("+g milk", "+got milk"),
+            ("+g 1 3", "+got 1 3"),
+            ("+t fix the tap", "+todo fix the tap"),
+            ("+t @Khadija book dentist", "+todo @Khadija book dentist"),
+            ("+p asr", "+prayed asr"),
+            ("/s", "/shop"),
+            ("/s clear", "/shop clear"),
+            ("/t", "/todo"),
+            ("/p", "/prayers"),
+            ("/p on", "/prayers on"),
+            ("/w", "/weather"),
+            ("/w tmr", "/weather tmr"),
+            ("/h", "/help"),
+            ("/h shop", "/help shop"),
+        ];
+        for (short, full) in same {
+            let parsed = parse(short);
+            assert!(parsed.is_some(), "{short:?} should be a command");
+            assert_eq!(parsed, parse(full), "{short:?} vs {full:?}");
+        }
+    }
+
+    #[test]
+    fn prayers_by_number_one_to_five() {
+        assert_eq!(
+            parse("+prayed 1"),
+            Some(BotCommand::Prayed(vec![Prayer::Fajr]))
+        );
+        assert_eq!(
+            parse("+p 3 1"),
+            Some(BotCommand::Prayed(vec![Prayer::Fajr, Prayer::Asr]))
+        );
+        assert_eq!(
+            parse("+p 1, 2, 3, 4, 5"),
+            Some(BotCommand::Prayed(Prayer::ALL.to_vec()))
+        );
+        // Names and numbers can be mixed.
+        assert_eq!(
+            parse("+p isha 4"),
+            Some(BotCommand::Prayed(vec![Prayer::Maghrib, Prayer::Isha]))
+        );
+        assert_eq!(parse("+p 0"), None);
+        assert_eq!(parse("+p 6"), None);
+    }
+
+    #[test]
+    fn shorthands_still_need_their_arguments() {
+        assert_eq!(parse("+s"), None);
+        assert_eq!(parse("+t"), None);
+        assert_eq!(parse("/s nonsense"), None);
+        // No short form for settings.
+        assert_eq!(parse("/set"), None);
+    }
 
     #[test]
     fn ordinary_chat_is_none() {

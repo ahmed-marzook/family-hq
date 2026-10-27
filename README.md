@@ -22,6 +22,10 @@ image, see [docs/DEPLOY.md](docs/DEPLOY.md).
 Each group the bot is in has its own lists; a DM with the bot is your own
 private list.
 
+Short forms: `+s` = `+shop`, `+g` = `+got`, `+t` = `+todo`, `+p` = `+prayed`,
+`/s` = `/shop`, `/t` = `/todo`, `/p` = `/prayers`, `/w` = `/weather`,
+`/h` = `/help`.
+
 | Message | Effect |
 |---|---|
 | `+shop milk, eggs` | Add to this chat's shopping list |
@@ -33,7 +37,8 @@ private list.
 | `/todo` | Show todos; reply `done 2` to complete one |
 | `/prayers` | Today's prayer times, ✅ for the ones you've prayed |
 | `/prayers on` / `off` | Reminders when each prayer starts and before it ends; react to one once you've prayed |
-| `+prayed asr` | Mark a prayer as prayed without reacting |
+| `+prayed asr` or `+p 3` | Mark a prayer as prayed without reacting (by name, or 1 Fajr to 5 Isha) |
 | `/settings` | This chat's city, timezone and prayer settings (in a DM: your own); `/settings city Leicester, GB` etc. |
 | `/settings everyone` | Each group member's own settings |
-| `/help` | Overview; `/help shop`, `/help todo`, `/help prayers`, `/help settings` for a full page |
+| `/weather`, `/weather tomorrow`, `/weather week` | The forecast for your own town |
+| `/help` | Overview; `/help shop`, `/help todo`, `/help prayers`, `/help settings`, `/help weather` for a full page |

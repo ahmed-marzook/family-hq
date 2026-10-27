@@ -66,6 +66,20 @@ pub enum Outcome {
         item_type: &'static str,
         item_ids: Vec<i64>,
     },
+    /// A reply that @mentions people: `mentions` are their phone numbers,
+    /// and `text` contains `@<number>` where each should appear.
+    Mentioning { text: String, mentions: Vec<String> },
+}
+
+impl Outcome {
+    /// Just the text, whatever kind of reply it is (handy in tests).
+    pub fn into_text(self) -> String {
+        match self {
+            Outcome::Reply(text)
+            | Outcome::List { text, .. }
+            | Outcome::Mentioning { text, .. } => text,
+        }
+    }
 }
 
 /// Runs a command typed as a normal message.
@@ -105,10 +119,10 @@ pub async fn run_command(
             if items.is_empty() {
                 format!("{PROBLEM} No shopping list sent here yet. Send /shop, then `+got 1 3`.")
             } else {
-                run_list_reply(conn, ctx, &items, ReplyCommand::Tick(numbers)).await?
+                return run_list_reply(conn, ctx, &items, ReplyCommand::Tick(numbers)).await;
             }
         }
-        BotCommand::GotShop(Got::Names(names)) => got_by_name(conn, ctx, &names).await?,
+        BotCommand::GotShop(Got::Names(names)) => return got_by_name(conn, ctx, &names).await,
         BotCommand::ClearShop { bought_only: false } => {
             match shop::clear_all(conn, ctx.chat_id).await? {
                 0 => format!("{SHOP} The shopping list is already empty."),
@@ -177,25 +191,60 @@ pub async fn run_command(
     Ok(Outcome::Reply(text))
 }
 
-/// `+got milk, eggs`: ticks each named item off, one line per name.
+/// `+got milk, eggs`: ticks each named item off.
 async fn got_by_name(
     conn: &mut SqliteConnection,
     ctx: &Context,
     names: &[String],
-) -> Result<String, AppError> {
-    let mut lines = Vec::new();
+) -> Result<Outcome, AppError> {
+    let mut bought = Vec::new();
+    let mut problems = Vec::new();
     for name in names {
-        let bought = match shop::find_to_buy(conn, ctx.chat_id, name).await? {
+        let ticked = match shop::find_to_buy(conn, ctx.chat_id, name).await? {
             Some(id) => shop::mark_bought(conn, id, ctx.chat_id, ctx.sender.id, ctx.now).await?,
             None => None,
         };
-        lines.push(match bought {
+        match ticked {
             // The stored name, with the capitals it was added with.
-            Some(stored) => format!("{DONE} Bought: *{stored}*"),
-            None => format!("{PROBLEM} {name} isn't on the list."),
-        });
+            Some(stored) => bought.push(stored),
+            None => problems.push(format!("{PROBLEM} {name} isn't on the list.")),
+        }
     }
-    Ok(lines.join("\n"))
+    Ok(bought_reply(ctx, &bought, &problems))
+}
+
+/// "✅ @Bilal bought *milk*, *eggs*" in a group, so everyone sees who got
+/// what (the @ is a real WhatsApp mention). In a DM there's no one else to
+/// tell: "✅ Bought *milk*, *eggs*". Any `problems` follow on their own
+/// lines. With nothing bought it's just the problems.
+fn bought_reply(ctx: &Context, bought: &[String], problems: &[String]) -> Outcome {
+    let mut lines = Vec::new();
+    let mut mentions = Vec::new();
+    if !bought.is_empty() {
+        let items: Vec<String> = bought.iter().map(|name| format!("*{name}*")).collect();
+        let items = items.join(", ");
+        if ctx.is_group {
+            // "447700900001@s.whatsapp.net" → "447700900001".
+            let phone = ctx
+                .sender
+                .wa_jid
+                .split('@')
+                .next()
+                .unwrap_or_default()
+                .to_string();
+            lines.push(format!("{DONE} @{phone} bought {items}"));
+            mentions.push(phone);
+        } else {
+            lines.push(format!("{DONE} Bought {items}"));
+        }
+    }
+    lines.extend(problems.iter().cloned());
+    let text = lines.join("\n");
+    if mentions.is_empty() {
+        Outcome::Reply(text)
+    } else {
+        Outcome::Mentioning { text, mentions }
+    }
 }
 
 /// Adds each item that isn't already on the list (ignoring case), and says
@@ -477,7 +526,7 @@ pub async fn run_list_reply(
     ctx: &Context,
     items: &[ListItem],
     reply: ReplyCommand,
-) -> Result<String, AppError> {
+) -> Result<Outcome, AppError> {
     // Every row of one list has the same type; the first one says which.
     let is_shop = items
         .first()
@@ -491,6 +540,8 @@ pub async fn run_list_reply(
     };
 
     let mut lines = Vec::new();
+    // Shopping items ticked off: reported together, mentioning the buyer.
+    let mut bought = Vec::new();
     for n in numbers {
         let id = match item_at(items, n) {
             Ok(id) => id,
@@ -511,14 +562,17 @@ pub async fn run_list_reply(
             }
             (true, true) => shop::remove(conn, id, ctx.chat_id).await?,
         };
-        lines.push(match (name, is_shop, removing) {
-            (None, _, _) => gone(n),
-            (Some(name), _, true) => format!("{REMOVED} Removed *{name}*"),
-            (Some(name), false, false) => format!("{DONE} Done: *{name}*"),
-            (Some(name), true, false) => format!("{DONE} Bought: *{name}*"),
-        });
+        match (name, is_shop, removing) {
+            (None, _, _) => lines.push(gone(n)),
+            (Some(name), _, true) => lines.push(format!("{REMOVED} Removed *{name}*")),
+            (Some(name), false, false) => lines.push(format!("{DONE} Done: *{name}*")),
+            (Some(name), true, false) => bought.push(name),
+        }
     }
-    Ok(lines.join("\n"))
+    if is_shop && !removing {
+        return Ok(bought_reply(ctx, &bought, &lines));
+    }
+    Ok(Outcome::Reply(lines.join("\n")))
 }
 
 /// The row id at list number `n`, or the message to send if there's no
@@ -607,20 +661,21 @@ fn format_prayer_day(day: &DayTimes, settings: &Settings, prayed: &[Prayer]) -> 
         settings.city,
         day.date.format("%a %-d %b")
     );
-    for window in &day.windows {
+    // Numbered 1-5 in the day's order, which is what `+p 3` refers to.
+    for (number, window) in (1..).zip(&day.windows) {
         let mark = if prayed.contains(&window.prayer) {
             DONE
         } else {
             NOT_YET
         };
         text.push_str(&format!(
-            "{mark} {} {}–{}\n",
+            "{mark} {number}. {} {}–{}\n",
             window.prayer,
             settings.clock(window.start),
             settings.clock(window.end)
         ));
     }
-    text.push_str("\nTick one off with `+prayed asr`, or react to its reminder.");
+    text.push_str("\nTick one off with `+prayed asr` (or `+p 3`), or react to its reminder.");
     text
 }
 
@@ -926,23 +981,27 @@ mod tests {
 
         let reply = run_list_reply(&mut conn, &ctx, &items, ReplyCommand::Tick(vec![1, 3]))
             .await
-            .unwrap();
+            .unwrap()
+            .into_text();
         assert_eq!(reply, "✅ Done: *go gym*\n✅ Done: *book dentist*");
 
         // The numbers still refer to the old list: 2 is "fix the tap".
         let reply = run_list_reply(&mut conn, &ctx, &items, ReplyCommand::Remove(2))
             .await
-            .unwrap();
+            .unwrap()
+            .into_text();
         assert_eq!(reply, "🗑️ Removed *fix the tap*");
 
         let reply = run_list_reply(&mut conn, &ctx, &items, ReplyCommand::Done(1))
             .await
-            .unwrap();
+            .unwrap()
+            .into_text();
         assert!(reply.contains("already ticked off"), "{reply}");
 
         let reply = run_list_reply(&mut conn, &ctx, &items, ReplyCommand::Done(5))
             .await
-            .unwrap();
+            .unwrap()
+            .into_text();
         assert!(reply.contains("only has 3 items"), "{reply}");
     }
 
@@ -953,10 +1012,10 @@ mod tests {
             text.starts_with("🕌 *Prayer times* (Milton Keynes, Tue 27 Oct)\n"),
             "{text}"
         );
-        assert!(text.contains("✅ Fajr 04:55–06:49\n"), "{text}");
-        assert!(text.contains("⬜ Dhuhr 11:47–14:16\n"));
-        assert!(text.contains("✅ Asr 14:16–16:44\n"));
-        assert!(text.contains("⬜ Isha 18:31–23:46\n"));
+        assert!(text.contains("✅ 1. Fajr 04:55–06:49\n"), "{text}");
+        assert!(text.contains("⬜ 2. Dhuhr 11:47–14:16\n"));
+        assert!(text.contains("✅ 3. Asr 14:16–16:44\n"));
+        assert!(text.contains("⬜ 5. Isha 18:31–23:46\n"));
     }
 
     #[tokio::test]
@@ -976,8 +1035,8 @@ mod tests {
         else {
             panic!("expected a reply");
         };
-        assert!(text.contains("✅ Dhuhr 11:47"), "{text}");
-        assert!(text.contains("⬜ Asr 14:16"), "{text}");
+        assert!(text.contains("✅ 2. Dhuhr 11:47"), "{text}");
+        assert!(text.contains("⬜ 3. Asr 14:16"), "{text}");
     }
 
     #[tokio::test]
@@ -1022,9 +1081,9 @@ mod tests {
         else {
             panic!("expected a reply");
         };
-        assert!(text.contains("✅ Fajr 04:55"), "{text}");
-        assert!(text.contains("⬜ Asr 14:16"), "{text}");
-        assert!(text.contains("✅ Isha 18:31"), "{text}");
+        assert!(text.contains("✅ 1. Fajr 04:55"), "{text}");
+        assert!(text.contains("⬜ 3. Asr 14:16"), "{text}");
+        assert!(text.contains("✅ 5. Isha 18:31"), "{text}");
 
         let mut prayed = prayers::prayed_on(&mut conn, ctx.sender.id, day().date)
             .await
@@ -1163,21 +1222,20 @@ Already on the list: milk, Eggs"
 
         let reply = run_list_reply(&mut conn, &ctx, &items, ReplyCommand::Tick(vec![1, 3]))
             .await
-            .unwrap();
-        assert_eq!(
-            reply,
-            "✅ Bought: *milk*
-✅ Bought: *bread*"
-        );
+            .unwrap()
+            .into_text();
+        assert_eq!(reply, "✅ @447700900001 bought *milk*, *bread*");
 
         let reply = run_list_reply(&mut conn, &ctx, &items, ReplyCommand::Remove(4))
             .await
-            .unwrap();
+            .unwrap()
+            .into_text();
         assert_eq!(reply, "🗑️ Removed *rice*");
 
         let reply = run_list_reply(&mut conn, &ctx, &items, ReplyCommand::Done(1))
             .await
-            .unwrap();
+            .unwrap()
+            .into_text();
         assert!(reply.contains("already ticked off"), "{reply}");
 
         // Eggs still to buy first, then milk and bread, bought.
@@ -1241,6 +1299,23 @@ Already on the list: milk, Eggs"
     }
 
     #[tokio::test]
+    async fn bought_in_a_dm_has_no_mention() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let mut ctx = setup(&mut conn).await;
+        ctx.is_group = false;
+        run_command(&mut conn, &ctx, &Apis::new(times()), shop_cmd(&["milk"]))
+            .await
+            .unwrap();
+
+        let got = BotCommand::GotShop(Got::Names(vec!["milk".to_string()]));
+        let reply = run_command(&mut conn, &ctx, &Apis::new(times()), got)
+            .await
+            .unwrap();
+        assert_eq!(reply, Outcome::Reply("✅ Bought *milk*".to_string()));
+    }
+
+    #[tokio::test]
     async fn two_groups_have_separate_shopping_lists() {
         let pool = test_pool().await;
         let mut conn = pool.acquire().await.unwrap();
@@ -1288,11 +1363,12 @@ Already on the list: milk, Eggs"
             .unwrap();
         assert_eq!(
             reply,
-            Outcome::Reply(
-                "✅ Bought: *Milk*
+            Outcome::Mentioning {
+                text: "✅ @447700900001 bought *Milk*
 ❓ bread isn't on the list."
-                    .to_string()
-            )
+                    .to_string(),
+                mentions: vec!["447700900001".to_string()],
+            }
         );
 
         let (text, _) = shop_list(&mut conn, &ctx).await;
@@ -1333,7 +1409,13 @@ Already on the list: milk, Eggs"
         let reply = run_command(&mut conn, &ctx, &Apis::new(times()), got())
             .await
             .unwrap();
-        assert_eq!(reply, Outcome::Reply("✅ Bought: *eggs*".to_string()));
+        assert_eq!(
+            reply,
+            Outcome::Mentioning {
+                text: "✅ @447700900001 bought *eggs*".to_string(),
+                mentions: vec!["447700900001".to_string()],
+            }
+        );
     }
 
     // ---- settings ----
@@ -1442,7 +1524,7 @@ Already on the list: milk, Eggs"
         else {
             panic!("expected a reply");
         };
-        assert!(text.contains("Asr 19:16–21:44"), "{text}");
+        assert!(text.contains("3. Asr 19:16–21:44"), "{text}");
     }
 
     #[tokio::test]
@@ -1501,6 +1583,6 @@ Already on the list: milk, Eggs"
         else {
             panic!("expected a reply");
         };
-        assert!(text.contains("Asr 19:16–21:44"), "{text}");
+        assert!(text.contains("3. Asr 19:16–21:44"), "{text}");
     }
 }
