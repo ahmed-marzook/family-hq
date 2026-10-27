@@ -1,12 +1,17 @@
 # Family HQ stack.
 #
-# Right now this only runs GOWA (the WhatsApp bridge) plus a webhook echo
-# server for experimenting. The `family-hq` service itself gets added here
-# in Stage 1.1, once the Dockerfile exists.
+# family-hq (our Rust server), GOWA (the WhatsApp bridge) and a webhook echo
+# server for experimenting until family-hq has its own webhook (Stage 1.4).
 #
 # Setup: copy `.env.example` to `.env` and fill it in. See docs/GOWA.md.
 
 services:
+  family-hq:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+
   gowa:
     # Pinned so an upstream release can't change the webhook payload under us.
     image: aldinokemal2104/go-whatsapp-web-multidevice:v9.7.0
@@ -14,7 +19,7 @@ services:
     command: ["rest"]
     ports:
       # GOWA listens on 3000 inside the container. On the host it's 3001,
-      # because family-hq will use 3000. Bound to localhost by default;
+      # because family-hq uses 3000. Bound to localhost by default;
       # set GOWA_BIND=0.0.0.0 in .env to reach it from another machine.
       - "${GOWA_BIND:-127.0.0.1}:3001:3000"
     environment:
