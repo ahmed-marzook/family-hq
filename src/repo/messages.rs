@@ -81,11 +81,90 @@ pub async fn list_items(
     .await
 }
 
+/// What the most recent list of `item_type` sent in this chat showed, for
+/// commands like `+got 1 3` that use numbers without replying. Empty if
+/// no such list has been sent.
+pub async fn latest_list_items(
+    conn: &mut SqliteConnection,
+    chat_id: i64,
+    item_type: &str,
+) -> Result<Vec<ListItem>, sqlx::Error> {
+    // The inner SELECT finds the newest list message; the outer one reads
+    // all its rows. `rowid` breaks ties when two lists share a timestamp.
+    sqlx::query_as!(
+        ListItem,
+        "SELECT position, item_type, item_id FROM wa_message_context
+         WHERE wa_message_id = (
+             SELECT wa_message_id FROM wa_message_context
+             WHERE chat_id = ?1 AND item_type = ?2
+             ORDER BY created_at DESC, rowid DESC
+             LIMIT 1
+         )
+         ORDER BY position",
+        chat_id,
+        item_type
+    )
+    .fetch_all(conn)
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::db::test_pool;
     use crate::repo::chats;
+
+    #[tokio::test]
+    async fn latest_list_is_the_newest_of_its_type_in_the_chat() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let t = |s: &str| s.parse::<chrono::DateTime<Utc>>().unwrap();
+        let chat = chats::find_or_create(&mut conn, "120363000000000001@g.us", None, Utc::now())
+            .await
+            .unwrap();
+
+        assert!(
+            latest_list_items(&mut conn, chat, "shop")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        save_list(
+            &mut conn,
+            "OLD",
+            chat,
+            "shop",
+            &[1, 2],
+            t("2026-10-27T10:00:00Z"),
+        )
+        .await
+        .unwrap();
+        save_list(
+            &mut conn,
+            "NEW",
+            chat,
+            "shop",
+            &[5],
+            t("2026-10-27T11:00:00Z"),
+        )
+        .await
+        .unwrap();
+        save_list(
+            &mut conn,
+            "TODO",
+            chat,
+            "todo",
+            &[9],
+            t("2026-10-27T12:00:00Z"),
+        )
+        .await
+        .unwrap();
+
+        let items = latest_list_items(&mut conn, chat, "shop").await.unwrap();
+        let ids: Vec<i64> = items.iter().map(|i| i.item_id).collect();
+        assert_eq!(ids, [5], "newest shop list, not the newer todo list");
+    }
 
     #[tokio::test]
     async fn second_mark_is_a_duplicate() {

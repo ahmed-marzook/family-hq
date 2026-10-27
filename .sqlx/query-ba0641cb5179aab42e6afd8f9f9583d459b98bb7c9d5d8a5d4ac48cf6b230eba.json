@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id FROM shopping_items\n         WHERE chat_id = ? AND bought_at IS NULL AND name = ? COLLATE NOCASE\n         ORDER BY created_at, id\n         LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "shopping_items",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "ba0641cb5179aab42e6afd8f9f9583d459b98bb7c9d5d8a5d4ac48cf6b230eba"
+}

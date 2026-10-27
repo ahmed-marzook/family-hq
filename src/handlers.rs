@@ -6,10 +6,10 @@ use sqlx::SqliteConnection;
 
 use crate::aladhan::PrayerTimes;
 use crate::error::AppError;
-use crate::parser::{BotCommand, ReplyCommand};
+use crate::parser::{BotCommand, Got, ReplyCommand};
 use crate::person::Assignee;
 use crate::prayer::{self, DayTimes, Prayer};
-use crate::repo::messages::ListItem;
+use crate::repo::messages::{self, ListItem};
 use crate::repo::prayers;
 use crate::repo::shop::{self, ShopItem};
 use crate::repo::todos::{self, OpenTodo};
@@ -35,6 +35,7 @@ pub const SHOP_ITEM: &str = "shop";
 const HELP: &str = "🤖 *Family HQ*
 +shop milk, eggs — add to this chat's shopping list
 /shop — what's left to buy; reply `1 3` to tick items off
++got milk (or +got 1 3) — tick items off without replying
 /shop clear — delete the ticked-off items
 +todo fix the tap — add a todo (assigned to you)
 +todo @Name book dentist — assign it to someone here
@@ -99,6 +100,16 @@ pub async fn run_command(
                 item_ids: to_buy.iter().map(|i| i.id).collect(),
             });
         }
+        BotCommand::GotShop(Got::Numbers(numbers)) => {
+            // Same as replying `1 3` to the newest `/shop` list here.
+            let items = messages::latest_list_items(conn, ctx.chat_id, SHOP_ITEM).await?;
+            if items.is_empty() {
+                format!("{PROBLEM} No shopping list sent here yet. Send /shop, then `+got 1 3`.")
+            } else {
+                run_list_reply(conn, ctx, &items, ReplyCommand::Tick(numbers)).await?
+            }
+        }
+        BotCommand::GotShop(Got::Names(names)) => got_by_name(conn, ctx, &names).await?,
         BotCommand::ClearShop => match shop::clear_bought(conn, ctx.chat_id).await? {
             0 => format!("{SHOP} Nothing bought to clear."),
             1 => format!("{CLEARED} Cleared 1 bought item."),
@@ -134,6 +145,27 @@ pub async fn run_command(
         BotCommand::Help => HELP.to_string(),
     };
     Ok(Outcome::Reply(text))
+}
+
+/// `+got milk, eggs`: ticks each named item off, one line per name.
+async fn got_by_name(
+    conn: &mut SqliteConnection,
+    ctx: &Context,
+    names: &[String],
+) -> Result<String, AppError> {
+    let mut lines = Vec::new();
+    for name in names {
+        let bought = match shop::find_to_buy(conn, ctx.chat_id, name).await? {
+            Some(id) => shop::mark_bought(conn, id, ctx.chat_id, ctx.sender.id, ctx.now).await?,
+            None => None,
+        };
+        lines.push(match bought {
+            // The stored name, with the capitals it was added with.
+            Some(stored) => format!("{DONE} Bought: *{stored}*"),
+            None => format!("{PROBLEM} {name} isn't on the list."),
+        });
+    }
+    Ok(lines.join("\n"))
 }
 
 /// Adds each item that isn't already on the list (ignoring case), and says
@@ -826,5 +858,57 @@ Already on the list: milk, Eggs"
             .await
             .unwrap();
         assert_eq!(reply, Outcome::Reply("🛒 Added milk".to_string()));
+    }
+
+    #[tokio::test]
+    async fn got_by_name_ticks_items_ignoring_case() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let ctx = setup(&mut conn).await;
+        run_command(&mut conn, &ctx, &times(), shop_cmd(&["Milk", "eggs"]))
+            .await
+            .unwrap();
+
+        let got = BotCommand::GotShop(Got::Names(vec!["milk".to_string(), "bread".to_string()]));
+        let reply = run_command(&mut conn, &ctx, &times(), got).await.unwrap();
+        assert_eq!(
+            reply,
+            Outcome::Reply(
+                "✅ Bought: *Milk*
+❓ bread isn't on the list."
+                    .to_string()
+            )
+        );
+
+        let (_, left) = shop_list(&mut conn, &ctx).await;
+        assert_eq!(left.len(), 1, "only eggs left");
+    }
+
+    #[tokio::test]
+    async fn got_by_number_uses_the_latest_shop_list() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let ctx = setup(&mut conn).await;
+        let got = || BotCommand::GotShop(Got::Numbers(vec![2]));
+
+        // No list sent yet.
+        let reply = run_command(&mut conn, &ctx, &times(), got()).await.unwrap();
+        assert!(
+            matches!(&reply, Outcome::Reply(t) if t.contains("Send /shop")),
+            "{reply:?}"
+        );
+
+        run_command(&mut conn, &ctx, &times(), shop_cmd(&["milk", "eggs"]))
+            .await
+            .unwrap();
+        // What the webhook does after sending a /shop list.
+        let (_, items) = shop_list(&mut conn, &ctx).await;
+        let ids: Vec<i64> = items.iter().map(|i| i.item_id).collect();
+        messages::save_list(&mut conn, "3EB0LIST", ctx.chat_id, SHOP_ITEM, &ids, ctx.now)
+            .await
+            .unwrap();
+
+        let reply = run_command(&mut conn, &ctx, &times(), got()).await.unwrap();
+        assert_eq!(reply, Outcome::Reply("✅ Bought: *eggs*".to_string()));
     }
 }

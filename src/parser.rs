@@ -19,6 +19,9 @@ pub enum BotCommand {
     ListShop,
     /// `/shop clear`
     ClearShop,
+    /// `+got milk, eggs` or `+got 1 3` (also `+bought`): tick items off
+    /// without replying to a list
+    GotShop(Got),
     /// `+todo fix the tap` or `+todo @Khadija book dentist`
     AddTodo {
         title: String,
@@ -38,6 +41,15 @@ pub enum BotCommand {
     Prayed(Vec<Prayer>),
     /// `/help`
     Help,
+}
+
+/// What `+got` refers to.
+#[derive(Debug, PartialEq)]
+pub enum Got {
+    /// `+got milk, eggs`: items on the list, by name.
+    Names(Vec<String>),
+    /// `+got 1 3`: numbers from the most recent `/shop` list in the chat.
+    Numbers(Vec<usize>),
 }
 
 /// A reply (swipe-reply) to one of the bot's numbered lists. The numbers
@@ -67,6 +79,7 @@ pub fn parse(text: &str) -> Option<BotCommand> {
 
     match first.to_lowercase().as_str() {
         "+shop" | "+buy" => parse_shop_items(rest).map(BotCommand::AddShop),
+        "+got" | "+bought" => parse_got(rest).map(BotCommand::GotShop),
         "+todo" => parse_add_todo(rest),
         "+prayed" => parse_prayed(rest).map(BotCommand::Prayed),
 
@@ -118,6 +131,16 @@ pub fn parse_reply(text: &str) -> Option<ReplyCommand> {
             Some(ReplyCommand::Tick(numbers))
         }
     }
+}
+
+/// "1 3" → numbers; "milk, eggs" → names. Numbers only when *every* word
+/// is a list number, so "2 pints milk" is still an item name.
+fn parse_got(rest: &str) -> Option<Got> {
+    // Reuses the reply parser: "1 3", "1,3" → Tick([1, 3]).
+    if let Some(ReplyCommand::Tick(numbers)) = parse_reply(rest) {
+        return Some(Got::Numbers(numbers));
+    }
+    parse_shop_items(rest).map(Got::Names)
 }
 
 /// "milk, eggs\nbread" → ["milk", "eggs", "bread"]. `None` if no items.
@@ -303,6 +326,43 @@ mod tests {
         assert_eq!(parse("+shop"), None);
         assert_eq!(parse("+shop   "), None);
         assert_eq!(parse("+shop , ,"), None);
+    }
+
+    // ---- +got ----
+
+    #[test]
+    fn got_by_name() {
+        let names = |n: &[&str]| n.iter().map(|s| s.to_string()).collect();
+        assert_eq!(
+            parse("+got milk, Eggs"),
+            Some(BotCommand::GotShop(Got::Names(names(&["milk", "Eggs"]))))
+        );
+        assert_eq!(
+            parse("+Bought 2 pints milk"),
+            Some(BotCommand::GotShop(Got::Names(names(&["2 pints milk"]))))
+        );
+    }
+
+    #[test]
+    fn got_by_number() {
+        assert_eq!(
+            parse("+got 1 3"),
+            Some(BotCommand::GotShop(Got::Numbers(vec![1, 3])))
+        );
+        assert_eq!(
+            parse("+got 3,1"),
+            Some(BotCommand::GotShop(Got::Numbers(vec![1, 3])))
+        );
+        assert_eq!(
+            parse("+bought 2"),
+            Some(BotCommand::GotShop(Got::Numbers(vec![2])))
+        );
+    }
+
+    #[test]
+    fn got_with_nothing_is_none() {
+        assert_eq!(parse("+got"), None);
+        assert_eq!(parse("+got ,"), None);
     }
 
     // ---- +todo ----

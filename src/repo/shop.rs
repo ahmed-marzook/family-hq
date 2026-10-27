@@ -53,6 +53,25 @@ pub async fn is_on_list(
     .await
 }
 
+/// The id of the unbought item called `name` (ignoring case), if any. If
+/// the same name is somehow on the list twice, the oldest comes first.
+pub async fn find_to_buy(
+    conn: &mut SqliteConnection,
+    chat_id: i64,
+    name: &str,
+) -> Result<Option<i64>, sqlx::Error> {
+    sqlx::query_scalar!(
+        "SELECT id FROM shopping_items
+         WHERE chat_id = ? AND bought_at IS NULL AND name = ? COLLATE NOCASE
+         ORDER BY created_at, id
+         LIMIT 1",
+        chat_id,
+        name
+    )
+    .fetch_optional(conn)
+    .await
+}
+
 /// Items still to buy, oldest first. That order is what the numbers in a
 /// `/shop` list refer to.
 pub async fn list_to_buy(

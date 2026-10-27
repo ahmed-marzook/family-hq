@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT position, item_type, item_id FROM wa_message_context\n         WHERE wa_message_id = (\n             SELECT wa_message_id FROM wa_message_context\n             WHERE chat_id = ?1 AND item_type = ?2\n             ORDER BY created_at DESC, rowid DESC\n             LIMIT 1\n         )\n         ORDER BY position",
+  "describe": {
+    "columns": [
+      {
+        "name": "position",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "wa_message_context",
+            "name": "position"
+          }
+        }
+      },
+      {
+        "name": "item_type",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "wa_message_context",
+            "name": "item_type"
+          }
+        }
+      },
+      {
+        "name": "item_id",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "wa_message_context",
+            "name": "item_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "488e54b6df130b7e017b20027ce4fbdd0dee24986f1056e8533c7eb4090f5380"
+}

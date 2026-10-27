@@ -26,6 +26,7 @@ private list.
 |---|---|
 | `+shop milk, eggs` | Add to this chat's shopping list |
 | `/shop` | Show the list; reply `1 3` to tick items off, `remove 2` to delete one |
+| `+got milk, eggs` or `+got 1 3` | Tick items off without replying (numbers are from the latest `/shop` list) |
 | `/shop clear` | Delete the ticked-off items |
 | `+todo fix the tap` | Add a todo, assigned to you |
 | `+todo @Khadija book dentist` | Add a todo assigned to someone in the group |
