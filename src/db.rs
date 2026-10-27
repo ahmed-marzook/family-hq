@@ -39,6 +39,27 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::migrate::MigrateErro
     sqlx::migrate!().run(pool).await
 }
 
+/// A fresh, fully migrated database in memory, for tests anywhere in the
+/// crate. `#[cfg(test)]` leaves it out of the real binary; `pub(crate)`
+/// means "visible inside this crate only".
+///
+/// One connection only: every connection to `sqlite::memory:` gets its
+/// *own* empty database, so a pool of several would lose tables between
+/// queries.
+#[cfg(test)]
+pub(crate) async fn test_pool() -> SqlitePool {
+    let options = SqliteConnectOptions::from_str("sqlite::memory:")
+        .unwrap()
+        .foreign_keys(true);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .unwrap();
+    migrate(&pool).await.unwrap();
+    pool
+}
+
 #[cfg(test)]
 mod tests {
     //! Tests for the schema's constraints: each one tries a good row and
@@ -59,22 +80,8 @@ mod tests {
     const KHADIJA: i64 = 2;
     const FAMILY_GROUP: i64 = 1;
 
-    /// A fresh, fully migrated database in memory.
-    ///
-    /// One connection only: every connection to `sqlite::memory:` gets its
-    /// *own* empty database, so a pool of several would lose tables
-    /// between queries.
     async fn test_db() -> SqlitePool {
-        let options = SqliteConnectOptions::from_str("sqlite::memory:")
-            .unwrap()
-            .foreign_keys(true);
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(options)
-            .await
-            .unwrap();
-        migrate(&pool).await.unwrap();
-        pool
+        test_pool().await
     }
 
     /// Bilal and Khadija, a family group with both in it, and Bilal's DM.

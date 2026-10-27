@@ -11,6 +11,11 @@ COPY src ./src
 # `sqlx::migrate!()` reads these at compile time and builds them into the
 # binary, so they're needed here but not in the final image.
 COPY migrations ./migrations
+# The `query!` macros normally check SQL against a live database while
+# compiling. There's none here, so they read the checked results saved in
+# .sqlx/ by `cargo sqlx prepare` instead.
+COPY .sqlx ./.sqlx
+ENV SQLX_OFFLINE=true
 
 # The cache mounts keep downloaded crates and compiled dependencies between
 # builds, so changing one line of our code doesn't recompile axum and tokio.

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE users SET wa_lid = ? WHERE id = ? AND wa_lid IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "27c9d1149f9ba9d8bafb7663f6998d6dc92c577c0208ae3431ff5392635cb67a"
+}

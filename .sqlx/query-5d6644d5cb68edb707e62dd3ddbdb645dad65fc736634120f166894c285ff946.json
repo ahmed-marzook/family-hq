@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO chat_members (chat_id, user_id, joined_at)\n         VALUES (?, ?, ?)\n         ON CONFLICT (chat_id, user_id) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "5d6644d5cb68edb707e62dd3ddbdb645dad65fc736634120f166894c285ff946"
+}

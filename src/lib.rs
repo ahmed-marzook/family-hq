@@ -3,8 +3,11 @@
 
 pub mod config;
 pub mod db;
+pub mod error;
+pub mod handlers;
 pub mod parser;
 pub mod person;
+pub mod repo;
 pub mod routes;
 pub mod whatsapp;
 

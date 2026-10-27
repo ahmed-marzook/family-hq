@@ -57,4 +57,45 @@ impl Gowa {
             .error_for_status()?;
         Ok(())
     }
+
+    /// Sends `text` to `chat_id`, as a quoted reply to `reply_to` if given.
+    /// Returns the new message's WhatsApp ID (needed to save list numbers).
+    pub async fn send_text(
+        &self,
+        chat_id: &str,
+        text: &str,
+        reply_to: Option<&str>,
+    ) -> Result<String, reqwest::Error> {
+        let mut body = json!({ "phone": chat_id, "message": text });
+        if let Some(id) = reply_to {
+            body["reply_message_id"] = json!(id);
+        }
+
+        let response: SendResponse = self
+            .http
+            .post(format!("{}/send/message", self.base_url))
+            .basic_auth(&self.user, Some(&self.password))
+            .json(&body)
+            .send()
+            .await?
+            .error_for_status()?
+            // Parses the JSON reply into `SendResponse`; a reply without
+            // `results.message_id` is an error too.
+            .json()
+            .await?;
+        Ok(response.results.message_id)
+    }
+}
+
+/// GOWA's reply to `/send/message`:
+/// `{"code":"SUCCESS","results":{"message_id":"3EB0...","status":"..."}}`.
+/// Only the field we need; serde ignores the rest.
+#[derive(serde::Deserialize)]
+struct SendResponse {
+    results: SendResults,
+}
+
+#[derive(serde::Deserialize)]
+struct SendResults {
+    message_id: String,
 }

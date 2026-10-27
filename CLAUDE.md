@@ -58,7 +58,7 @@ docker compose up --build      # run the full stack
   clock inside them, so they can be tested.
 - Errors: a `thiserror` `AppError` type, not `String`.
 - Deduplicate WhatsApp webhooks by message ID (`processed_messages`).
-- Ignore messages from senders not in `users`, and from the bot itself.
+- Register senders automatically on their first message (`repo::users::find_or_register`); ignore the bot's own messages (`is_from_me`).
 - Write emoji as exact constants in code (e.g. `const DONE: &str = "✅";`).
 
 ## Don't

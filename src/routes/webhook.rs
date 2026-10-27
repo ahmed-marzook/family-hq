@@ -8,13 +8,18 @@
 use std::sync::Arc;
 
 use axum::{body::Bytes, extract::State, http::HeaderMap, http::StatusCode};
+use chrono::{DateTime, Utc};
 use hmac::{Hmac, KeyInit, Mac};
 use serde::Deserialize;
 use sha2::Sha256;
 
 use crate::AppState;
-use crate::parser::{self, BotCommand};
+use crate::error::AppError;
+use crate::handlers::{self, Context, Outcome};
+use crate::parser::{self, BotCommand, ReplyCommand};
 use crate::person::{Assignee, Person};
+use crate::repo::messages::{self, ListItem};
+use crate::repo::{chats, users};
 use crate::whatsapp;
 
 /// HMAC using SHA-256 as its hash. A type alias just gives a long type a
@@ -54,6 +59,8 @@ pub struct Message {
     pub from_name: Option<String>,
     /// The text. `Option` because stickers and media have no `body`.
     pub body: Option<String>,
+    /// When this is a (swipe) reply: the ID of the message it quotes.
+    pub replied_to_id: Option<String>,
     /// `true` for messages the bot itself sent. `#[serde(default)]` means
     /// "use `false` if the field is missing".
     #[serde(default)]
@@ -128,46 +135,171 @@ pub async fn whatsapp(
         }
     };
 
-    handle_event(&state, event).await;
-    StatusCode::OK
+    // The clock is read once, here at the edge, and passed down, so
+    // everything below can be tested with a fixed time.
+    let result = match event {
+        WebhookEvent::Message(msg) => handle_message(&state, msg, Utc::now()).await,
+        WebhookEvent::Reaction(r) => {
+            println!(
+                "webhook: {} reacted {:?} to {} in {}",
+                r.from, r.reaction, r.reacted_message_id, r.chat_id
+            );
+            Ok(())
+        }
+    };
+
+    // A database error means nothing was saved (the transaction rolled
+    // back), so answer 500 and let GOWA retry.
+    match result {
+        Ok(()) => StatusCode::OK,
+        Err(err) => {
+            println!("webhook: failed: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    }
 }
 
-/// Decides what, if anything, to do with an event. For now it logs and
-/// acknowledges commands; later stages put the database and replies here.
-///
-/// `async` because acknowledging means calling GOWA over the network.
-async fn handle_event(state: &AppState, event: WebhookEvent) {
-    match event {
-        // The bot's own messages come back through the webhook too.
-        // Reacting to them could make the bot answer itself forever.
-        WebhookEvent::Message(msg) if msg.is_from_me => {
-            println!("webhook: skipped own message {}", msg.id);
-        }
-        WebhookEvent::Message(msg) => match msg.body.as_deref().map(parser::parse) {
-            Some(Some(command)) => {
-                let command = assign_to_sender(command, msg.sender());
-                println!(
-                    "webhook: message {} from {} in {}: {command:?}",
-                    msg.id, msg.from, msg.chat_id
-                );
+/// What a message asks the bot to do.
+enum Action {
+    Command(BotCommand),
+    /// A reply to one of the bot's lists: what the list showed, and the reply.
+    ListReply(Vec<ListItem>, ReplyCommand),
+}
 
-                // Thumbs-up on the message so the sender knows it was seen.
-                // A failed reaction is logged, not fatal: the command still
-                // counts, and returning an error would make GOWA resend it.
-                if let Err(err) = state.gowa.react(&msg.chat_id, &msg.id, whatsapp::ACK).await {
-                    println!("webhook: couldn't react to {}: {err}", msg.id);
-                }
-            }
-            Some(None) => println!("webhook: message {} is chat, not a command", msg.id),
-            None => println!("webhook: skipped message {} with no text", msg.id),
-        },
-        WebhookEvent::Reaction(r) if r.is_from_me => {
-            println!("webhook: skipped own reaction {}", r.id);
+/// Handles one incoming message: register who sent it and where, work out
+/// whether it's for the bot, act on it, then react and reply.
+async fn handle_message(
+    state: &AppState,
+    msg: Message,
+    now: DateTime<Utc>,
+) -> Result<(), AppError> {
+    // The bot's own messages come back through the webhook too. Answering
+    // them could make the bot talk to itself forever.
+    if msg.is_from_me {
+        println!("webhook: skipped own message {}", msg.id);
+        return Ok(());
+    }
+    let Some(text) = msg.body.as_deref() else {
+        println!("webhook: skipped message {} with no text", msg.id);
+        return Ok(());
+    };
+
+    // Everything below happens in one transaction: if any step fails,
+    // none of it is saved. Dropping `tx` without `commit` rolls it back.
+    // `&mut tx` works where a `&mut SqliteConnection` is expected, because
+    // a transaction derefs to its connection.
+    let mut tx = state.db.begin().await?;
+
+    let sender = msg.sender();
+    let Some(user) = users::find_or_register(&mut tx, &sender, now).await? else {
+        println!("webhook: can't register {} (no phone number)", msg.from);
+        return Ok(());
+    };
+    // `then_some`: `Some(user.id)` if this isn't a group, else `None`.
+    let dm_owner = (!msg.chat_id.ends_with("@g.us")).then_some(user.id);
+    let chat_id = chats::find_or_create(&mut tx, &msg.chat_id, dm_owner, now).await?;
+    chats::add_member(&mut tx, chat_id, user.id, now).await?;
+
+    let Some(action) = action_for(&mut tx, &msg, text, chat_id, sender).await? else {
+        // Ordinary chat: keep the registration, nothing else to do.
+        tx.commit().await?;
+        println!("webhook: message {} is chat, not a command", msg.id);
+        return Ok(());
+    };
+
+    // A retried webhook stops here. Returning drops `tx`, so nothing from
+    // this second delivery is saved.
+    if !messages::mark_processed(&mut tx, &msg.id, now).await? {
+        println!("webhook: skipped {} (already handled)", msg.id);
+        return Ok(());
+    }
+
+    let ctx = Context {
+        chat_id,
+        sender: user,
+        now,
+    };
+    let outcome = match action {
+        Action::Command(command) => {
+            println!(
+                "webhook: {} in {}: {command:?}",
+                ctx.sender.display_name, msg.chat_id
+            );
+            handlers::run_command(&mut tx, &ctx, command).await?
         }
-        WebhookEvent::Reaction(r) => println!(
-            "webhook: {} reacted {:?} to {} in {}",
-            r.from, r.reaction, r.reacted_message_id, r.chat_id
-        ),
+        Action::ListReply(items, reply) => {
+            println!(
+                "webhook: {} replied {reply:?} to a list",
+                ctx.sender.display_name
+            );
+            Outcome::Reply(handlers::run_list_reply(&mut tx, &ctx, &items, reply).await?)
+        }
+    };
+    tx.commit().await?;
+
+    // Saved. From here on, failures are logged but not returned: a 500
+    // would make GOWA retry, and the retry would be skipped as a duplicate.
+    react(state, &msg).await;
+    match outcome {
+        Outcome::Reply(text) => {
+            send(state, &msg, &text).await;
+        }
+        Outcome::TodoList { text, todo_ids } => {
+            // Remember what each number in this list means, so replies like
+            // `done 2` can find the right todo later.
+            if let Some(list_id) = send(state, &msg, &text).await {
+                let mut conn = state.db.acquire().await?;
+                let todo = handlers::TODO_ITEM;
+                messages::save_list(&mut conn, &list_id, chat_id, todo, &todo_ids, now).await?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Works out what the message asks for, if anything.
+///
+/// A reply like `done 2` only counts when it quotes one of the bot's lists
+/// in this chat; otherwise the text is read as a normal command.
+async fn action_for(
+    conn: &mut sqlx::SqliteConnection,
+    msg: &Message,
+    text: &str,
+    chat_id: i64,
+    sender: Person,
+) -> Result<Option<Action>, AppError> {
+    // `if let ... && let ...` (let chains): both must match to enter.
+    if let Some(quoted) = &msg.replied_to_id
+        && let Some(reply) = parser::parse_reply(text)
+    {
+        let items = messages::list_items(conn, quoted, chat_id).await?;
+        if !items.is_empty() {
+            return Ok(Some(Action::ListReply(items, reply)));
+        }
+    }
+
+    Ok(parser::parse(text).map(|command| Action::Command(assign_to_sender(command, sender))))
+}
+
+/// Thumbs-up on the message so the sender knows it was seen.
+async fn react(state: &AppState, msg: &Message) {
+    if let Err(err) = state.gowa.react(&msg.chat_id, &msg.id, whatsapp::ACK).await {
+        println!("webhook: couldn't react to {}: {err}", msg.id);
+    }
+}
+
+/// Replies in the same chat, quoting `msg`. Returns the sent message's ID.
+async fn send(state: &AppState, msg: &Message, text: &str) -> Option<String> {
+    match state
+        .gowa
+        .send_text(&msg.chat_id, text, Some(&msg.id))
+        .await
+    {
+        Ok(id) => Some(id),
+        Err(err) => {
+            println!("webhook: couldn't reply to {}: {err}", msg.id);
+            None
+        }
     }
 }
 

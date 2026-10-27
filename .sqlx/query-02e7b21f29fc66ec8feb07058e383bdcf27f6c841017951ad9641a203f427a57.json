@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO wa_message_context\n                (wa_message_id, chat_id, position, item_type, item_id, created_at)\n             VALUES (?, ?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "02e7b21f29fc66ec8feb07058e383bdcf27f6c841017951ad9641a203f427a57"
+}

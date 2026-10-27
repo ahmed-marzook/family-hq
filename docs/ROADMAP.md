@@ -26,33 +26,41 @@ family for at least two weeks**. Real use finds the problems that matter.
   (+ `ntfy` from Phase 2).
 - **All times are stored in UTC.** They're converted to `Europe/London` only
   when deciding what "today" or "this morning" means.
-- **Shopping is always family scope.** `+shop milk` sent in a DM still goes
-  on the shared family list (handy when you're out). Todos follow the chat:
-  group → family, DM → personal.
-- **Only known people can use the bot.** Messages from WhatsApp IDs that
-  aren't in the `users` table are ignored.
+- **Every list belongs to the chat it's used in.** Each group the bot is in
+  has its own shopping list and todos, so several groups (e.g. different
+  families) work side by side without mixing. A DM with the bot is that
+  person's private list: `+shop` in a DM adds to your own list, not a
+  group's.
+- **Anyone who messages the bot is registered automatically**, named after
+  the first word of their WhatsApp profile name (used for `@name`).
 
 ---
 
 ## Phase 1: Todo & Shop
 
-**Goal:** the family WhatsApp group has a working shared shopping list and
-todo list, and each person can keep private todos in a DM with the bot.
+**Goal:** each WhatsApp group the bot is in has a working shared shopping
+list and todo list, and each person can keep private lists in a DM with the
+bot.
 
 ### Commands (Phase 1)
 
-| Message | Where | Effect |
-|---|---|---|
-| `+shop milk, eggs, bread` (or `+buy`) | group or DM | Adds each item to the family shopping list |
-| `/shop` | group or DM | Numbered list of items still to buy |
-| reply `1 3` to a `/shop` list | group or DM | Ticks off items 1 and 3 |
-| `/shop clear` | group or DM | Deletes ticked-off items |
-| `+todo fix the tap` | group → family, DM → personal | Adds a todo |
-| `+todo @Khadija book dentist` | group | Adds a family todo assigned to Khadija |
-| `/todo` | group → family, DM → personal | Numbered list of open todos |
-| reply `done 2` to a `/todo` list | same chat | Completes todo 2 |
-| reply `remove 2` to a `/todo` list | same chat | Deletes todo 2 |
-| `/help` | anywhere | Lists the commands |
+Every command works in a group or a DM and acts on **that chat's** lists.
+
+| Message | Effect |
+|---|---|
+| `+shop milk, eggs, bread` (or `+buy`) | Adds each item to this chat's shopping list |
+| `/shop` | Numbered list of items still to buy |
+| reply `1 3` to a `/shop` list | Ticks off items 1 and 3 |
+| `/shop clear` | Deletes ticked-off items |
+| `+todo fix the tap` | Adds a todo, assigned to whoever sent it |
+| `+todo @Khadija book dentist` | Adds a todo assigned to Khadija (a member of this group) |
+| `/todo` | Numbered list of this chat's open todos |
+| reply `done 2` to a `/todo` list | Completes todo 2 |
+| reply `remove 2` to a `/todo` list | Deletes todo 2 |
+| `/help` | Lists the commands |
+
+The bot reacts 👍 to every message it understands as a command, so the
+sender knows it was seen.
 
 Numbers always refer to **the list message being replied to**, never
 "whatever the list looks like now" (see `wa_message_context` below). That
@@ -80,7 +88,8 @@ Done when:
 Build:
 - SQLx with migrations (`migrations/0001_init.sql`), run on startup with
   `sqlx::migrate!`.
-- Tables: `users`, `todos`, `shopping_items` (draft schema below).
+- Tables: `users`, `chats`, `chat_members`, `todos`, `shopping_items`,
+  plus the WhatsApp bookkeeping tables (see "Phase 1 schema" below).
 - An `AppState` holding the `SqlitePool`, shared with handlers.
 - JSON endpoints for testing by hand: `GET/POST /api/shop`,
   `POST /api/shop/:id/bought`, `GET/POST /api/todos`,
@@ -103,7 +112,7 @@ Build:
 - `parser.rs`: a **pure function** `parse(text: &str) -> Option<BotCommand>`.
   Returns `None` for ordinary chat (most group messages aren't commands).
 - `BotCommand` enum: `AddShop(Vec<String>)`, `ListShop`, `ClearShop`,
-  `AddTodo { title, assignee: Option<String> }`, `ListTodos`, `Help`, …
+  `AddTodo { title, assignee: Option<Assignee> }`, `ListTodos`, `Help`, …
 - Reply parsing: `"1 3"` → `[1, 3]`, `"done 2"` → `Done(2)`.
 - Lots of unit tests: extra spaces, capital letters, `+Shop`, empty
   `+shop`, `+todo @` with no name, commas vs `and`.
@@ -121,9 +130,11 @@ Build:
 - `POST /webhook/whatsapp`: receives GOWA events.
 - Check the webhook signature using the shared secret from GOWA's config.
   Reject anything unsigned.
-- `ChatScope` from the chat ID: ends in `@g.us` → `Family`, ends in
-  `@s.whatsapp.net` → `Personal(user_id)`.
-- Ignore senders not in `users`, and ignore the bot's own messages.
+- Find the `chats` row for the message's chat ID (`@g.us` → group,
+  `@s.whatsapp.net` → DM), creating it the first time someone uses
+  the bot there. Every item saved gets that chat's `id`.
+- Register new senders in `users` (matched by phone ID or LID), and ignore
+  the bot's own messages.
 - **Deduplicate:** store each WhatsApp message ID in `processed_messages`
   (primary key). If the insert fails because the ID is already there, it's a
   retry, so skip it.
@@ -134,8 +145,10 @@ Build:
 New concepts: webhooks, HMAC signature checks, `reqwest`, idempotency.
 
 Done when:
-- [ ] `+shop` and `+todo` from the family group and from a DM both work
-- [ ] A message from an unknown number does nothing
+- [ ] `+shop` and `+todo` from a group and from a DM both work, each going
+      on that chat's list
+- [ ] Two groups have separate lists
+- [ ] A first message from a new number registers them, once
 - [ ] Sending the same webhook body twice adds the item only once
 - [ ] A request with a bad signature gets `401`
 
@@ -163,10 +176,11 @@ Done when:
 
 Build:
 - `+todo @Khadija …` resolves the name against `users.display_name`
-  (case-insensitive). An unknown name gives an error reply listing valid names.
+  (case-insensitive), among the members of this chat (`chat_members`).
+  An unknown name gives an error reply listing valid names.
 - `/todo` in the group shows who each todo is assigned to.
 - `/help`.
-- Logging with `tracing` (every webhook: who, which scope, which command,
+- Logging with `tracing` (every webhook: who, which chat, which command,
   result).
 - Daily SQLite backup (`VACUUM INTO`) to a second volume.
 
@@ -174,62 +188,29 @@ Done when:
 - [ ] The family uses it for two weeks
 - [ ] Every bug found in those two weeks has a test
 
-### Phase 1 draft schema
+### Phase 1 schema
 
-```sql
-CREATE TABLE users (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    display_name  TEXT NOT NULL UNIQUE,            -- 'Bilal', 'Khadija'
-    wa_jid        TEXT NOT NULL UNIQUE,            -- '4479...@s.whatsapp.net'
-    created_at    TEXT NOT NULL
-);
+The real schema is [`migrations/0001_init.sql`](../migrations/0001_init.sql),
+with comments on every table and constraint. In short:
 
-CREATE TABLE shopping_items (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    name        TEXT NOT NULL CHECK (length(trim(name)) > 0),
-    added_by    INTEGER NOT NULL REFERENCES users(id),
-    bought_by   INTEGER REFERENCES users(id),      -- NULL = still to buy
-    bought_at   TEXT,
-    created_at  TEXT NOT NULL,
-    CHECK ((bought_by IS NULL) = (bought_at IS NULL))
-);
+| Table | Holds |
+|---|---|
+| `users` | People who can use the bot: `display_name` (case-insensitive, for `@name`), `wa_jid` (phone ID), `wa_lid` (LID) |
+| `chats` | Each group or DM the bot works in: `wa_chat_id`, `kind` (`group`/`dm`), group `name`, `dm_user_id` |
+| `chat_members` | Who is in which group, so `@name` only matches people in that group |
+| `shopping_items` | Items on a chat's list: `chat_id`, `name`, `added_by`, `bought_by` + `bought_at` |
+| `todos` | Todos on a chat's list: `chat_id`, `title`, `created_by`, `assignee_id`, `status`, `completed_by` + `completed_at` |
+| `processed_messages` | WhatsApp message IDs already handled, so webhook retries can't add things twice |
+| `wa_message_context` | "Item 2 in the list the bot sent in message X, in chat Y" → the real row |
 
-CREATE TABLE todos (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    title         TEXT NOT NULL CHECK (length(trim(title)) > 0),
-    scope         TEXT NOT NULL CHECK (scope IN ('family', 'personal')),
-    owner_id      INTEGER REFERENCES users(id),    -- set for personal todos
-    assignee_id   INTEGER REFERENCES users(id),    -- optional, family todos
-    created_by    INTEGER NOT NULL REFERENCES users(id),
-    status        TEXT NOT NULL DEFAULT 'pending'
-                  CHECK (status IN ('pending', 'completed')),
-    completed_at  TEXT,
-    created_at    TEXT NOT NULL,
-    -- personal todos must have an owner; family todos must not
-    CHECK ((scope = 'personal') = (owner_id IS NOT NULL))
-);
+Every list row has a `chat_id`; that's what keeps groups apart and makes a
+DM a private list. All tables are `STRICT` (SQLite rejects wrong types),
+with `CHECK` constraints as a safety net behind Rust's own validation.
 
--- Every WhatsApp message already handled. Stops webhook retries
--- from adding things twice.
-CREATE TABLE processed_messages (
-    wa_message_id  TEXT PRIMARY KEY,
-    received_at    TEXT NOT NULL
-);
-
--- "Item 2 in the list I sent in message X" → the real row.
-CREATE TABLE wa_message_context (
-    wa_message_id  TEXT NOT NULL,       -- the bot's list/confirmation message
-    position       INTEGER NOT NULL,    -- the number shown (1, 2, 3...)
-    item_type      TEXT NOT NULL CHECK (item_type IN ('todo', 'shop')),
-    item_id        INTEGER NOT NULL,
-    created_at     TEXT NOT NULL,
-    PRIMARY KEY (wa_message_id, position)
-);
-```
-
-`item_id` can't have a foreign key, because it points at one of two tables.
-Instead, the code checks the row still exists when it's used. Old rows in
-`wa_message_context` and `processed_messages` can be deleted after 30 days.
+`wa_message_context.item_id` can't have a foreign key, because it points at
+one of two tables. Instead, the code checks the row still exists when it's
+used. Old rows in `wa_message_context` and `processed_messages` can be
+deleted after 30 days.
 
 ### Planned layout
 
@@ -252,12 +233,14 @@ family-hq/
     │   ├── health.rs
     │   ├── api.rs         # JSON endpoints (Stage 1.2)
     │   └── webhook.rs     # GOWA webhook (Stage 1.4)
+    ├── db.rs              # open the pool, run migrations
     ├── parser.rs          # text → BotCommand (pure, heavily tested)
-    ├── scope.rs           # ChatScope from chat IDs
+    ├── person.rs          # Person and Assignee
     ├── whatsapp.rs        # GOWA REST client
     ├── handlers.rs        # BotCommand → database changes → reply text
     └── repo/
         ├── users.rs
+        ├── chats.rs       # chats + chat_members
         ├── todos.rs
         ├── shop.rs
         └── messages.rs    # processed_messages + wa_message_context

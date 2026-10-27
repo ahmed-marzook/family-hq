@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE todos\n         SET status = 'completed', completed_by = ?, completed_at = ?\n         WHERE id = ? AND chat_id = ? AND status = 'pending'\n         RETURNING title",
+  "describe": {
+    "columns": [
+      {
+        "name": "title",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "todos",
+            "name": "title"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "3d902a9bd845f88da6a5d8b2c27ed01f88f6b1675780fc6ead516c2ce9e67924"
+}

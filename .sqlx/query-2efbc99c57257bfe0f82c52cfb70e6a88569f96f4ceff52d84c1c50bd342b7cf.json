@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO processed_messages (wa_message_id, received_at)\n         VALUES (?, ?)\n         ON CONFLICT (wa_message_id) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "2efbc99c57257bfe0f82c52cfb70e6a88569f96f4ceff52d84c1c50bd342b7cf"
+}
