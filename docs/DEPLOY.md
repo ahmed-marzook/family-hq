@@ -63,7 +63,7 @@ echo "GOWA_WEBHOOK_SECRET=$(openssl rand -hex 32)"
 ```
 
 Paste those two lines into `.env` (replacing the `change-me` ones) with
-`nano .env`. Leave `FAMILY_HQ_TAG=0.2.0`. Then lock it down, since it holds
+`nano .env`. Leave `FAMILY_HQ_TAG=0.3.0`. Then lock it down, since it holds
 the passwords:
 
 ```sh
@@ -148,13 +148,13 @@ boot, which `get.docker.com` sets up).
 
 ## Releasing a new version (on the laptop)
 
-1. Bump `version` in `Cargo.toml` (e.g. `0.1.0` → `0.2.0`).
+1. Bump `version` in `Cargo.toml` (e.g. `0.3.0` → `0.4.0`).
 2. If you changed any SQL: `cargo sqlx prepare` (and commit `.sqlx/`).
 3. Check: `cargo fmt --check && cargo clippy --all-targets && cargo test`.
 4. Commit, then build and push both tags:
 
    ```sh
-   V=0.2.0
+   V=0.4.0
    docker build --platform linux/amd64 -t kaizenflow/family-hq:$V -t kaizenflow/family-hq:latest .
    docker push kaizenflow/family-hq:$V
    docker push kaizenflow/family-hq:latest
@@ -166,7 +166,7 @@ boot, which `get.docker.com` sets up).
 
 ```sh
 cd ~/family-hq
-nano .env                     # FAMILY_HQ_TAG=0.2.0
+nano .env                     # FAMILY_HQ_TAG=0.4.0
 docker compose pull
 docker compose up -d          # recreates only what changed
 docker image prune -f         # delete the old image
