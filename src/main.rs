@@ -16,7 +16,7 @@ async fn main() {
     println!("database ready at {}", config.database_url);
 
     let port = config.port;
-    let location = config.prayer_location.clone();
+    let defaults = config.defaults.clone();
     let state = AppState::new(config, db);
 
     // `tokio::spawn` starts the reminder loop as a separate task that runs
@@ -24,8 +24,8 @@ async fn main() {
     // stops when `main` returns.
     tokio::spawn(family_hq::reminders::run(state.clone()));
     println!(
-        "prayer reminders on for {}, {} (method {})",
-        location.city, location.country, location.method
+        "defaults: {}, {} ({}), prayer method {}",
+        defaults.city, defaults.country, defaults.timezone, defaults.prayer_method
     );
 
     // 0.0.0.0 = listen on every network interface, which is needed inside

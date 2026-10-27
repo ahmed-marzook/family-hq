@@ -3,7 +3,9 @@
 use std::env;
 use std::str::FromStr;
 
-use crate::aladhan::Location;
+use chrono_tz::Tz;
+
+use crate::settings::Settings;
 
 /// Everything the server needs to know at startup.
 #[derive(Debug, Clone)]
@@ -20,12 +22,9 @@ pub struct Config {
     /// The SQLite database (`DATABASE_URL`), e.g. `sqlite:family-hq.db`.
     /// Same variable name the `sqlx` command-line tool uses.
     pub database_url: String,
-    /// Where and how prayer times are calculated (`PRAYER_CITY`,
-    /// `PRAYER_COUNTRY`, `PRAYER_METHOD`, `PRAYER_SCHOOL`).
-    pub prayer_location: Location,
-    /// How many minutes before each prayer the reminder goes out
-    /// (`PRAYER_REMINDER_MINUTES`).
-    pub prayer_reminder_minutes: i64,
+    /// Settings for every chat that hasn't chosen its own (`DEFAULT_*`).
+    /// Chats change theirs with `/settings ...`.
+    pub defaults: Settings,
 }
 
 impl Config {
@@ -36,10 +35,11 @@ impl Config {
     /// | `PORT` | 3000 |
     /// | `GOWA_URL` | `http://localhost:3001` |
     /// | `DATABASE_URL` | `sqlite:family-hq.db` (next to where you run it) |
-    /// | `PRAYER_CITY` / `PRAYER_COUNTRY` | Milton Keynes / GB |
-    /// | `PRAYER_METHOD` | 3 (Muslim World League) |
-    /// | `PRAYER_SCHOOL` | 0 (standard Asr; 1 = Hanafi) |
-    /// | `PRAYER_REMINDER_MINUTES` | 10 |
+    /// | `DEFAULT_TIMEZONE` | Europe/London |
+    /// | `DEFAULT_CITY` / `DEFAULT_COUNTRY` | Milton Keynes / GB |
+    /// | `DEFAULT_PRAYER_METHOD` | 3 (Muslim World League) |
+    /// | `DEFAULT_PRAYER_SCHOOL` | 0 (Shafi'i Asr; 1 = Hanafi) |
+    /// | `DEFAULT_PRAYER_ENDING_MINUTES` | 20 |
     ///
     /// `GOWA_WEBHOOK_SECRET` and `GOWA_BASIC_AUTH` have no default and must
     /// be set.
@@ -50,13 +50,14 @@ impl Config {
             gowa_url: text_or("GOWA_URL", "http://localhost:3001"),
             gowa_basic_auth: required("GOWA_BASIC_AUTH"),
             database_url: text_or("DATABASE_URL", "sqlite:family-hq.db"),
-            prayer_location: Location {
-                city: text_or("PRAYER_CITY", "Milton Keynes"),
-                country: text_or("PRAYER_COUNTRY", "GB"),
-                method: number_or("PRAYER_METHOD", 3),
-                school: number_or("PRAYER_SCHOOL", 0),
+            defaults: Settings {
+                timezone: timezone_or("DEFAULT_TIMEZONE", chrono_tz::Europe::London),
+                city: text_or("DEFAULT_CITY", "Milton Keynes"),
+                country: text_or("DEFAULT_COUNTRY", "GB"),
+                prayer_method: number_or("DEFAULT_PRAYER_METHOD", 3),
+                prayer_school: number_or("DEFAULT_PRAYER_SCHOOL", 0),
+                prayer_ending_minutes: number_or("DEFAULT_PRAYER_ENDING_MINUTES", 20),
             },
-            prayer_reminder_minutes: number_or("PRAYER_REMINDER_MINUTES", 10),
         }
     }
 }
@@ -84,13 +85,24 @@ fn text_or(name: &str, default: &str) -> String {
 /// Generic: `T` can be any type that implements `FromStr` (u8, u16, i64,
 /// ...), and the caller's expected type picks it. A value that *is* set but
 /// isn't a valid number stops the server, because silently using the
-/// default for a typo like `PRAYER_METHOD=e` would give wrong prayer times.
+/// default for a typo like `DEFAULT_PRAYER_METHOD=e` would give wrong prayer times.
 fn number_or<T: FromStr>(name: &str, default: T) -> T {
     match env::var(name) {
         Ok(text) if !text.trim().is_empty() => text
             .trim()
             .parse()
             .unwrap_or_else(|_| panic!("{name} must be a number, got {text:?}")),
+        _ => default,
+    }
+}
+
+/// Reads an IANA timezone name like "Europe/London", or `default` if the
+/// variable isn't set. A misspelt name stops the server at startup.
+fn timezone_or(name: &str, default: Tz) -> Tz {
+    match env::var(name) {
+        Ok(text) if !text.trim().is_empty() => text.trim().parse().unwrap_or_else(|_| {
+            panic!("{name} must be a timezone like Europe/London, got {text:?}")
+        }),
         _ => default,
     }
 }

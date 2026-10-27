@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO chat_settings (chat_id, timezone) VALUES (?, ?)\n         ON CONFLICT (chat_id) DO UPDATE SET timezone = excluded.timezone",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "d3ea3ddd84f5d76df2b033879021915855dbfe0dd3a8dcdfc4d897963ee544ba"
+}

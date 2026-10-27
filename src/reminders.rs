@@ -1,15 +1,16 @@
 //! The prayer reminder loop: a background task that wakes every minute,
-//! and sends any reminder that's due to every chat that asked for them.
+//! and sends each chat the reminders due under that chat's own settings
+//! (a DM's are that person's own: their city, method and timezone).
 
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
 
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Utc};
 
 use crate::AppState;
 use crate::error::AppError;
-use crate::prayer;
-use crate::repo::prayers;
+use crate::prayer::{self, ReminderKind};
+use crate::repo::prayers::{self, ReminderChat};
 
 /// How often to check. Reminders go out at most this late.
 const CHECK_EVERY: StdDuration = StdDuration::from_secs(60);
@@ -18,58 +19,92 @@ const CHECK_EVERY: StdDuration = StdDuration::from_secs(60);
 /// alongside the web server on the same runtime: while this `.await`s the
 /// next tick, the thread is free to serve webhooks.
 pub async fn run(state: Arc<AppState>) {
-    let lead = Duration::minutes(state.config.prayer_reminder_minutes);
     let mut ticks = tokio::time::interval(CHECK_EVERY);
     loop {
         // The first tick completes immediately, so a check runs at startup.
         ticks.tick().await;
         // The clock is read here, at the edge, and passed down.
-        if let Err(err) = check(&state, Utc::now(), lead).await {
-            // Keep going: a failed check (AlAdhan down, say) is retried next
-            // minute, and a reminder stays due for a while after its time.
+        if let Err(err) = check(&state, Utc::now()).await {
             println!("reminders: check failed: {err}");
         }
     }
 }
 
 /// Sends every reminder due at `now` that hasn't been sent yet.
-async fn check(state: &AppState, now: DateTime<Utc>, lead: Duration) -> Result<(), AppError> {
+async fn check(state: &AppState, now: DateTime<Utc>) -> Result<(), AppError> {
+    let chats = {
+        let mut conn = state.db.acquire().await?;
+        prayers::reminder_chats(&mut conn).await?
+    };
+    for chat in chats {
+        // One chat's problem (say AlAdhan can't find its city today) must
+        // not stop the others' reminders, so errors are logged per chat.
+        if let Err(err) = check_chat(state, &chat, now).await {
+            println!("reminders: {} failed: {err}", chat.wa_chat_id);
+        }
+    }
+    Ok(())
+}
+
+async fn check_chat(
+    state: &AppState,
+    chat: &ReminderChat,
+    now: DateTime<Utc>,
+) -> Result<(), AppError> {
+    let settings = chat.overrides.apply(&state.prayer_times.defaults);
     let day = state
         .prayer_times
-        .for_date(prayer::london_date(now))
+        .for_date(&settings.prayer_location(), settings.today(now))
         .await?;
-    let due = prayer::due_reminders(&day, now, lead);
+    let due = prayer::due_reminders(&day, now, settings.prayer_ending_minutes);
     if due.is_empty() {
         return Ok(());
     }
 
     let mut conn = state.db.acquire().await?;
-    let chats = prayers::reminder_chats(&mut conn).await?;
-
-    for (prayer, start) in due {
-        for chat in &chats {
-            // Claim first, send second: if the row already exists, this
-            // reminder went out on an earlier tick (or before a restart).
-            let Some(reminder_id) =
-                prayers::claim_reminder(&mut conn, chat.id, day.date, prayer, start, now).await?
-            else {
+    for (kind, window) in due {
+        // In a DM, "ending soon" is pointless if they've already prayed it.
+        // (In a group it still goes out: some members may not have.)
+        if kind == ReminderKind::Ending
+            && let Some(user_id) = chat.dm_user_id
+        {
+            let prayed = prayers::prayed_on(&mut conn, user_id, day.date).await?;
+            if prayed.contains(&window.prayer) {
                 continue;
-            };
-
-            let text = prayer::reminder_text(prayer, start, now);
-            match state.gowa.send_text(&chat.wa_chat_id, &text, None).await {
-                Ok(message_id) => {
-                    prayers::set_reminder_message(&mut conn, reminder_id, &message_id).await?;
-                    println!("reminders: sent {prayer} to {}", chat.wa_chat_id);
-                }
-                // Not retried: the claim stays, so a flaky GOWA can't cause
-                // a burst of repeats later. The next prayer's reminder still
-                // goes out as normal.
-                Err(err) => println!(
-                    "reminders: couldn't send {prayer} to {}: {err}",
-                    chat.wa_chat_id
-                ),
             }
+        }
+
+        // Claim first, send second: if the row already exists, this
+        // reminder went out on an earlier tick (or before a restart).
+        let Some(reminder_id) = prayers::claim_reminder(
+            &mut conn,
+            chat.id,
+            day.date,
+            window.prayer,
+            kind,
+            window.start,
+            now,
+        )
+        .await?
+        else {
+            continue;
+        };
+
+        let text = prayer::reminder_text(kind, &window, now, &settings);
+        match state.gowa.send_text(&chat.wa_chat_id, &text, None).await {
+            Ok(message_id) => {
+                prayers::set_reminder_message(&mut conn, reminder_id, &message_id).await?;
+                println!(
+                    "reminders: sent {} {:?} to {}",
+                    window.prayer, kind, chat.wa_chat_id
+                );
+            }
+            // Not retried: the claim stays, so a flaky GOWA can't cause a
+            // burst of repeats later.
+            Err(err) => println!(
+                "reminders: couldn't send {} to {}: {err}",
+                window.prayer, chat.wa_chat_id
+            ),
         }
     }
     Ok(())

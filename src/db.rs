@@ -242,6 +242,7 @@ mod tests {
             names,
             [
                 "chat_members",
+                "chat_settings",
                 "chats",
                 "prayer_log",
                 "prayer_reminders",

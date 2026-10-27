@@ -1,81 +1,96 @@
 //! Prayer times from the AlAdhan API (<https://aladhan.com/prayer-times-api>).
 
+use std::collections::HashMap;
+
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::Deserialize;
 use tokio::sync::Mutex;
 
 use crate::error::AppError;
-use crate::prayer::{DayTimes, Prayer};
+use chrono_tz::Tz;
 
-/// Where to calculate prayer times for, and how.
-#[derive(Debug, Clone)]
-pub struct Location {
-    pub city: String,
-    /// Country name or 2-letter code, e.g. "GB".
-    pub country: String,
-    /// AlAdhan calculation method: 3 = Muslim World League.
-    pub method: u8,
-    /// Asr calculation: 0 = standard (Shafi'i), 1 = Hanafi.
-    pub school: u8,
-}
+use crate::prayer::{DayTimes, Location, Prayer, Window};
+use crate::settings::Settings;
 
-/// Fetches prayer times and remembers the most recent day, so the
-/// reminder loop (every minute) and `/prayers` don't call the API each time.
+/// Fetches prayer times and remembers them per location and day, so the
+/// reminder loop (every minute, for every chat) and `/prayers` call the
+/// API at most once per location per day.
 pub struct PrayerTimes {
     http: reqwest::Client,
     base_url: String,
-    pub location: Location,
-    /// The last day fetched. A `tokio::sync::Mutex` (not `std::sync`)
-    /// because it's held across an `.await` (the HTTP call): a std mutex
-    /// held over an await can block the whole thread, Tokio's can't.
-    cached: Mutex<Option<DayTimes>>,
+    /// The server-wide settings (`.env`), for chats that haven't chosen
+    /// their own.
+    pub defaults: Settings,
+    /// Fetched days. A `tokio::sync::Mutex` (not `std::sync`) because it's
+    /// held across an `.await` (the HTTP call): a std mutex held over an
+    /// await can block the whole thread, Tokio's can't.
+    cache: Mutex<HashMap<(Location, NaiveDate), DayTimes>>,
 }
 
 impl PrayerTimes {
-    pub fn new(location: Location) -> Self {
+    pub fn new(defaults: Settings) -> Self {
         PrayerTimes {
             http: reqwest::Client::new(),
             base_url: "https://api.aladhan.com/v1".to_string(),
-            location,
-            cached: Mutex::new(None),
+            defaults,
+            cache: Mutex::new(HashMap::new()),
         }
     }
 
-    /// For tests: a source that already holds `day`, so asking for that
-    /// date never touches the network.
+    /// For tests: a source that already holds `day` for the default
+    /// location, so asking for that never touches the network.
     #[cfg(test)]
-    pub(crate) fn with_cached(location: Location, day: DayTimes) -> Self {
-        let source = PrayerTimes::new(location);
+    pub(crate) fn with_cached(defaults: Settings, day: DayTimes) -> Self {
+        let key = (defaults.prayer_location(), day.date);
+        let source = PrayerTimes::new(defaults);
         PrayerTimes {
-            cached: Mutex::new(Some(day)),
+            cache: Mutex::new(HashMap::from([(key, day)])),
             ..source
         }
     }
 
-    /// The times for `date` (a Europe/London day), from the cache if it's
-    /// the day we fetched last.
-    pub async fn for_date(&self, date: NaiveDate) -> Result<DayTimes, AppError> {
+    /// The times at `location` for `date` (a day in the location's
+    /// timezone), fetched only if they aren't cached yet.
+    pub async fn for_date(
+        &self,
+        location: &Location,
+        date: NaiveDate,
+    ) -> Result<DayTimes, AppError> {
         // `lock().await` waits its turn; the guard unlocks when dropped at
         // the end of this function.
-        let mut cached = self.cached.lock().await;
-        if let Some(day) = cached.as_ref().filter(|day| day.date == date) {
+        let mut cache = self.cache.lock().await;
+        let key = (location.clone(), date);
+        if let Some(day) = cache.get(&key) {
             return Ok(day.clone());
         }
 
-        let day = self.fetch(date).await?;
+        let day = self.fetch(location, date).await?;
         let summary: Vec<String> = day
-            .times
+            .windows
             .iter()
-            .map(|(prayer, start)| format!("{prayer} {}", crate::prayer::london_hhmm(*start)))
+            .map(|w| {
+                let start = w.start.with_timezone(&location.timezone);
+                format!("{} {}", w.prayer, start.format("%H:%M"))
+            })
             .collect();
-        println!("prayer times for {date}: {}", summary.join(", "));
+        println!(
+            "prayer times for {}, {} (method {}) on {date}: {}",
+            location.city,
+            location.country,
+            location.method,
+            summary.join(", ")
+        );
 
-        *cached = Some(day.clone());
+        // Forget days before yesterday, so the cache can't grow forever.
+        // `retain` keeps only the entries the closure says yes to.
+        if let Some(yesterday) = date.pred_opt() {
+            cache.retain(|(_, day), _| *day >= yesterday);
+        }
+        cache.insert(key, day.clone());
         Ok(day)
     }
 
-    async fn fetch(&self, date: NaiveDate) -> Result<DayTimes, AppError> {
-        let loc = &self.location;
+    async fn fetch(&self, loc: &Location, date: NaiveDate) -> Result<DayTimes, AppError> {
         let response: ApiResponse = self
             .http
             .get(format!(
@@ -89,7 +104,7 @@ impl PrayerTimes {
                 ("country", loc.country.as_str()),
                 ("method", &loc.method.to_string()),
                 ("school", &loc.school.to_string()),
-                ("timezonestring", "Europe/London"),
+                ("timezonestring", loc.timezone.name()),
                 ("iso8601", "true"),
             ])
             .send()
@@ -103,6 +118,40 @@ impl PrayerTimes {
     }
 }
 
+impl PrayerTimes {
+    /// Checks AlAdhan knows `city, country`, and returns the timezone it
+    /// says the city is in. Used when someone sets their location, so they
+    /// don't also have to look up their timezone's name.
+    ///
+    /// `date` only has to be a real day; today is the natural choice.
+    pub async fn timezone_of(
+        &self,
+        city: &str,
+        country: &str,
+        date: NaiveDate,
+    ) -> Result<Tz, AppError> {
+        let response: ApiResponse = self
+            .http
+            .get(format!(
+                "{}/timingsByCity/{}",
+                self.base_url,
+                date.format("%d-%m-%Y")
+            ))
+            // No `timezonestring`: AlAdhan then works it out from the city.
+            .query(&[("city", city), ("country", country)])
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+
+        let name = response.data.meta.timezone;
+        name.parse().map_err(|_| {
+            AppError::PrayerTimes(format!("AlAdhan gave an unknown timezone {name:?}"))
+        })
+    }
+}
+
 /// The part of AlAdhan's reply we use:
 /// `{"code":200,"data":{"timings":{"Fajr":"2026-10-27T04:55:00+00:00",...}}}`.
 #[derive(Deserialize)]
@@ -113,36 +162,62 @@ struct ApiResponse {
 #[derive(Deserialize)]
 struct ApiData {
     timings: ApiTimings,
+    meta: ApiMeta,
 }
 
-/// `rename_all = "PascalCase"`: the JSON keys are `Fajr`, `Dhuhr`, ...
-/// while Rust fields are lower case. Sunrise, Midnight etc. are ignored.
+/// `"meta":{"timezone":"Europe/London",...}`: the timezone AlAdhan says the
+/// city is in, when we don't tell it one.
+#[derive(Deserialize)]
+struct ApiMeta {
+    timezone: String,
+}
+
+/// `rename_all = "PascalCase"`: the JSON keys are `Fajr`, `Sunrise`, ...
+/// while Rust fields are lower case. Imsak, Sunset etc. are ignored.
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct ApiTimings {
     fajr: String,
+    /// When Fajr's time ends.
+    sunrise: String,
     dhuhr: String,
     asr: String,
     maghrib: String,
     isha: String,
+    /// Islamic midnight, when Isha's time ends. In summer it's after
+    /// 00:00, and AlAdhan dates it on the next day.
+    midnight: String,
 }
 
-/// Turns the five ISO 8601 times into a `DayTimes`. Pure, so it's tested
-/// without the network.
+/// Turns AlAdhan's ISO 8601 times into a `DayTimes`. Pure, so it's
+/// tested without the network.
 fn to_day_times(date: NaiveDate, t: &ApiTimings) -> Result<DayTimes, String> {
-    let parse = |prayer: Prayer, text: &str| {
+    let parse = |name: &str, text: &str| {
         DateTime::parse_from_rfc3339(text)
-            .map(|time| (prayer, time.with_timezone(&Utc)))
-            .map_err(|e| format!("bad {prayer} time {text:?}: {e}"))
+            .map(|time| time.with_timezone(&Utc))
+            .map_err(|e| format!("bad {name} time {text:?}: {e}"))
     };
+    let fajr = parse("Fajr", &t.fajr)?;
+    let sunrise = parse("Sunrise", &t.sunrise)?;
+    let dhuhr = parse("Dhuhr", &t.dhuhr)?;
+    let asr = parse("Asr", &t.asr)?;
+    let maghrib = parse("Maghrib", &t.maghrib)?;
+    let isha = parse("Isha", &t.isha)?;
+    let mut midnight = parse("Midnight", &t.midnight)?;
+    // Safety net in case midnight ever comes back dated on the same day.
+    if midnight <= isha {
+        midnight += chrono::Duration::days(1);
+    }
+
+    let window = |prayer, start, end| Window { prayer, start, end };
     Ok(DayTimes {
         date,
-        times: [
-            parse(Prayer::Fajr, &t.fajr)?,
-            parse(Prayer::Dhuhr, &t.dhuhr)?,
-            parse(Prayer::Asr, &t.asr)?,
-            parse(Prayer::Maghrib, &t.maghrib)?,
-            parse(Prayer::Isha, &t.isha)?,
+        windows: [
+            window(Prayer::Fajr, fajr, sunrise),
+            window(Prayer::Dhuhr, dhuhr, asr),
+            window(Prayer::Asr, asr, maghrib),
+            window(Prayer::Maghrib, maghrib, isha),
+            window(Prayer::Isha, isha, midnight),
         ],
     })
 }
@@ -156,61 +231,83 @@ mod tests {
         "Fajr":"2026-10-27T04:55:00+00:00","Sunrise":"2026-10-27T06:49:00+00:00",
         "Dhuhr":"2026-10-27T11:47:00+00:00","Asr":"2026-10-27T14:16:00+00:00",
         "Sunset":"2026-10-27T16:44:00+00:00","Maghrib":"2026-10-27T16:44:00+00:00",
-        "Isha":"2026-10-27T18:31:00+00:00","Imsak":"2026-10-27T04:45:00+00:00"},
+        "Isha":"2026-10-27T18:31:00+00:00","Imsak":"2026-10-27T04:45:00+00:00",
+        "Midnight":"2026-10-27T23:46:00+00:00"},
         "meta":{"timezone":"Europe/London"}}}"#;
 
+    fn utc(s: &str) -> DateTime<Utc> {
+        s.parse().unwrap()
+    }
+
+    fn parse(reply: &ApiResponse) -> Result<DayTimes, String> {
+        let date = NaiveDate::from_ymd_opt(2026, 10, 27).unwrap();
+        to_day_times(date, &reply.data.timings)
+    }
+
     #[test]
-    fn parses_a_real_reply() {
+    fn each_prayer_ends_when_the_next_time_begins() {
         let reply: ApiResponse = serde_json::from_str(REPLY).unwrap();
-        let date = NaiveDate::from_ymd_opt(2026, 10, 27).unwrap();
-        let day = to_day_times(date, &reply.data.timings).unwrap();
+        let day = parse(&reply).unwrap();
+        let w = &day.windows;
 
-        assert_eq!(day.date, date);
+        assert_eq!(w[0].prayer, Prayer::Fajr);
         assert_eq!(
-            day.times[0],
-            (Prayer::Fajr, "2026-10-27T04:55:00Z".parse().unwrap())
+            (w[0].start, w[0].end),
+            (utc("2026-10-27T04:55:00Z"), utc("2026-10-27T06:49:00Z"))
         );
+        assert_eq!(w[1].end, w[2].start, "Dhuhr ends when Asr starts");
+        assert_eq!(w[2].end, w[3].start, "Asr ends at Maghrib");
+        assert_eq!(w[3].end, w[4].start, "Maghrib ends at Isha");
         assert_eq!(
-            day.times[4],
-            (Prayer::Isha, "2026-10-27T18:31:00Z".parse().unwrap())
-        );
-    }
-
-    #[test]
-    fn summer_offset_is_converted_to_utc() {
-        let mut reply: ApiResponse = serde_json::from_str(REPLY).unwrap();
-        reply.data.timings.asr = "2026-07-01T17:30:00+01:00".to_string();
-        let date = NaiveDate::from_ymd_opt(2026, 7, 1).unwrap();
-        let day = to_day_times(date, &reply.data.timings).unwrap();
-        assert_eq!(
-            day.times[2].1,
-            "2026-07-01T16:30:00Z".parse::<DateTime<Utc>>().unwrap()
+            w[4].end,
+            utc("2026-10-27T23:46:00Z"),
+            "Isha ends at midnight"
         );
     }
 
     #[test]
-    fn a_bad_time_is_an_error_naming_the_prayer() {
+    fn summer_times_after_midnight_are_on_the_next_day() {
         let mut reply: ApiResponse = serde_json::from_str(REPLY).unwrap();
-        reply.data.timings.isha = "18:31".to_string();
-        let date = NaiveDate::from_ymd_opt(2026, 10, 27).unwrap();
-        let err = to_day_times(date, &reply.data.timings).unwrap_err();
-        assert!(err.contains("Isha"), "{err}");
+        reply.data.timings.isha = "2026-06-21T23:30:00+01:00".to_string();
+        reply.data.timings.midnight = "2026-06-22T01:05:00+01:00".to_string();
+        let isha = parse(&reply).unwrap().windows[4];
+        assert_eq!(
+            isha.start,
+            utc("2026-06-21T22:30:00Z"),
+            "BST converted to UTC"
+        );
+        assert_eq!(isha.end, utc("2026-06-22T00:05:00Z"));
+    }
+
+    #[test]
+    fn midnight_dated_on_the_same_day_is_moved_to_the_next() {
+        let mut reply: ApiResponse = serde_json::from_str(REPLY).unwrap();
+        reply.data.timings.midnight = "2026-10-27T00:05:00+00:00".to_string();
+        let isha = parse(&reply).unwrap().windows[4];
+        assert_eq!(isha.end, utc("2026-10-28T00:05:00Z"));
+    }
+
+    #[test]
+    fn a_bad_time_is_an_error_naming_it() {
+        let mut reply: ApiResponse = serde_json::from_str(REPLY).unwrap();
+        reply.data.timings.sunrise = "06:49".to_string();
+        let err = parse(&reply).unwrap_err();
+        assert!(err.contains("Sunrise"), "{err}");
     }
 
     #[tokio::test]
     async fn cached_day_is_returned_without_fetching() {
-        let source = PrayerTimes::new(Location {
+        let defaults = Settings {
             city: "Nowhere".to_string(),
             country: "ZZ".to_string(),
-            method: 3,
-            school: 0,
-        });
+            ..crate::settings::tests::defaults()
+        };
+        let nowhere = defaults.prayer_location();
         let reply: ApiResponse = serde_json::from_str(REPLY).unwrap();
-        let date = NaiveDate::from_ymd_opt(2026, 10, 27).unwrap();
-        let day = to_day_times(date, &reply.data.timings).unwrap();
-        *source.cached.lock().await = Some(day.clone());
+        let day = parse(&reply).unwrap();
+        let source = PrayerTimes::with_cached(defaults, day.clone());
 
         // "Nowhere, ZZ" would fail if it went to the network.
-        assert_eq!(source.for_date(date).await.unwrap(), day);
+        assert_eq!(source.for_date(&nowhere, day.date).await.unwrap(), day);
     }
 }

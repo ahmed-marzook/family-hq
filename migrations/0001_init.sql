@@ -1,10 +1,11 @@
--- Initial schema: users, chats, shopping, todos, prayer reminders and
--- tracking, and the WhatsApp bookkeeping tables.
+-- Initial schema: users, chats and their settings, shopping, todos,
+-- prayer reminders and tracking, and the WhatsApp bookkeeping tables.
 --
 -- Conventions:
 -- * STRICT tables: SQLite normally stores any value in any column. STRICT
 --   makes it reject e.g. text in an INTEGER column, like a normal database.
--- * Times are TEXT in UTC, RFC 3339 (e.g. '2026-10-27T18:12:30Z').
+-- * Times are TEXT in UTC, RFC 3339 (e.g. '2026-10-27T18:12:30Z'). Dates
+--   (YYYY-MM-DD) are in the chat's own timezone.
 -- * CHECK constraints are a safety net. Rust validates first, so users get
 --   friendly messages; these catch bugs that slip past.
 -- * Foreign keys are enforced (SQLx turns `PRAGMA foreign_keys` on).
@@ -41,9 +42,6 @@ CREATE TABLE chats (
     -- Whose DM this is. UNIQUE: one DM chat per user. (UNIQUE allows any
     -- number of NULLs, so groups aren't affected.)
     dm_user_id  INTEGER UNIQUE REFERENCES users(id),
-    -- 1 = send prayer reminders here (`/prayers on`), 0 = don't.
-    -- SQLite has no boolean type; 0/1 integers are the convention.
-    prayer_reminders  INTEGER NOT NULL DEFAULT 0 CHECK (prayer_reminders IN (0, 1)),
     created_at  TEXT NOT NULL,
     -- A DM has an owner and a group doesn't. `(a) = (b)` on two
     -- true/false tests means "both true or both false".
@@ -122,9 +120,39 @@ CREATE TABLE wa_message_context (
     PRIMARY KEY (wa_message_id, position)
 ) STRICT;
 
+-- Settings for one chat. A DM's row is that person's own settings (their
+-- personal reminders arrive in that DM); a group's row is shared by
+-- everyone in it. A chat with no row, or NULL in a column, uses the
+-- server default from .env, so changing a default reaches every chat
+-- that hasn't chosen its own.
+CREATE TABLE chat_settings (
+    chat_id                INTEGER PRIMARY KEY REFERENCES chats(id),
+    -- IANA name, e.g. 'Europe/London'. Decides what "today" means and how
+    -- times are shown. Checked in Rust (the list of names is too long for
+    -- a CHECK); an unknown name falls back to the default.
+    timezone               TEXT CHECK (timezone IS NULL OR length(trim(timezone)) > 0),
+    city                   TEXT CHECK (city IS NULL OR length(trim(city)) > 0),
+    country                TEXT CHECK (country IS NULL OR length(trim(country)) > 0),
+    -- 1 = send prayer reminders here (`/prayers on`), 0 = don't.
+    -- SQLite has no boolean type; 0/1 integers are the convention.
+    prayer_reminders       INTEGER NOT NULL DEFAULT 0 CHECK (prayer_reminders IN (0, 1)),
+    -- AlAdhan calculation method: 0-23 (99, "custom", needs more settings
+    -- than we store, so it isn't allowed).
+    prayer_method          INTEGER CHECK (prayer_method IS NULL OR prayer_method BETWEEN 0 AND 23),
+    -- Asr: 0 = Shafi'i (AlAdhan's "standard"), 1 = Hanafi.
+    prayer_school          INTEGER CHECK (prayer_school IS NULL OR prayer_school IN (0, 1)),
+    -- How many minutes before a prayer's time ends the "ending soon"
+    -- reminder goes out.
+    prayer_ending_minutes  INTEGER
+                           CHECK (prayer_ending_minutes IS NULL OR prayer_ending_minutes BETWEEN 1 AND 120),
+    -- A city only makes sense with its country: both set, or neither.
+    CHECK ((city IS NULL) = (country IS NULL))
+) STRICT;
+
 -- One reminder the bot sent (or is sending) for one prayer, in one chat.
--- People react to it to say they've prayed, so its WhatsApp message ID is
--- how a reaction is matched back to a prayer and a day.
+-- Each prayer gets two: when it starts, and shortly before it ends.
+-- People react to either to say they've prayed, so its WhatsApp message
+-- ID is how a reaction is matched back to a prayer and a day.
 CREATE TABLE prayer_reminders (
     id             INTEGER PRIMARY KEY,
     chat_id        INTEGER NOT NULL REFERENCES chats(id),
@@ -134,14 +162,16 @@ CREATE TABLE prayer_reminders (
     prayer_date    TEXT NOT NULL CHECK (date(prayer_date) IS prayer_date),
     prayer         TEXT NOT NULL
                    CHECK (prayer IN ('fajr', 'dhuhr', 'asr', 'maghrib', 'isha')),
+    -- 'start': the prayer's time has begun. 'ending': it ends soon.
+    kind           TEXT NOT NULL CHECK (kind IN ('start', 'ending')),
     prayer_time    TEXT NOT NULL,       -- when the prayer starts, UTC
     -- Set once WhatsApp has accepted the message. NULL if sending failed.
     wa_message_id  TEXT UNIQUE,
     sent_at        TEXT NOT NULL,
-    -- At most one reminder per prayer per day per chat. The reminder loop
-    -- inserts first and only sends if the insert worked, so a restart or a
-    -- second check can never send the same reminder twice.
-    UNIQUE (chat_id, prayer_date, prayer)
+    -- At most one of each kind per prayer per day per chat. The reminder
+    -- loop inserts first and only sends if the insert worked, so a restart
+    -- or a second check can never send the same reminder twice.
+    UNIQUE (chat_id, prayer_date, prayer, kind)
 ) STRICT;
 
 -- Who has prayed what. Per person, not per chat: reacting in any chat

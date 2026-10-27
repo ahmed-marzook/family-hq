@@ -28,12 +28,13 @@ services:
       GOWA_BASIC_AUTH: ${GOWA_BASIC_AUTH:?set GOWA_BASIC_AUTH in .env}
       # Service name + GOWA's port *inside* its container.
       GOWA_URL: http://gowa:3000
-      # Prayer times (AlAdhan). Defaults shown; set them in .env to change.
-      PRAYER_CITY: ${PRAYER_CITY:-Milton Keynes}
-      PRAYER_COUNTRY: ${PRAYER_COUNTRY:-GB}
-      PRAYER_METHOD: ${PRAYER_METHOD:-3}          # 3 = Muslim World League
-      PRAYER_SCHOOL: ${PRAYER_SCHOOL:-0}          # Asr: 0 = standard, 1 = Hanafi
-      PRAYER_REMINDER_MINUTES: ${PRAYER_REMINDER_MINUTES:-10}
+      # Defaults for chats that haven't set their own (`/settings ...`).
+      DEFAULT_TIMEZONE: ${DEFAULT_TIMEZONE:-Europe/London}
+      DEFAULT_CITY: ${DEFAULT_CITY:-Milton Keynes}
+      DEFAULT_COUNTRY: ${DEFAULT_COUNTRY:-GB}
+      DEFAULT_PRAYER_METHOD: ${DEFAULT_PRAYER_METHOD:-3}    # 3 = Muslim World League
+      DEFAULT_PRAYER_SCHOOL: ${DEFAULT_PRAYER_SCHOOL:-0}    # Asr: 0 = Shafi'i, 1 = Hanafi
+      DEFAULT_PRAYER_ENDING_MINUTES: ${DEFAULT_PRAYER_ENDING_MINUTES:-20}
     ports:
       # Only for checking it from the server itself (curl localhost:3000/health).
       # GOWA reaches it over the Compose network, not through this port.

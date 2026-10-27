@@ -24,8 +24,12 @@ family for at least two weeks**. Real use finds the problems that matter.
 - **SQLite** via SQLx, a single file in a Docker volume.
 - **Everything runs in Docker Compose** on the homelab: `family-hq` + `gowa`
   (+ `ntfy` from Phase 2).
-- **All times are stored in UTC.** They're converted to `Europe/London` only
-  when deciding what "today" or "this morning" means.
+- **All times are stored in UTC.** They're converted to the chat's own
+  timezone (its settings; default `Europe/London`) only when deciding what
+  "today" means or showing a time.
+- **Settings belong to a chat.** A DM's settings are that person's own
+  (timezone, city, prayer method and so on); a group's are shared. Unset
+  values fall back to the `DEFAULT_*` values in `.env`.
 - **Every list belongs to the chat it's used in.** Each group the bot is in
   has its own shopping list and todos, so several groups (e.g. different
   families) work side by side without mixing. A DM with the bot is that
@@ -253,14 +257,15 @@ family-hq/
 Starts after Phase 1 has been in daily use for two weeks.
 
 > **Brought forward (done early, WhatsApp only):** a basic version of
-> Stages 2.3 and 2.4 already runs. Daily times come from AlAdhan
-> (`timingsByCity`, city and method set in `.env`, cached in memory). Chats
-> opt in with `/prayers on`, and a reminder goes out a set number of minutes
-> before each prayer (`src/reminders.rs`, with `prayer_reminders` making
-> sure each one is sent only once). Any reaction on a reminder, or
-> `+prayed asr`, marks it in `prayer_log`. `/prayers` shows the day with ✅/⬜.
-> Still to do from 2.3/2.4: window *ends*, the yesterday's-times fallback,
-> the warning/missed stages, and ntfy.
+> Stages 2.3 and 2.4 already runs. Times come from AlAdhan per chat
+> settings (city, method, Asr school, timezone; `/settings ...`), cached
+> in memory per location and day. Chats opt in with `/prayers on` and get
+> a reminder when each prayer starts and one shortly before it ends
+> (`src/reminders.rs`; `prayer_reminders` makes sure each is sent once).
+> In a DM the "ending" reminder is skipped if that person already
+> prayed. Any reaction on a reminder, or `+prayed asr`, marks it in
+> `prayer_log`. Still to do: the yesterday's-times fallback, "missed"
+> tracking, and ntfy.
 
 ### Stage 2.1: ntfy push notifications
 - Add the `ntfy` container. Each user subscribes to their own topic.

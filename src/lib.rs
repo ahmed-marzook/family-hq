@@ -6,12 +6,14 @@ pub mod config;
 pub mod db;
 pub mod error;
 pub mod handlers;
+pub mod help;
 pub mod parser;
 pub mod person;
 pub mod prayer;
 pub mod reminders;
 pub mod repo;
 pub mod routes;
+pub mod settings;
 pub mod whatsapp;
 
 use std::sync::Arc;
@@ -45,7 +47,7 @@ impl AppState {
     /// `async` and can fail; `main` deals with that first.
     pub fn new(config: Config, db: SqlitePool) -> Arc<Self> {
         let gowa = Gowa::new(&config.gowa_url, &config.gowa_basic_auth);
-        let prayer_times = PrayerTimes::new(config.prayer_location.clone());
+        let prayer_times = PrayerTimes::new(config.defaults.clone());
         Arc::new(AppState {
             config,
             gowa,

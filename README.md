@@ -32,6 +32,8 @@ private list.
 | `+todo @Khadija book dentist` | Add a todo assigned to someone in the group |
 | `/todo` | Show todos; reply `done 2` to complete one |
 | `/prayers` | Today's prayer times, ✅ for the ones you've prayed |
-| `/prayers on` / `off` | Prayer reminders in this chat; react to one once you've prayed |
+| `/prayers on` / `off` | Reminders when each prayer starts and before it ends; react to one once you've prayed |
 | `+prayed asr` | Mark a prayer as prayed without reacting |
-| `/help` | List commands |
+| `/settings` | This chat's city, timezone and prayer settings (in a DM: your own); `/settings city Leicester, GB` etc. |
+| `/settings everyone` | Each group member's own settings |
+| `/help` | Overview; `/help shop`, `/help todo`, `/help prayers`, `/help settings` for a full page |

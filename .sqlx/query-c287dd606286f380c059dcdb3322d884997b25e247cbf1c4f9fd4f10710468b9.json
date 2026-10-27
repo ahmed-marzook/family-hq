@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO chat_settings (chat_id, prayer_method) VALUES (?, ?)\n         ON CONFLICT (chat_id) DO UPDATE SET prayer_method = excluded.prayer_method",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "c287dd606286f380c059dcdb3322d884997b25e247cbf1c4f9fd4f10710468b9"
+}

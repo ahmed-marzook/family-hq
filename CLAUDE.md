@@ -56,9 +56,11 @@ docker compose up --build      # run the full stack
   has already run.
 - Use `CHECK` constraints in the schema as a safety net, and validate in Rust
   as well so users get friendly messages.
-- Store all times in UTC. Convert to `Europe/London` only to decide what
-  "today" means. Pass `now`/`today` into functions instead of reading the
-  clock inside them, so they can be tested.
+- Store all times in UTC. Convert to the chat's own timezone (from its
+  settings, default `Europe/London`) only to decide what "today" means and
+  to show times: `Settings::today(now)` / `Settings::clock(time)`. Pass
+  `now`/`today` into functions instead of reading the clock inside them, so
+  they can be tested.
 - Errors: a `thiserror` `AppError` type, not `String`.
 - Deduplicate WhatsApp webhooks by message ID (`processed_messages`).
 - Register senders automatically on their first message (`repo::users::find_or_register`); ignore the bot's own messages (`is_from_me`).

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE chat_settings\n         SET timezone = NULL, city = NULL, country = NULL, prayer_method = NULL,\n             prayer_school = NULL, prayer_ending_minutes = NULL\n         WHERE chat_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "413efb9d204dd0c8a87f23cc58949badeda70d29f44c296ae1f8fef0a0220fe6"
+}

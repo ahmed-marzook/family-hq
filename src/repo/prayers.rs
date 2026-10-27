@@ -1,66 +1,79 @@
-//! Prayer reminders (which chats get them, which were sent) and the log of
-//! who has prayed what.
+//! Prayer reminders (which chats get them, which were sent) and the log
+//! of who has prayed what. Settings are in `repo::settings`.
 
 use chrono::{DateTime, NaiveDate, Utc};
 use sqlx::SqliteConnection;
 
-use crate::prayer::Prayer;
+use crate::prayer::{Prayer, ReminderKind};
+use crate::settings::Overrides;
 
-/// A chat that has asked for reminders.
+/// A chat that has asked for prayer reminders, with its own settings.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReminderChat {
     pub id: i64,
     pub wa_chat_id: String,
+    /// Whose DM this is; `None` for a group.
+    pub dm_user_id: Option<i64>,
+    pub overrides: Overrides,
 }
 
-/// Turns reminders on or off for a chat (`/prayers on` / `/prayers off`).
-pub async fn set_reminders(
-    conn: &mut SqliteConnection,
-    chat_id: i64,
-    on: bool,
-) -> Result<(), sqlx::Error> {
-    sqlx::query!(
-        "UPDATE chats SET prayer_reminders = ? WHERE id = ?",
-        on,
-        chat_id
-    )
-    .execute(conn)
-    .await?;
-    Ok(())
-}
-
+/// Every chat with prayer reminders on, with its settings.
 pub async fn reminder_chats(conn: &mut SqliteConnection) -> Result<Vec<ReminderChat>, sqlx::Error> {
-    sqlx::query_as!(
-        ReminderChat,
-        "SELECT id, wa_chat_id FROM chats WHERE prayer_reminders = 1 ORDER BY id"
+    let rows = sqlx::query!(
+        "SELECT c.id, c.wa_chat_id, c.dm_user_id, s.timezone, s.city, s.country,
+                s.prayer_method, s.prayer_school, s.prayer_ending_minutes
+         FROM chat_settings s
+         JOIN chats c ON c.id = s.chat_id
+         WHERE s.prayer_reminders = 1
+         ORDER BY c.id"
     )
     .fetch_all(conn)
-    .await
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| ReminderChat {
+            id: r.id,
+            wa_chat_id: r.wa_chat_id,
+            dm_user_id: r.dm_user_id,
+            overrides: Overrides {
+                timezone: r.timezone,
+                city: r.city,
+                country: r.country,
+                prayer_method: r.prayer_method,
+                prayer_school: r.prayer_school,
+                prayer_ending_minutes: r.prayer_ending_minutes,
+            },
+        })
+        .collect())
 }
 
 /// Claims the right to send one reminder. Returns the new row's id, or
-/// `None` if this chat already got (or is getting) this prayer's reminder
-/// today. Insert-first means two checks can never both send it.
+/// `None` if this chat already got (or is getting) this reminder (this
+/// prayer, this kind) today. Insert-first means two checks can never both send it.
 pub async fn claim_reminder(
     conn: &mut SqliteConnection,
     chat_id: i64,
     date: NaiveDate,
     prayer: Prayer,
+    kind: ReminderKind,
     prayer_time: DateTime<Utc>,
     now: DateTime<Utc>,
 ) -> Result<Option<i64>, sqlx::Error> {
     let prayer = prayer.as_db_str();
+    let kind = kind.as_db_str();
     // On a duplicate, `DO NOTHING` inserts no row, so `RETURNING` returns
     // no row either and `fetch_optional` gives `None`. (`AS "id!"`: the id
     // itself is never NULL, which the macro can't work out alone.)
     sqlx::query_scalar!(
-        r#"INSERT INTO prayer_reminders (chat_id, prayer_date, prayer, prayer_time, sent_at)
-           VALUES (?, ?, ?, ?, ?)
-           ON CONFLICT (chat_id, prayer_date, prayer) DO NOTHING
+        r#"INSERT INTO prayer_reminders (chat_id, prayer_date, prayer, kind, prayer_time, sent_at)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT (chat_id, prayer_date, prayer, kind) DO NOTHING
            RETURNING id AS "id!""#,
         chat_id,
         date,
         prayer,
+        kind,
         prayer_time,
         now
     )
@@ -173,7 +186,7 @@ mod tests {
     use super::*;
     use crate::db::test_pool;
     use crate::person::Person;
-    use crate::repo::{chats, users};
+    use crate::repo::{chats, settings, users};
 
     fn date() -> NaiveDate {
         NaiveDate::from_ymd_opt(2026, 10, 27).unwrap()
@@ -192,12 +205,16 @@ mod tests {
             .unwrap();
 
         assert!(reminder_chats(&mut conn).await.unwrap().is_empty());
-        set_reminders(&mut conn, a, true).await.unwrap();
+        settings::set_prayer_reminders(&mut conn, a, true)
+            .await
+            .unwrap();
         let on = reminder_chats(&mut conn).await.unwrap();
         assert_eq!(on.len(), 1);
         assert_eq!(on[0].wa_chat_id, "120363000000000001@g.us");
 
-        set_reminders(&mut conn, a, false).await.unwrap();
+        settings::set_prayer_reminders(&mut conn, a, false)
+            .await
+            .unwrap();
         assert!(reminder_chats(&mut conn).await.unwrap().is_empty());
     }
 
@@ -211,14 +228,42 @@ mod tests {
             .await
             .unwrap();
 
-        let id = claim_reminder(&mut conn, chat, date(), Prayer::Asr, now, now)
-            .await
-            .unwrap()
-            .expect("first claim works");
-        let again = claim_reminder(&mut conn, chat, date(), Prayer::Asr, now, now)
-            .await
-            .unwrap();
+        let id = claim_reminder(
+            &mut conn,
+            chat,
+            date(),
+            Prayer::Asr,
+            ReminderKind::Start,
+            now,
+            now,
+        )
+        .await
+        .unwrap()
+        .expect("first claim works");
+        let again = claim_reminder(
+            &mut conn,
+            chat,
+            date(),
+            Prayer::Asr,
+            ReminderKind::Start,
+            now,
+            now,
+        )
+        .await
+        .unwrap();
         assert_eq!(again, None, "second claim is refused");
+        let ending = claim_reminder(
+            &mut conn,
+            chat,
+            date(),
+            Prayer::Asr,
+            ReminderKind::Ending,
+            now,
+            now,
+        )
+        .await
+        .unwrap();
+        assert!(ending.is_some(), "the other kind is a separate reminder");
 
         set_reminder_message(&mut conn, id, "3EB0AA").await.unwrap();
         assert_eq!(

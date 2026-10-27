@@ -6,14 +6,17 @@ use sqlx::SqliteConnection;
 
 use crate::aladhan::PrayerTimes;
 use crate::error::AppError;
-use crate::parser::{BotCommand, Got, ReplyCommand};
+use crate::help;
+use crate::parser::{BotCommand, Got, ReplyCommand, SettingsCommand};
 use crate::person::Assignee;
 use crate::prayer::{self, DayTimes, Prayer};
 use crate::repo::messages::{self, ListItem};
 use crate::repo::prayers;
+use crate::repo::settings::{self as stored, MemberSettings};
 use crate::repo::shop::{self, ShopItem};
 use crate::repo::todos::{self, OpenTodo};
 use crate::repo::users::{self, User};
+use crate::settings::Settings;
 
 const ADDED: &str = "📝";
 const LIST: &str = "📋";
@@ -26,30 +29,22 @@ const NOT_YET: &str = "⬜";
 const BELL: &str = "🔔";
 const BELL_OFF: &str = "🔕";
 const CLEARED: &str = "🧹";
+const GEAR: &str = "⚙️";
+const PIN: &str = "📍";
+const CLOCK: &str = "🕰️";
+const PEOPLE: &str = "👥";
 
 /// `item_type` values in `wa_message_context` (the schema's CHECK allows
 /// exactly these two).
 pub const TODO_ITEM: &str = "todo";
 pub const SHOP_ITEM: &str = "shop";
 
-const HELP: &str = "🤖 *Family HQ*
-+shop milk, eggs — add to this chat's shopping list
-/shop — what's left to buy; reply `1 3` to tick items off
-+got milk (or +got 1 3) — tick items off without replying
-/shop clear — delete the ticked-off items
-+todo fix the tap — add a todo (assigned to you)
-+todo @Name book dentist — assign it to someone here
-/todo — numbered list of open todos
-Reply to a list with `done 2` (or `1 3`) or `remove 2`
-/prayers — today's prayer times and what you've prayed
-/prayers on — prayer reminders in this chat (/prayers off to stop)
-+prayed asr — mark a prayer as prayed (or react to its reminder)
-/help — this message";
-
 /// Who is asking, and where.
 pub struct Context {
     /// `chats.id` of the chat the message came from.
     pub chat_id: i64,
+    /// A group (shared settings) rather than a DM (the sender's own).
+    pub is_group: bool,
     pub sender: User,
     pub now: DateTime<Utc>,
 }
@@ -72,8 +67,9 @@ pub enum Outcome {
 
 /// Runs a command typed as a normal message.
 ///
-/// `prayer_times` is only used by `/prayers`. It answers from its cache
-/// almost always; at most once a day it calls AlAdhan first.
+/// `prayer_times` is used by the prayer and settings commands. It answers
+/// from its cache almost always; at most once a day per location it calls
+/// AlAdhan first (and `/settings city` checks the city with AlAdhan).
 pub async fn run_command(
     conn: &mut SqliteConnection,
     ctx: &Context,
@@ -116,33 +112,34 @@ pub async fn run_command(
             n => format!("{CLEARED} Cleared {n} bought items."),
         },
         BotCommand::Prayers => {
-            let day = prayer_times.for_date(prayer::london_date(ctx.now)).await?;
-            let prayed = prayers::prayed_on(conn, ctx.sender.id, day.date).await?;
-            format_prayer_day(&day, &prayer_times.location.city, &prayed)
+            let (settings, _) = chat_settings(conn, ctx, prayer_times).await?;
+            prayer_day(conn, ctx, prayer_times, &settings).await?
         }
         BotCommand::Prayed(names) => {
             // For people who didn't catch the reminder: same effect as
-            // reacting to it, for today.
-            let today = prayer::london_date(ctx.now);
+            // reacting to it, for today (in this chat's timezone).
+            let (settings, _) = chat_settings(conn, ctx, prayer_times).await?;
+            let today = settings.today(ctx.now);
             for prayer in names {
                 prayers::mark_prayed(conn, ctx.sender.id, today, prayer, ctx.now).await?;
             }
-            let day = prayer_times.for_date(today).await?;
-            let prayed = prayers::prayed_on(conn, ctx.sender.id, today).await?;
-            format_prayer_day(&day, &prayer_times.location.city, &prayed)
+            prayer_day(conn, ctx, prayer_times, &settings).await?
         }
         BotCommand::PrayerReminders(on) => {
-            prayers::set_reminders(conn, ctx.chat_id, on).await?;
+            stored::set_prayer_reminders(conn, ctx.chat_id, on).await?;
+            let (settings, _) = chat_settings(conn, ctx, prayer_times).await?;
             if on {
                 format!(
-                    "{BELL} Prayer reminders are on in this chat. \
-                     React to a reminder to mark that prayer as prayed."
+                    "{BELL} Prayer reminders are on in this chat ({}): when each prayer \
+                     starts, and {} min before it ends. React to a reminder once you've prayed.",
+                    settings.city, settings.prayer_ending_minutes
                 )
             } else {
                 format!("{BELL_OFF} Prayer reminders are off in this chat.")
             }
         }
-        BotCommand::Help => HELP.to_string(),
+        BotCommand::Settings(command) => settings_command(conn, ctx, prayer_times, command).await?,
+        BotCommand::Help(topic) => help::page(topic.as_deref()),
     };
     Ok(Outcome::Reply(text))
 }
@@ -188,6 +185,123 @@ async fn add_shop(
         }
     }
     Ok(format_shop_added(&added, &already))
+}
+
+/// This chat's settings with the defaults filled in, and whether prayer
+/// reminders are on.
+async fn chat_settings(
+    conn: &mut SqliteConnection,
+    ctx: &Context,
+    prayer_times: &PrayerTimes,
+) -> Result<(Settings, bool), AppError> {
+    let stored = stored::get(conn, ctx.chat_id).await?;
+    Ok((
+        stored.overrides.apply(&prayer_times.defaults),
+        stored.prayer_reminders,
+    ))
+}
+
+/// Today's prayer times for these settings, with the sender's ticks.
+async fn prayer_day(
+    conn: &mut SqliteConnection,
+    ctx: &Context,
+    prayer_times: &PrayerTimes,
+    settings: &Settings,
+) -> Result<String, AppError> {
+    let today = settings.today(ctx.now);
+    let day = prayer_times
+        .for_date(&settings.prayer_location(), today)
+        .await?;
+    let prayed = prayers::prayed_on(conn, ctx.sender.id, today).await?;
+    Ok(format_prayer_day(&day, settings, &prayed))
+}
+
+/// `/settings ...`. Each change is checked first, then saved, then the
+/// reply shows the chat's full settings so people see the result.
+async fn settings_command(
+    conn: &mut SqliteConnection,
+    ctx: &Context,
+    prayer_times: &PrayerTimes,
+    command: SettingsCommand,
+) -> Result<String, AppError> {
+    let (current, _) = chat_settings(conn, ctx, prayer_times).await?;
+    let id = ctx.chat_id;
+
+    // `note` is an extra first line for the reply; most changes have none.
+    let note = match command {
+        SettingsCommand::Show => None,
+        SettingsCommand::Everyone => {
+            if !ctx.is_group {
+                return Ok(format!("{PEOPLE} In a DM there's only you: see /settings."));
+            }
+            let members = stored::members(conn, id).await?;
+            return Ok(format_everyone(&members, &prayer_times.defaults));
+        }
+        SettingsCommand::Methods => return Ok(format_methods()),
+        SettingsCommand::Reset => {
+            stored::reset(conn, id).await?;
+            Some("Back to the defaults.".to_string())
+        }
+        SettingsCommand::City { city, country } => {
+            // No country typed: keep the one already in use.
+            let country = country.unwrap_or_else(|| current.country.clone());
+            // Asking AlAdhan both checks the city exists and gives its
+            // timezone, so nobody has to look that up separately.
+            match prayer_times
+                .timezone_of(&city, &country, current.today(ctx.now))
+                .await
+            {
+                Ok(timezone) => {
+                    stored::set_location(conn, id, &city, &country, timezone.name()).await?;
+                    Some(format!("Timezone set to {timezone} to match."))
+                }
+                Err(_) => {
+                    return Ok(format!(
+                        "{PROBLEM} I couldn't find {city}, {country}. \
+                         Try e.g. `/settings city Leicester, GB`."
+                    ));
+                }
+            }
+        }
+        SettingsCommand::Timezone(name) => match name.parse::<chrono_tz::Tz>() {
+            Ok(timezone) => {
+                stored::set_timezone(conn, id, timezone.name()).await?;
+                None
+            }
+            Err(_) => {
+                return Ok(format!(
+                    "{PROBLEM} I don't know the timezone {name}. Use a name like \
+                     Europe/London or Asia/Karachi."
+                ));
+            }
+        },
+        SettingsCommand::PrayerMethod(method) => {
+            if prayer::method_name(method).is_none() {
+                return Ok(format!(
+                    "{PROBLEM} There's no method {method}. /settings methods lists them."
+                ));
+            }
+            stored::set_prayer_method(conn, id, method).await?;
+            None
+        }
+        SettingsCommand::PrayerSchool(school) => {
+            stored::set_prayer_school(conn, id, school).await?;
+            None
+        }
+        SettingsCommand::PrayerEnding(minutes) => {
+            if !(1..=120).contains(&minutes) {
+                return Ok(format!("{PROBLEM} Pick between 1 and 120 minutes."));
+            }
+            stored::set_prayer_ending_minutes(conn, id, minutes).await?;
+            None
+        }
+    };
+
+    // Read back what's now stored, so the reply shows exactly what's saved.
+    let (settings, reminders) = chat_settings(conn, ctx, prayer_times).await?;
+    let mut text = note.map(|n| format!("{n}\n\n")).unwrap_or_default();
+    text.push_str(&format_settings(&settings, reminders, ctx.is_group));
+    Ok(text)
 }
 
 async fn add_todo(
@@ -341,25 +455,100 @@ fn unknown_name(name: &str, known: &[String]) -> String {
     }
 }
 
-/// The `/prayers` reply: each time on the London clock, ticked if the
-/// sender has prayed it.
-fn format_prayer_day(day: &DayTimes, city: &str, prayed: &[Prayer]) -> String {
+/// The `/prayers` reply: each prayer's time on the chat's own clock,
+/// ticked if the sender has prayed it.
+fn format_prayer_day(day: &DayTimes, settings: &Settings, prayed: &[Prayer]) -> String {
     let mut text = format!(
-        "{MOSQUE} *Prayer times* ({city}, {})\n",
+        "{MOSQUE} *Prayer times* ({}, {})\n",
+        settings.city,
         day.date.format("%a %-d %b")
     );
-    for (prayer, start) in &day.times {
-        let mark = if prayed.contains(prayer) {
+    for window in &day.windows {
+        let mark = if prayed.contains(&window.prayer) {
             DONE
         } else {
             NOT_YET
         };
         text.push_str(&format!(
-            "{mark} {prayer} {}\n",
-            prayer::london_hhmm(*start)
+            "{mark} {} {}–{}\n",
+            window.prayer,
+            settings.clock(window.start),
+            settings.clock(window.end)
         ));
     }
     text.push_str("\nTick one off with `+prayed asr`, or react to its reminder.");
+    text
+}
+
+/// The `/settings` reply.
+fn format_settings(settings: &Settings, reminders: bool, is_group: bool) -> String {
+    let whose = if is_group { "this group" } else { "your own" };
+    let method = prayer::method_name(settings.prayer_method).unwrap_or("unknown");
+    let reminders = if reminders {
+        format!(
+            "on (start, and {} min before the end)",
+            settings.prayer_ending_minutes
+        )
+    } else {
+        "off (`/prayers on`)".to_string()
+    };
+    let mut text = format!(
+        "{GEAR} *Settings* ({whose})\n\
+         {PIN} {}, {}\n\
+         {CLOCK} {}\n\
+         {MOSQUE} Method {}: {method}; Asr {}\n\
+         {BELL} Prayer reminders: {reminders}\n\n\
+         Change with `/settings city …`, `timezone …`, `method …`, \
+         `school hanafi|shafi`, `ending 20` or `reset`.",
+        settings.city,
+        settings.country,
+        settings.timezone,
+        settings.prayer_method,
+        prayer::school_name(settings.prayer_school),
+    );
+    if is_group {
+        text.push_str(
+            "\nYour own settings: message me privately. `/settings everyone` shows each member's.",
+        );
+    }
+    text
+}
+
+/// The `/settings everyone` reply: each member's personal settings.
+fn format_everyone(members: &[MemberSettings], defaults: &Settings) -> String {
+    let mut text = format!("{PEOPLE} *Members' own settings* (from their chats with me)\n");
+    for member in members {
+        let line = match &member.settings {
+            None => "defaults".to_string(),
+            Some(own) => {
+                let s = own.overrides.apply(defaults);
+                let reminders = if own.prayer_reminders {
+                    "reminders on"
+                } else {
+                    "reminders off"
+                };
+                format!(
+                    "{}, {} · {} · method {} · {} · {reminders}",
+                    s.city,
+                    s.country,
+                    s.timezone,
+                    s.prayer_method,
+                    prayer::school_name(s.prayer_school)
+                )
+            }
+        };
+        text.push_str(&format!("• {}: {line}\n", member.display_name));
+    }
+    text
+}
+
+/// The `/settings methods` reply.
+fn format_methods() -> String {
+    let mut text = format!("{MOSQUE} *Prayer calculation methods*\n");
+    for (id, name) in prayer::METHODS {
+        text.push_str(&format!("{id}. {name}\n"));
+    }
+    text.push_str("\nChoose with `/settings method 3`.");
     text
 }
 
@@ -385,36 +574,44 @@ fn format_todo_list(open: &[OpenTodo]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::aladhan::Location;
     use crate::db::test_pool;
     use crate::person::Person;
+    use crate::prayer::Window;
     use crate::repo::chats;
+    use crate::settings::tests::defaults;
     use chrono::NaiveDate;
 
     /// 27 Oct 2026 in Milton Keynes (GMT, so London time = UTC).
     fn day() -> DayTimes {
         let at = |s: &str| s.parse::<DateTime<Utc>>().unwrap();
+        let w = |prayer, start, end| Window {
+            prayer,
+            start: at(start),
+            end: at(end),
+        };
         DayTimes {
             date: NaiveDate::from_ymd_opt(2026, 10, 27).unwrap(),
-            times: [
-                (Prayer::Fajr, at("2026-10-27T04:55:00Z")),
-                (Prayer::Dhuhr, at("2026-10-27T11:47:00Z")),
-                (Prayer::Asr, at("2026-10-27T14:16:00Z")),
-                (Prayer::Maghrib, at("2026-10-27T16:44:00Z")),
-                (Prayer::Isha, at("2026-10-27T18:31:00Z")),
+            windows: [
+                w(Prayer::Fajr, "2026-10-27T04:55:00Z", "2026-10-27T06:49:00Z"),
+                w(
+                    Prayer::Dhuhr,
+                    "2026-10-27T11:47:00Z",
+                    "2026-10-27T14:16:00Z",
+                ),
+                w(Prayer::Asr, "2026-10-27T14:16:00Z", "2026-10-27T16:44:00Z"),
+                w(
+                    Prayer::Maghrib,
+                    "2026-10-27T16:44:00Z",
+                    "2026-10-27T18:31:00Z",
+                ),
+                w(Prayer::Isha, "2026-10-27T18:31:00Z", "2026-10-27T23:46:00Z"),
             ],
         }
     }
 
     /// Prayer times that come from memory, never the network.
     fn times() -> PrayerTimes {
-        let location = Location {
-            city: "Milton Keynes".to_string(),
-            country: "GB".to_string(),
-            method: 3,
-            school: 0,
-        };
-        PrayerTimes::with_cached(location, day())
+        PrayerTimes::with_cached(defaults(), day())
     }
 
     fn item(position: i64, item_id: i64) -> ListItem {
@@ -494,6 +691,7 @@ mod tests {
         }
         Context {
             chat_id,
+            is_group: true,
             sender: sender.unwrap(),
             now,
         }
@@ -600,15 +798,15 @@ mod tests {
 
     #[test]
     fn prayer_day_ticks_what_was_prayed() {
-        let text = format_prayer_day(&day(), "Milton Keynes", &[Prayer::Fajr, Prayer::Asr]);
+        let text = format_prayer_day(&day(), &defaults(), &[Prayer::Fajr, Prayer::Asr]);
         assert!(
             text.starts_with("🕌 *Prayer times* (Milton Keynes, Tue 27 Oct)\n"),
             "{text}"
         );
-        assert!(text.contains("✅ Fajr 04:55\n"));
-        assert!(text.contains("⬜ Dhuhr 11:47\n"));
-        assert!(text.contains("✅ Asr 14:16\n"));
-        assert!(text.contains("⬜ Isha 18:31\n"));
+        assert!(text.contains("✅ Fajr 04:55–06:49\n"), "{text}");
+        assert!(text.contains("⬜ Dhuhr 11:47–14:16\n"));
+        assert!(text.contains("✅ Asr 14:16–16:44\n"));
+        assert!(text.contains("⬜ Isha 18:31–23:46\n"));
     }
 
     #[tokio::test]
@@ -843,6 +1041,7 @@ Already on the list: milk, Eggs"
             .unwrap();
         let other = Context {
             chat_id: other_chat,
+            is_group: true,
             sender: ctx.sender.clone(),
             now: ctx.now,
         };
@@ -910,5 +1109,131 @@ Already on the list: milk, Eggs"
 
         let reply = run_command(&mut conn, &ctx, &times(), got()).await.unwrap();
         assert_eq!(reply, Outcome::Reply("✅ Bought: *eggs*".to_string()));
+    }
+
+    // ---- settings ----
+
+    async fn settings_reply(
+        conn: &mut SqliteConnection,
+        ctx: &Context,
+        command: SettingsCommand,
+    ) -> String {
+        match run_command(conn, ctx, &times(), BotCommand::Settings(command))
+            .await
+            .unwrap()
+        {
+            Outcome::Reply(text) => text,
+            other => panic!("expected a reply, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn settings_show_the_defaults_then_changes() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let ctx = setup(&mut conn).await;
+
+        let text = settings_reply(&mut conn, &ctx, SettingsCommand::Show).await;
+        assert!(text.contains("*Settings* (this group)"), "{text}");
+        assert!(text.contains("📍 Milton Keynes, GB"), "{text}");
+        assert!(text.contains("Europe/London"), "{text}");
+        assert!(
+            text.contains("Method 3: Muslim World League; Asr Shafi'i"),
+            "{text}"
+        );
+        assert!(text.contains("reminders: off"), "{text}");
+
+        settings_reply(
+            &mut conn,
+            &ctx,
+            SettingsCommand::PrayerSchool(prayer::HANAFI),
+        )
+        .await;
+        settings_reply(&mut conn, &ctx, SettingsCommand::PrayerMethod(2)).await;
+        let text = settings_reply(
+            &mut conn,
+            &ctx,
+            SettingsCommand::Timezone("Asia/Karachi".into()),
+        )
+        .await;
+        assert!(text.contains("Asia/Karachi"), "{text}");
+        assert!(
+            text.contains("Method 2: Islamic Society of North America (ISNA); Asr Hanafi"),
+            "{text}"
+        );
+
+        let text = settings_reply(&mut conn, &ctx, SettingsCommand::Reset).await;
+        assert!(text.starts_with("Back to the defaults."), "{text}");
+        assert!(text.contains("Method 3"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn bad_settings_are_explained_and_not_saved() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let ctx = setup(&mut conn).await;
+
+        let text = settings_reply(&mut conn, &ctx, SettingsCommand::PrayerMethod(6)).await;
+        assert!(text.contains("no method 6"), "{text}");
+        let text = settings_reply(
+            &mut conn,
+            &ctx,
+            SettingsCommand::Timezone("Mars/Olympus".into()),
+        )
+        .await;
+        assert!(text.contains("don't know the timezone"), "{text}");
+        let text = settings_reply(&mut conn, &ctx, SettingsCommand::PrayerEnding(0)).await;
+        assert!(text.contains("between 1 and 120"), "{text}");
+
+        let stored = stored::get(&mut conn, ctx.chat_id).await.unwrap();
+        assert_eq!(stored.overrides, crate::settings::Overrides::default());
+    }
+
+    #[tokio::test]
+    async fn prayer_times_follow_the_chats_timezone() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let mut ctx = setup(&mut conn).await;
+        ctx.now = "2026-10-27T15:00:00Z".parse().unwrap();
+        // Same city's times, read on a Karachi clock (UTC+5).
+        stored::set_timezone(&mut conn, ctx.chat_id, "Asia/Karachi")
+            .await
+            .unwrap();
+        let karachi = crate::settings::Settings {
+            timezone: chrono_tz::Asia::Karachi,
+            ..defaults()
+        };
+        let source = PrayerTimes::with_cached(karachi, day());
+
+        let Outcome::Reply(text) = run_command(&mut conn, &ctx, &source, BotCommand::Prayers)
+            .await
+            .unwrap()
+        else {
+            panic!("expected a reply");
+        };
+        assert!(text.contains("Asr 19:16–21:44"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn everyone_lists_members_and_is_group_only() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let mut ctx = setup(&mut conn).await;
+
+        let text = settings_reply(&mut conn, &ctx, SettingsCommand::Everyone).await;
+        assert!(text.contains("• Bilal: defaults"), "{text}");
+        assert!(text.contains("• Khadija: defaults"), "{text}");
+
+        ctx.is_group = false;
+        let text = settings_reply(&mut conn, &ctx, SettingsCommand::Everyone).await;
+        assert!(text.contains("only you"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn methods_lists_every_method() {
+        let text = format_methods();
+        assert!(text.contains("3. Muslim World League\n"));
+        assert!(text.contains("23. Ministry of Awqaf, Jordan\n"));
+        assert!(!text.contains("\n6. "));
     }
 }

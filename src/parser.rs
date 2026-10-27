@@ -8,7 +8,7 @@
 //! quiet in the family group unless someone is talking to it.
 
 use crate::person::Assignee;
-use crate::prayer::Prayer;
+use crate::prayer::{HANAFI, Prayer, SHAFII};
 
 /// A command typed as a normal message.
 #[derive(Debug, PartialEq)]
@@ -39,8 +39,38 @@ pub enum BotCommand {
     /// `+prayed asr` or `+prayed fajr, dhuhr` or `+prayed all`: mark
     /// prayers as prayed today without reacting to a reminder
     Prayed(Vec<Prayer>),
-    /// `/help`
-    Help,
+    /// `/settings ...`: show or change this chat's settings
+    Settings(SettingsCommand),
+    /// `/help` (overview) or `/help shop` (one topic's page)
+    Help(Option<String>),
+}
+
+/// What a `/settings` message asks for. Values are only parsed here; the
+/// handler checks them (a real method number, a known city) so it can
+/// reply with a helpful message rather than staying silent.
+#[derive(Debug, PartialEq)]
+pub enum SettingsCommand {
+    /// `/settings`
+    Show,
+    /// `/settings everyone`: each member's personal settings
+    Everyone,
+    /// `/settings reset`
+    Reset,
+    /// `/settings methods`: the prayer calculation methods to choose from
+    Methods,
+    /// `/settings city Leicester, GB` (country optional)
+    City {
+        city: String,
+        country: Option<String>,
+    },
+    /// `/settings timezone Europe/London`
+    Timezone(String),
+    /// `/settings method 2`
+    PrayerMethod(u8),
+    /// `/settings school hanafi` / `shafi`
+    PrayerSchool(u8),
+    /// `/settings ending 20`
+    PrayerEnding(i64),
 }
 
 /// What `+got` refers to.
@@ -94,10 +124,62 @@ pub fn parse(text: &str) -> Option<BotCommand> {
             "off" => Some(BotCommand::PrayerReminders(false)),
             _ => None,
         },
-        "/help" if rest.is_empty() => Some(BotCommand::Help),
+        "/settings" | "/setting" => parse_settings(rest).map(BotCommand::Settings),
+        // Any word after /help is a topic; `help::page` handles unknown ones.
+        "/help" => Some(BotCommand::Help(
+            (!rest.is_empty()).then(|| rest.to_string()),
+        )),
 
         _ => None,
     }
+}
+
+/// The part after `/settings`: a key word, then (for some) a value.
+fn parse_settings(rest: &str) -> Option<SettingsCommand> {
+    let (key, value) = match rest.split_once(char::is_whitespace) {
+        Some((key, value)) => (key, value.trim()),
+        None => (rest, ""),
+    };
+
+    // A tuple match: both the key and whether there's a value decide.
+    match (key.to_lowercase().as_str(), value) {
+        ("", _) => Some(SettingsCommand::Show),
+        ("everyone" | "all", "") => Some(SettingsCommand::Everyone),
+        ("reset", "") => Some(SettingsCommand::Reset),
+        ("methods", "") => Some(SettingsCommand::Methods),
+        ("city" | "location", value) => parse_city(value),
+        // IANA names have no spaces ("America/New_York").
+        ("timezone" | "tz", value) if !value.is_empty() && !value.contains(char::is_whitespace) => {
+            Some(SettingsCommand::Timezone(value.to_string()))
+        }
+        ("method", value) => value.parse().ok().map(SettingsCommand::PrayerMethod),
+        ("school" | "asr", value) => match value.to_lowercase().as_str() {
+            "hanafi" => Some(SettingsCommand::PrayerSchool(HANAFI)),
+            "shafi" | "shafii" | "shafi'i" | "shafi’i" | "standard" => {
+                Some(SettingsCommand::PrayerSchool(SHAFII))
+            }
+            _ => None,
+        },
+        ("ending", value) => value.parse().ok().map(SettingsCommand::PrayerEnding),
+        _ => None,
+    }
+}
+
+/// "Leicester, GB" → city "Leicester", country "GB". "Leicester" → no
+/// country (the default is used). The *last* comma splits, so a city with
+/// a comma in its name still works.
+fn parse_city(value: &str) -> Option<SettingsCommand> {
+    let (city, country) = match value.rsplit_once(',') {
+        Some((city, country)) => (city.trim(), Some(country.trim())),
+        None => (value.trim(), None),
+    };
+    if city.is_empty() || country == Some("") {
+        return None;
+    }
+    Some(SettingsCommand::City {
+        city: city.to_string(),
+        country: country.map(str::to_string),
+    })
 }
 
 /// Parses the text of a reply to one of the bot's lists.
@@ -407,7 +489,11 @@ mod tests {
     fn list_commands() {
         assert_eq!(parse("/shop"), Some(BotCommand::ListShop));
         assert_eq!(parse("/todo"), Some(BotCommand::ListTodos));
-        assert_eq!(parse("/help"), Some(BotCommand::Help));
+        assert_eq!(parse("/help"), Some(BotCommand::Help(None)));
+        assert_eq!(
+            parse("/help todo"),
+            Some(BotCommand::Help(Some("todo".to_string())))
+        );
         assert_eq!(parse("/Shop"), Some(BotCommand::ListShop));
     }
 
@@ -464,11 +550,87 @@ mod tests {
         assert_eq!(parse("+prayed all fajr"), None);
     }
 
+    fn settings(text: &str) -> Option<SettingsCommand> {
+        match parse(text) {
+            Some(BotCommand::Settings(command)) => Some(command),
+            Some(other) => panic!("{text:?} parsed as {other:?}"),
+            None => None,
+        }
+    }
+
+    #[test]
+    fn settings_show_everyone_reset_methods() {
+        assert_eq!(settings("/settings"), Some(SettingsCommand::Show));
+        assert_eq!(
+            settings("/Settings everyone"),
+            Some(SettingsCommand::Everyone)
+        );
+        assert_eq!(settings("/settings all"), Some(SettingsCommand::Everyone));
+        assert_eq!(settings("/settings reset"), Some(SettingsCommand::Reset));
+        assert_eq!(
+            settings("/settings methods"),
+            Some(SettingsCommand::Methods)
+        );
+    }
+
+    #[test]
+    fn settings_city_with_and_without_country() {
+        assert_eq!(
+            settings("/settings city Milton Keynes, GB"),
+            Some(SettingsCommand::City {
+                city: "Milton Keynes".to_string(),
+                country: Some("GB".to_string()),
+            })
+        );
+        assert_eq!(
+            settings("/settings location Leicester"),
+            Some(SettingsCommand::City {
+                city: "Leicester".to_string(),
+                country: None,
+            })
+        );
+        assert_eq!(settings("/settings city"), None);
+        assert_eq!(settings("/settings city , GB"), None);
+        assert_eq!(settings("/settings city Leicester,"), None);
+    }
+
+    #[test]
+    fn settings_timezone_method_school_ending() {
+        assert_eq!(
+            settings("/settings timezone Europe/Paris"),
+            Some(SettingsCommand::Timezone("Europe/Paris".to_string()))
+        );
+        assert_eq!(settings("/settings timezone Europe Paris"), None);
+        assert_eq!(
+            settings("/settings method 2"),
+            Some(SettingsCommand::PrayerMethod(2))
+        );
+        assert_eq!(settings("/settings method two"), None);
+        assert_eq!(
+            settings("/settings school Hanafi"),
+            Some(SettingsCommand::PrayerSchool(HANAFI))
+        );
+        assert_eq!(
+            settings("/settings school shafi"),
+            Some(SettingsCommand::PrayerSchool(SHAFII))
+        );
+        assert_eq!(
+            settings("/settings school shafi'i"),
+            Some(SettingsCommand::PrayerSchool(SHAFII))
+        );
+        assert_eq!(settings("/settings school maliki"), None);
+        assert_eq!(
+            settings("/settings ending 15"),
+            Some(SettingsCommand::PrayerEnding(15))
+        );
+        assert_eq!(settings("/settings ending soon"), None);
+        assert_eq!(settings("/settings colour blue"), None);
+    }
+
     #[test]
     fn slash_commands_with_unexpected_words_are_none() {
         assert_eq!(parse("/shop milk"), None);
         assert_eq!(parse("/todo now"), None);
-        assert_eq!(parse("/help me"), None);
         assert_eq!(parse("/prayers maybe"), None);
         assert_eq!(parse("/prayers on off"), None);
     }

@@ -212,6 +212,7 @@ async fn handle_message(
 
     let ctx = Context {
         chat_id,
+        is_group: dm_owner.is_none(),
         sender: user,
         now,
     };

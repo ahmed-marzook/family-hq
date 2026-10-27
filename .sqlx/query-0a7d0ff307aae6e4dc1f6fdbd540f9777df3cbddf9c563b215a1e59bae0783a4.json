@@ -1,0 +1,122 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT u.display_name,\n                  s.chat_id AS \"has_row?\",\n                  s.prayer_reminders AS \"prayer_reminders?: bool\",\n                  s.timezone, s.city, s.country,\n                  s.prayer_method, s.prayer_school, s.prayer_ending_minutes\n           FROM chat_members m\n           JOIN users u ON u.id = m.user_id\n           LEFT JOIN chats dm ON dm.dm_user_id = u.id\n           LEFT JOIN chat_settings s ON s.chat_id = dm.id\n           WHERE m.chat_id = ?\n           ORDER BY u.display_name",
+  "describe": {
+    "columns": [
+      {
+        "name": "display_name",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "display_name"
+          }
+        }
+      },
+      {
+        "name": "has_row?",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "chat_settings",
+            "name": "chat_id"
+          }
+        }
+      },
+      {
+        "name": "prayer_reminders?: bool",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "chat_settings",
+            "name": "prayer_reminders"
+          }
+        }
+      },
+      {
+        "name": "timezone",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chat_settings",
+            "name": "timezone"
+          }
+        }
+      },
+      {
+        "name": "city",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chat_settings",
+            "name": "city"
+          }
+        }
+      },
+      {
+        "name": "country",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chat_settings",
+            "name": "country"
+          }
+        }
+      },
+      {
+        "name": "prayer_method",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "chat_settings",
+            "name": "prayer_method"
+          }
+        }
+      },
+      {
+        "name": "prayer_school",
+        "ordinal": 7,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "chat_settings",
+            "name": "prayer_school"
+          }
+        }
+      },
+      {
+        "name": "prayer_ending_minutes",
+        "ordinal": 8,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "chat_settings",
+            "name": "prayer_ending_minutes"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "0a7d0ff307aae6e4dc1f6fdbd540f9777df3cbddf9c563b215a1e59bae0783a4"
+}
