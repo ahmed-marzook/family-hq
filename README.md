@@ -13,7 +13,8 @@ and habit tracking.
 ## Status
 
 Planning. See [docs/ROADMAP.md](docs/ROADMAP.md) for the phases, stages and
-draft schema.
+draft schema. To run GOWA locally and experiment with WhatsApp, see
+[docs/GOWA.md](docs/GOWA.md).
 
 ## Phase 1 commands (planned)
 

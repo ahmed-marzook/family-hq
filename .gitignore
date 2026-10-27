@@ -2,6 +2,9 @@
 *.db
 *.db-*
 .env
+
+# GOWA session data (if ever bind-mounted instead of a named volume)
+storages/
 .idea/
 .vscode/
 .DS_Store

@@ -1,0 +1,46 @@
+# Family HQ stack.
+#
+# Right now this only runs GOWA (the WhatsApp bridge) plus a webhook echo
+# server for experimenting. The `family-hq` service itself gets added here
+# in Stage 1.1, once the Dockerfile exists.
+#
+# Setup: copy `.env.example` to `.env` and fill it in. See docs/GOWA.md.
+
+services:
+  gowa:
+    # Pinned so an upstream release can't change the webhook payload under us.
+    image: aldinokemal2104/go-whatsapp-web-multidevice:v9.7.0
+    restart: unless-stopped
+    command: ["rest"]
+    ports:
+      # GOWA listens on 3000 inside the container. On the host it's 3001,
+      # because family-hq will use 3000. Bound to localhost by default;
+      # set GOWA_BIND=0.0.0.0 in .env to reach it from another machine.
+      - "${GOWA_BIND:-127.0.0.1}:3001:3000"
+    environment:
+      APP_OS: FamilyHQ # name shown under "Linked devices" on the phone
+      APP_BASIC_AUTH: ${GOWA_BASIC_AUTH:?set GOWA_BASIC_AUTH in .env}
+      WHATSAPP_WEBHOOK: ${GOWA_WEBHOOK_URL:-http://webhook-echo:8080/webhook/whatsapp}
+      WHATSAPP_WEBHOOK_SECRET: ${GOWA_WEBHOOK_SECRET:?set GOWA_WEBHOOK_SECRET in .env}
+      # Only the events Phase 1 uses: messages (incl. replies) and reactions.
+      # Remove this line to see every event type while experimenting.
+      WHATSAPP_WEBHOOK_EVENTS: message,message.reaction
+      WHATSAPP_AUTO_DOWNLOAD_MEDIA: "false"
+      TZ: Europe/London
+    volumes:
+      # The WhatsApp session lives here. Losing it means pairing again.
+      - gowa_storages:/app/storages
+      - gowa_statics:/app/statics
+
+  # Logs every request it receives (headers + JSON body), so you can see
+  # exactly what GOWA sends before family-hq has a webhook endpoint.
+  # Watch it with: docker compose logs -f webhook-echo
+  webhook-echo:
+    image: mendhak/http-https-echo:43
+    restart: unless-stopped
+    environment:
+      LOG_IGNORE_PATH: /health
+
+volumes:
+  gowa_storages:
+  gowa_statics:
