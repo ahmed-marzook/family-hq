@@ -1,13 +1,16 @@
 //! What the bot does for each command: database changes, then the text to
-//! send back. No HTTP and no GOWA here; the webhook does the sending.
+//! send back. No GOWA here; the webhook does the sending.
 
 use chrono::{DateTime, Utc};
 use sqlx::SqliteConnection;
 
+use crate::aladhan::PrayerTimes;
 use crate::error::AppError;
 use crate::parser::{BotCommand, ReplyCommand};
 use crate::person::Assignee;
+use crate::prayer::{self, DayTimes, Prayer};
 use crate::repo::messages::ListItem;
+use crate::repo::prayers;
 use crate::repo::todos::{self, OpenTodo};
 use crate::repo::users::{self, User};
 
@@ -17,6 +20,10 @@ const DONE: &str = "✅";
 const REMOVED: &str = "🗑️";
 const PROBLEM: &str = "❓";
 const SHOP: &str = "🛒";
+const MOSQUE: &str = "🕌";
+const NOT_YET: &str = "⬜";
+const BELL: &str = "🔔";
+const BELL_OFF: &str = "🔕";
 
 /// `item_type` for todos in `wa_message_context`.
 pub const TODO_ITEM: &str = "todo";
@@ -26,6 +33,9 @@ const HELP: &str = "🤖 *Family HQ*
 +todo @Name book dentist — assign it to someone here
 /todo — numbered list of open todos
 Reply to a list with `done 2` (or `1 3`) or `remove 2`
+/prayers — today's prayer times and what you've prayed
+/prayers on — prayer reminders in this chat (/prayers off to stop)
++prayed asr — mark a prayer as prayed (or react to its reminder)
 /help — this message";
 
 /// Who is asking, and where.
@@ -47,9 +57,13 @@ pub enum Outcome {
 }
 
 /// Runs a command typed as a normal message.
+///
+/// `prayer_times` is only used by `/prayers`. It answers from its cache
+/// almost always; at most once a day it calls AlAdhan first.
 pub async fn run_command(
     conn: &mut SqliteConnection,
     ctx: &Context,
+    prayer_times: &PrayerTimes,
     command: BotCommand,
 ) -> Result<Outcome, AppError> {
     let text = match command {
@@ -60,6 +74,33 @@ pub async fn run_command(
                 text: format_todo_list(&open),
                 todo_ids: open.iter().map(|t| t.id).collect(),
             });
+        }
+        BotCommand::Prayers => {
+            let day = prayer_times.for_date(prayer::london_date(ctx.now)).await?;
+            let prayed = prayers::prayed_on(conn, ctx.sender.id, day.date).await?;
+            format_prayer_day(&day, &prayer_times.location.city, &prayed)
+        }
+        BotCommand::Prayed(names) => {
+            // For people who didn't catch the reminder: same effect as
+            // reacting to it, for today.
+            let today = prayer::london_date(ctx.now);
+            for prayer in names {
+                prayers::mark_prayed(conn, ctx.sender.id, today, prayer, ctx.now).await?;
+            }
+            let day = prayer_times.for_date(today).await?;
+            let prayed = prayers::prayed_on(conn, ctx.sender.id, today).await?;
+            format_prayer_day(&day, &prayer_times.location.city, &prayed)
+        }
+        BotCommand::PrayerReminders(on) => {
+            prayers::set_reminders(conn, ctx.chat_id, on).await?;
+            if on {
+                format!(
+                    "{BELL} Prayer reminders are on in this chat. \
+                     React to a reminder to mark that prayer as prayed."
+                )
+            } else {
+                format!("{BELL_OFF} Prayer reminders are off in this chat.")
+            }
         }
         BotCommand::Help => HELP.to_string(),
         BotCommand::AddShop(_) | BotCommand::ListShop | BotCommand::ClearShop => {
@@ -189,6 +230,28 @@ fn unknown_name(name: &str, known: &[String]) -> String {
     }
 }
 
+/// The `/prayers` reply: each time on the London clock, ticked if the
+/// sender has prayed it.
+fn format_prayer_day(day: &DayTimes, city: &str, prayed: &[Prayer]) -> String {
+    let mut text = format!(
+        "{MOSQUE} *Prayer times* ({city}, {})\n",
+        day.date.format("%a %-d %b")
+    );
+    for (prayer, start) in &day.times {
+        let mark = if prayed.contains(prayer) {
+            DONE
+        } else {
+            NOT_YET
+        };
+        text.push_str(&format!(
+            "{mark} {prayer} {}\n",
+            prayer::london_hhmm(*start)
+        ));
+    }
+    text.push_str("\nTick one off with `+prayed asr`, or react to its reminder.");
+    text
+}
+
 /// The `/todo` reply. Numbers start at 1 and match `todo_ids` order.
 fn format_todo_list(open: &[OpenTodo]) -> String {
     if open.is_empty() {
@@ -211,9 +274,37 @@ fn format_todo_list(open: &[OpenTodo]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::aladhan::Location;
     use crate::db::test_pool;
     use crate::person::Person;
     use crate::repo::chats;
+    use chrono::NaiveDate;
+
+    /// 27 Oct 2026 in Milton Keynes (GMT, so London time = UTC).
+    fn day() -> DayTimes {
+        let at = |s: &str| s.parse::<DateTime<Utc>>().unwrap();
+        DayTimes {
+            date: NaiveDate::from_ymd_opt(2026, 10, 27).unwrap(),
+            times: [
+                (Prayer::Fajr, at("2026-10-27T04:55:00Z")),
+                (Prayer::Dhuhr, at("2026-10-27T11:47:00Z")),
+                (Prayer::Asr, at("2026-10-27T14:16:00Z")),
+                (Prayer::Maghrib, at("2026-10-27T16:44:00Z")),
+                (Prayer::Isha, at("2026-10-27T18:31:00Z")),
+            ],
+        }
+    }
+
+    /// Prayer times that come from memory, never the network.
+    fn times() -> PrayerTimes {
+        let location = Location {
+            city: "Milton Keynes".to_string(),
+            country: "GB".to_string(),
+            method: 3,
+            school: 0,
+        };
+        PrayerTimes::with_cached(location, day())
+    }
 
     fn item(position: i64, item_id: i64) -> ListItem {
         ListItem {
@@ -310,7 +401,7 @@ mod tests {
         let mut conn = pool.acquire().await.unwrap();
         let ctx = setup(&mut conn).await;
 
-        let mine = run_command(&mut conn, &ctx, add("go gym", None))
+        let mine = run_command(&mut conn, &ctx, &times(), add("go gym", None))
             .await
             .unwrap();
         assert_eq!(
@@ -319,7 +410,7 @@ mod tests {
         );
 
         let mention = Some(Assignee::Mentioned("khadija".to_string()));
-        let theirs = run_command(&mut conn, &ctx, add("book dentist", mention))
+        let theirs = run_command(&mut conn, &ctx, &times(), add("book dentist", mention))
             .await
             .unwrap();
         assert_eq!(
@@ -335,7 +426,7 @@ mod tests {
         let ctx = setup(&mut conn).await;
 
         let mention = Some(Assignee::Mentioned("Yusuf".to_string()));
-        let Outcome::Reply(text) = run_command(&mut conn, &ctx, add("x", mention))
+        let Outcome::Reply(text) = run_command(&mut conn, &ctx, &times(), add("x", mention))
             .await
             .unwrap()
         else {
@@ -356,13 +447,13 @@ mod tests {
         let mut conn = pool.acquire().await.unwrap();
         let ctx = setup(&mut conn).await;
         for title in ["go gym", "fix the tap", "book dentist"] {
-            run_command(&mut conn, &ctx, add(title, None))
+            run_command(&mut conn, &ctx, &times(), add(title, None))
                 .await
                 .unwrap();
         }
 
         let Outcome::TodoList { todo_ids, .. } =
-            run_command(&mut conn, &ctx, BotCommand::ListTodos)
+            run_command(&mut conn, &ctx, &times(), BotCommand::ListTodos)
                 .await
                 .unwrap()
         else {
@@ -394,5 +485,86 @@ mod tests {
             .await
             .unwrap();
         assert!(reply.contains("only has 3 items"), "{reply}");
+    }
+
+    #[test]
+    fn prayer_day_ticks_what_was_prayed() {
+        let text = format_prayer_day(&day(), "Milton Keynes", &[Prayer::Fajr, Prayer::Asr]);
+        assert!(
+            text.starts_with("🕌 *Prayer times* (Milton Keynes, Tue 27 Oct)\n"),
+            "{text}"
+        );
+        assert!(text.contains("✅ Fajr 04:55\n"));
+        assert!(text.contains("⬜ Dhuhr 11:47\n"));
+        assert!(text.contains("✅ Asr 14:16\n"));
+        assert!(text.contains("⬜ Isha 18:31\n"));
+    }
+
+    #[tokio::test]
+    async fn prayers_command_shows_the_senders_own_ticks() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let mut ctx = setup(&mut conn).await;
+        ctx.now = "2026-10-27T15:00:00Z".parse().unwrap();
+        prayers::mark_prayed(&mut conn, ctx.sender.id, day().date, Prayer::Dhuhr, ctx.now)
+            .await
+            .unwrap();
+
+        let Outcome::Reply(text) = run_command(&mut conn, &ctx, &times(), BotCommand::Prayers)
+            .await
+            .unwrap()
+        else {
+            panic!("expected a reply");
+        };
+        assert!(text.contains("✅ Dhuhr 11:47"), "{text}");
+        assert!(text.contains("⬜ Asr 14:16"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn prayer_reminders_on_and_off() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let ctx = setup(&mut conn).await;
+
+        let on = run_command(&mut conn, &ctx, &times(), BotCommand::PrayerReminders(true))
+            .await
+            .unwrap();
+        assert!(matches!(on, Outcome::Reply(t) if t.contains("on")));
+        assert_eq!(prayers::reminder_chats(&mut conn).await.unwrap().len(), 1);
+
+        run_command(
+            &mut conn,
+            &ctx,
+            &times(),
+            BotCommand::PrayerReminders(false),
+        )
+        .await
+        .unwrap();
+        assert!(prayers::reminder_chats(&mut conn).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn prayed_command_marks_today_and_shows_the_day() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let mut ctx = setup(&mut conn).await;
+        ctx.now = "2026-10-27T19:00:00Z".parse().unwrap();
+
+        let command = BotCommand::Prayed(vec![Prayer::Fajr, Prayer::Isha]);
+        let Outcome::Reply(text) = run_command(&mut conn, &ctx, &times(), command)
+            .await
+            .unwrap()
+        else {
+            panic!("expected a reply");
+        };
+        assert!(text.contains("✅ Fajr 04:55"), "{text}");
+        assert!(text.contains("⬜ Asr 14:16"), "{text}");
+        assert!(text.contains("✅ Isha 18:31"), "{text}");
+
+        let mut prayed = prayers::prayed_on(&mut conn, ctx.sender.id, day().date)
+            .await
+            .unwrap();
+        prayed.sort_by_key(|p| p.as_db_str());
+        assert_eq!(prayed, [Prayer::Fajr, Prayer::Isha]);
     }
 }

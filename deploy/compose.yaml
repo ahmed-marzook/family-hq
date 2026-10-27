@@ -1,0 +1,71 @@
+# Family HQ on the home server. See docs/DEPLOY.md.
+#
+# Two containers, started together:
+#   family-hq  our Rust server, pulled from Docker Hub (no building here)
+#   gowa       the WhatsApp bridge, logged in as the bot's number
+#
+# GOWA sends every WhatsApp message to family-hq over Compose's private
+# network (http://family-hq:3000), and family-hq calls GOWA back the same
+# way (http://gowa:3000) to reply. Nothing needs to be open to the internet:
+# GOWA connects *out* to WhatsApp.
+#
+# Usage, in the folder with this file and its .env:
+#   docker compose up -d        start (or apply changes)
+#   docker compose pull         fetch newer images, then `up -d` again
+#   docker compose logs -f      watch both
+
+name: family-hq
+
+services:
+  family-hq:
+    # FAMILY_HQ_TAG in .env picks the version; `latest` if unset.
+    image: kaizenflow/family-hq:${FAMILY_HQ_TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      - gowa
+    environment:
+      GOWA_WEBHOOK_SECRET: ${GOWA_WEBHOOK_SECRET:?set GOWA_WEBHOOK_SECRET in .env}
+      GOWA_BASIC_AUTH: ${GOWA_BASIC_AUTH:?set GOWA_BASIC_AUTH in .env}
+      # Service name + GOWA's port *inside* its container.
+      GOWA_URL: http://gowa:3000
+      # Prayer times (AlAdhan). Defaults shown; set them in .env to change.
+      PRAYER_CITY: ${PRAYER_CITY:-Milton Keynes}
+      PRAYER_COUNTRY: ${PRAYER_COUNTRY:-GB}
+      PRAYER_METHOD: ${PRAYER_METHOD:-3}          # 3 = Muslim World League
+      PRAYER_SCHOOL: ${PRAYER_SCHOOL:-0}          # Asr: 0 = standard, 1 = Hanafi
+      PRAYER_REMINDER_MINUTES: ${PRAYER_REMINDER_MINUTES:-10}
+    ports:
+      # Only for checking it from the server itself (curl localhost:3000/health).
+      # GOWA reaches it over the Compose network, not through this port.
+      - "127.0.0.1:3000:3000"
+    volumes:
+      # The SQLite database. Back this up (see docs/DEPLOY.md).
+      - family_hq_data:/data
+
+  gowa:
+    # Pinned: an upstream release could change the webhook payload.
+    image: aldinokemal2104/go-whatsapp-web-multidevice:v9.7.0
+    restart: unless-stopped
+    command: ["rest"]
+    ports:
+      # GOWA's web UI, for pairing the bot's phone. Localhost only by
+      # default: reach it with an SSH tunnel (docs/DEPLOY.md), or set
+      # GOWA_BIND=0.0.0.0 in .env to open it to your home network.
+      - "${GOWA_BIND:-127.0.0.1}:3001:3000"
+    environment:
+      APP_OS: FamilyHQ # name shown under "Linked devices" on the phone
+      APP_BASIC_AUTH: ${GOWA_BASIC_AUTH:?set GOWA_BASIC_AUTH in .env}
+      WHATSAPP_WEBHOOK: http://family-hq:3000/webhook/whatsapp
+      WHATSAPP_WEBHOOK_SECRET: ${GOWA_WEBHOOK_SECRET:?set GOWA_WEBHOOK_SECRET in .env}
+      WHATSAPP_WEBHOOK_EVENTS: message,message.reaction
+      WHATSAPP_AUTO_DOWNLOAD_MEDIA: "false"
+      TZ: Europe/London
+    volumes:
+      # The WhatsApp login. Losing it means pairing the phone again.
+      - gowa_storages:/app/storages
+      - gowa_statics:/app/statics
+
+volumes:
+  family_hq_data:
+  gowa_storages:
+  gowa_statics:

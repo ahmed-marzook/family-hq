@@ -8,6 +8,7 @@
 //! quiet in the family group unless someone is talking to it.
 
 use crate::person::Assignee;
+use crate::prayer::Prayer;
 
 /// A command typed as a normal message.
 #[derive(Debug, PartialEq)]
@@ -28,6 +29,13 @@ pub enum BotCommand {
     },
     /// `/todo`
     ListTodos,
+    /// `/prayers`: today's times, and which you've prayed
+    Prayers,
+    /// `/prayers on` (true) / `/prayers off` (false): reminders in this chat
+    PrayerReminders(bool),
+    /// `+prayed asr` or `+prayed fajr, dhuhr` or `+prayed all`: mark
+    /// prayers as prayed today without reacting to a reminder
+    Prayed(Vec<Prayer>),
     /// `/help`
     Help,
 }
@@ -60,12 +68,19 @@ pub fn parse(text: &str) -> Option<BotCommand> {
     match first.to_lowercase().as_str() {
         "+shop" | "+buy" => parse_shop_items(rest).map(BotCommand::AddShop),
         "+todo" => parse_add_todo(rest),
+        "+prayed" => parse_prayed(rest).map(BotCommand::Prayed),
 
         // Match guards (`if ...`) pick the arm by what follows the command.
         // `/shop something-else` falls through to `None`.
         "/shop" if rest.is_empty() => Some(BotCommand::ListShop),
         "/shop" if rest.eq_ignore_ascii_case("clear") => Some(BotCommand::ClearShop),
         "/todo" if rest.is_empty() => Some(BotCommand::ListTodos),
+        "/prayers" | "/prayer" => match rest.to_lowercase().as_str() {
+            "" => Some(BotCommand::Prayers),
+            "on" => Some(BotCommand::PrayerReminders(true)),
+            "off" => Some(BotCommand::PrayerReminders(false)),
+            _ => None,
+        },
         "/help" if rest.is_empty() => Some(BotCommand::Help),
 
         _ => None,
@@ -151,6 +166,47 @@ fn parse_add_todo(rest: &str) -> Option<BotCommand> {
         title: title.to_string(),
         assignee,
     })
+}
+
+/// "asr" → [Asr], "fajr, dhuhr" → [Fajr, Dhuhr], "all" → all five.
+/// `None` if nothing is named or any word isn't a prayer, so a typo gets
+/// no silent half-result.
+fn parse_prayed(rest: &str) -> Option<Vec<Prayer>> {
+    let words: Vec<String> = rest
+        .split([',', ' ', '\n'])
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
+        .collect();
+
+    if words == ["all"] {
+        return Some(Prayer::ALL.to_vec());
+    }
+
+    // Same trick as `parse_reply`: collecting `Option`s into
+    // `Option<Vec<_>>` is `None` if any word didn't match.
+    let mut prayers: Vec<Prayer> = words
+        .iter()
+        .map(|w| prayer_name(w))
+        .collect::<Option<_>>()?;
+    if prayers.is_empty() {
+        return None;
+    }
+    // In day order, each once: "asr fajr asr" → [Fajr, Asr].
+    prayers.sort_by_key(|p| Prayer::ALL.iter().position(|q| q == p));
+    prayers.dedup();
+    Some(prayers)
+}
+
+/// A prayer's name as people type it, including common spellings.
+fn prayer_name(word: &str) -> Option<Prayer> {
+    match word {
+        "fajr" | "fajar" | "subh" | "fajir" => Some(Prayer::Fajr),
+        "dhuhr" | "zuhr" | "zohr" | "zuhur" | "dhuhur" | "duhr" | "zhuhr" => Some(Prayer::Dhuhr),
+        "asr" | "asar" => Some(Prayer::Asr),
+        "maghrib" | "magrib" | "maghreb" => Some(Prayer::Maghrib),
+        "isha" | "esha" | "ishaa" | "isya" => Some(Prayer::Isha),
+        _ => None,
+    }
 }
 
 /// A list number as typed: "1" or more. 0, negatives and words are `None`.
@@ -302,10 +358,59 @@ mod tests {
     }
 
     #[test]
+    fn prayer_commands() {
+        assert_eq!(parse("/prayers"), Some(BotCommand::Prayers));
+        assert_eq!(parse("/Prayer"), Some(BotCommand::Prayers));
+        assert_eq!(
+            parse("/prayers on"),
+            Some(BotCommand::PrayerReminders(true))
+        );
+        assert_eq!(
+            parse("/prayers OFF"),
+            Some(BotCommand::PrayerReminders(false))
+        );
+        assert_eq!(
+            parse("  /prayer   on "),
+            Some(BotCommand::PrayerReminders(true))
+        );
+    }
+
+    #[test]
+    fn prayed_names_one_or_more_prayers() {
+        assert_eq!(
+            parse("+prayed asr"),
+            Some(BotCommand::Prayed(vec![Prayer::Asr]))
+        );
+        assert_eq!(
+            parse("+Prayed Isha, fajr"),
+            Some(BotCommand::Prayed(vec![Prayer::Fajr, Prayer::Isha]))
+        );
+        assert_eq!(
+            parse("+prayed zuhr asr zohr"),
+            Some(BotCommand::Prayed(vec![Prayer::Dhuhr, Prayer::Asr]))
+        );
+        assert_eq!(
+            parse("+prayed all"),
+            Some(BotCommand::Prayed(Prayer::ALL.to_vec()))
+        );
+    }
+
+    #[test]
+    fn prayed_with_nothing_or_a_typo_is_none() {
+        assert_eq!(parse("+prayed"), None);
+        assert_eq!(parse("+prayed ,"), None);
+        assert_eq!(parse("+prayed asr and fajr"), None);
+        assert_eq!(parse("+prayed sunrise"), None);
+        assert_eq!(parse("+prayed all fajr"), None);
+    }
+
+    #[test]
     fn slash_commands_with_unexpected_words_are_none() {
         assert_eq!(parse("/shop milk"), None);
         assert_eq!(parse("/todo now"), None);
         assert_eq!(parse("/help me"), None);
+        assert_eq!(parse("/prayers maybe"), None);
+        assert_eq!(parse("/prayers on off"), None);
     }
 
     // ---- ordinary chat ----

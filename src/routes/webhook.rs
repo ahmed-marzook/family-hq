@@ -19,7 +19,7 @@ use crate::handlers::{self, Context, Outcome};
 use crate::parser::{self, BotCommand, ReplyCommand};
 use crate::person::{Assignee, Person};
 use crate::repo::messages::{self, ListItem};
-use crate::repo::{chats, users};
+use crate::repo::{chats, prayers, users};
 use crate::whatsapp;
 
 /// HMAC using SHA-256 as its hash. A type alias just gives a long type a
@@ -89,6 +89,8 @@ pub struct Reaction {
     pub id: String,
     pub chat_id: String,
     pub from: String,
+    pub from_lid: Option<String>,
+    pub from_name: Option<String>,
     /// The emoji. Empty when a reaction is removed.
     pub reaction: String,
     /// The message that was reacted to.
@@ -139,13 +141,7 @@ pub async fn whatsapp(
     // everything below can be tested with a fixed time.
     let result = match event {
         WebhookEvent::Message(msg) => handle_message(&state, msg, Utc::now()).await,
-        WebhookEvent::Reaction(r) => {
-            println!(
-                "webhook: {} reacted {:?} to {} in {}",
-                r.from, r.reaction, r.reacted_message_id, r.chat_id
-            );
-            Ok(())
-        }
+        WebhookEvent::Reaction(r) => handle_reaction(&state, r, Utc::now()).await,
     };
 
     // A database error means nothing was saved (the transaction rolled
@@ -225,7 +221,7 @@ async fn handle_message(
                 "webhook: {} in {}: {command:?}",
                 ctx.sender.display_name, msg.chat_id
             );
-            handlers::run_command(&mut tx, &ctx, command).await?
+            handlers::run_command(&mut tx, &ctx, &state.prayer_times, command).await?
         }
         Action::ListReply(items, reply) => {
             println!(
@@ -254,6 +250,56 @@ async fn handle_message(
             }
         }
     }
+    Ok(())
+}
+
+/// Handles a reaction. The only reactions that mean anything are on prayer
+/// reminders: any emoji marks that prayer as prayed for whoever reacted,
+/// and removing it (an empty `reaction`) unmarks it.
+async fn handle_reaction(
+    state: &AppState,
+    r: Reaction,
+    now: DateTime<Utc>,
+) -> Result<(), AppError> {
+    if r.is_from_me {
+        return Ok(());
+    }
+
+    let mut tx = state.db.begin().await?;
+    let Some((date, prayer)) =
+        prayers::find_reminder(&mut tx, &r.reacted_message_id, &r.chat_id).await?
+    else {
+        println!(
+            "webhook: {} reacted {:?} (not to a reminder)",
+            r.from, r.reaction
+        );
+        return Ok(());
+    };
+
+    let sender = Person {
+        name: r.from_name.clone().unwrap_or_else(|| r.from.clone()),
+        jid: r.from.clone(),
+        lid: r.from_lid.clone(),
+    };
+    let Some(user) = users::find_or_register(&mut tx, &sender, now).await? else {
+        println!("webhook: can't register {} (no phone number)", r.from);
+        return Ok(());
+    };
+
+    // Adding the same reaction twice, or removing one that's already
+    // gone, is harmless: both repo calls are safe to repeat. So retried
+    // webhooks need no dedupe here.
+    if r.reaction.is_empty() {
+        prayers::unmark_prayed(&mut tx, user.id, date, prayer).await?;
+        println!(
+            "webhook: {} un-prayed {prayer} on {date}",
+            user.display_name
+        );
+    } else {
+        prayers::mark_prayed(&mut tx, user.id, date, prayer, now).await?;
+        println!("webhook: {} prayed {prayer} on {date}", user.display_name);
+    }
+    tx.commit().await?;
     Ok(())
 }
 

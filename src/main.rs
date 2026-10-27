@@ -1,3 +1,4 @@
+use family_hq::AppState;
 use family_hq::config::Config;
 
 // `#[tokio::main]` turns `async fn main` into a normal `main` that starts
@@ -14,16 +15,28 @@ async fn main() {
         .expect("failed to open database");
     println!("database ready at {}", config.database_url);
 
+    let port = config.port;
+    let location = config.prayer_location.clone();
+    let state = AppState::new(config, db);
+
+    // `tokio::spawn` starts the reminder loop as a separate task that runs
+    // alongside the web server. It gets its own clone of the `Arc`. It
+    // stops when `main` returns.
+    tokio::spawn(family_hq::reminders::run(state.clone()));
+    println!(
+        "prayer reminders on for {}, {} (method {})",
+        location.city, location.country, location.method
+    );
+
     // 0.0.0.0 = listen on every network interface, which is needed inside
     // Docker. `.await` waits for the bind without blocking the thread.
-    let addr = ("0.0.0.0", config.port);
-    let listener = tokio::net::TcpListener::bind(addr)
+    let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))
         .await
         .expect("failed to bind port");
 
-    println!("listening on http://localhost:{}", config.port);
+    println!("listening on http://localhost:{port}");
 
-    axum::serve(listener, family_hq::app(config, db))
+    axum::serve(listener, family_hq::app(state))
         .with_graceful_shutdown(shutdown_signal())
         .await
         .expect("server error");

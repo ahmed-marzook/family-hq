@@ -14,8 +14,13 @@ pub enum AppError {
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
 
-    #[error("GOWA request failed: {0}")]
-    WhatsApp(#[from] reqwest::Error),
+    /// Any outgoing HTTP call: GOWA or AlAdhan.
+    #[error("HTTP request failed: {0}")]
+    Http(#[from] reqwest::Error),
+
+    /// AlAdhan answered, but with something we couldn't use.
+    #[error("prayer times: {0}")]
+    PrayerTimes(String),
 }
 
 /// Lets a handler return `Result<_, AppError>`: on `Err`, Axum calls this

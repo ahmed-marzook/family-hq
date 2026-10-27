@@ -243,6 +243,8 @@ mod tests {
             [
                 "chat_members",
                 "chats",
+                "prayer_log",
+                "prayer_reminders",
                 "processed_messages",
                 "shopping_items",
                 "todos",

@@ -1,6 +1,9 @@
 //! Settings read from environment variables.
 
 use std::env;
+use std::str::FromStr;
+
+use crate::aladhan::Location;
 
 /// Everything the server needs to know at startup.
 #[derive(Debug, Clone)]
@@ -17,34 +20,43 @@ pub struct Config {
     /// The SQLite database (`DATABASE_URL`), e.g. `sqlite:family-hq.db`.
     /// Same variable name the `sqlx` command-line tool uses.
     pub database_url: String,
+    /// Where and how prayer times are calculated (`PRAYER_CITY`,
+    /// `PRAYER_COUNTRY`, `PRAYER_METHOD`, `PRAYER_SCHOOL`).
+    pub prayer_location: Location,
+    /// How many minutes before each prayer the reminder goes out
+    /// (`PRAYER_REMINDER_MINUTES`).
+    pub prayer_reminder_minutes: i64,
 }
 
 impl Config {
-    /// Reads `PORT` (default 3000), `GOWA_URL` (default
-    /// `http://localhost:3001`), `DATABASE_URL` (default
-    /// `sqlite:family-hq.db`, next to where you run it), and
-    /// `GOWA_WEBHOOK_SECRET` and `GOWA_BASIC_AUTH` (both required).
+    /// Reads every setting, using defaults where there's a sensible one:
     ///
-    /// `env::var` returns a `Result`: `Err` if the variable isn't set.
-    /// `.ok()` turns that into an `Option`, `.and_then(|p| p.parse().ok())`
-    /// tries to turn the text into a `u16`, and `.unwrap_or(3000)` falls
-    /// back to the default if either step failed.
+    /// | Variable | Default |
+    /// |---|---|
+    /// | `PORT` | 3000 |
+    /// | `GOWA_URL` | `http://localhost:3001` |
+    /// | `DATABASE_URL` | `sqlite:family-hq.db` (next to where you run it) |
+    /// | `PRAYER_CITY` / `PRAYER_COUNTRY` | Milton Keynes / GB |
+    /// | `PRAYER_METHOD` | 3 (Muslim World League) |
+    /// | `PRAYER_SCHOOL` | 0 (standard Asr; 1 = Hanafi) |
+    /// | `PRAYER_REMINDER_MINUTES` | 10 |
+    ///
+    /// `GOWA_WEBHOOK_SECRET` and `GOWA_BASIC_AUTH` have no default and must
+    /// be set.
     pub fn from_env() -> Self {
-        let port = env::var("PORT")
-            .ok()
-            .and_then(|p| p.parse().ok())
-            .unwrap_or(3000);
-
-        let gowa_url = env::var("GOWA_URL").unwrap_or_else(|_| "http://localhost:3001".to_string());
-        let database_url =
-            env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:family-hq.db".to_string());
-
         Config {
-            port,
+            port: number_or("PORT", 3000),
             webhook_secret: required("GOWA_WEBHOOK_SECRET"),
-            gowa_url,
+            gowa_url: text_or("GOWA_URL", "http://localhost:3001"),
             gowa_basic_auth: required("GOWA_BASIC_AUTH"),
-            database_url,
+            database_url: text_or("DATABASE_URL", "sqlite:family-hq.db"),
+            prayer_location: Location {
+                city: text_or("PRAYER_CITY", "Milton Keynes"),
+                country: text_or("PRAYER_COUNTRY", "GB"),
+                method: number_or("PRAYER_METHOD", 3),
+                school: number_or("PRAYER_SCHOOL", 0),
+            },
+            prayer_reminder_minutes: number_or("PRAYER_REMINDER_MINUTES", 10),
         }
     }
 }
@@ -57,4 +69,28 @@ fn required(name: &str) -> String {
         .ok()
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| panic!("{name} must be set (same value as in .env)"))
+}
+
+/// Reads a text variable, or `default` if it isn't set (or is empty).
+fn text_or(name: &str, default: &str) -> String {
+    env::var(name)
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| default.to_string())
+}
+
+/// Reads a number, or `default` if the variable isn't set.
+///
+/// Generic: `T` can be any type that implements `FromStr` (u8, u16, i64,
+/// ...), and the caller's expected type picks it. A value that *is* set but
+/// isn't a valid number stops the server, because silently using the
+/// default for a typo like `PRAYER_METHOD=e` would give wrong prayer times.
+fn number_or<T: FromStr>(name: &str, default: T) -> T {
+    match env::var(name) {
+        Ok(text) if !text.trim().is_empty() => text
+            .trim()
+            .parse()
+            .unwrap_or_else(|_| panic!("{name} must be a number, got {text:?}")),
+        _ => default,
+    }
 }

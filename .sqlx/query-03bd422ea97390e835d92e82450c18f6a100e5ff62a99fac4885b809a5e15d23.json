@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO prayer_reminders (chat_id, prayer_date, prayer, prayer_time, sent_at)\n           VALUES (?, ?, ?, ?, ?)\n           ON CONFLICT (chat_id, prayer_date, prayer) DO NOTHING\n           RETURNING id AS \"id!\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "prayer_reminders",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "03bd422ea97390e835d92e82450c18f6a100e5ff62a99fac4885b809a5e15d23"
+}

@@ -10,8 +10,11 @@ bot's own number, ntfy push notifications from Phase 2.
 
 The plan lives in `docs/ROADMAP.md`. Work happens one stage at a time, in
 order. Check which stage is current before suggesting work, and don't pull
-in features from later phases (prayer, reminders, ntfy, React, AI) while
-Phase 1 (todo and shop) is still in progress.
+in features from later phases (ntfy, React, AI, and the rest of the
+reminder/prayer work) while Phase 1 (todo and shop) is still in progress.
+Exception, at the owner's request: basic prayer times, reminders and
+tracking were brought forward and already exist (see the note at the top
+of Phase 2 in the roadmap).
 
 ## The owner is learning Rust
 

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE chats SET prayer_reminders = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "10ddf9da38fdcd9e51ae18eeae0f65c5356d4e32478b08283a27c22f8a6c91d8"
+}

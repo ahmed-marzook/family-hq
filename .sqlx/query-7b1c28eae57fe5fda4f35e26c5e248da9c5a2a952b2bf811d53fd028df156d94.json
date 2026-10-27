@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT r.prayer_date AS \"prayer_date: NaiveDate\", r.prayer\n           FROM prayer_reminders r\n           JOIN chats c ON c.id = r.chat_id\n           WHERE r.wa_message_id = ? AND c.wa_chat_id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "prayer_date: NaiveDate",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "prayer_reminders",
+            "name": "prayer_date"
+          }
+        }
+      },
+      {
+        "name": "prayer",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "prayer_reminders",
+            "name": "prayer"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "7b1c28eae57fe5fda4f35e26c5e248da9c5a2a952b2bf811d53fd028df156d94"
+}

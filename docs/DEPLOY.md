@@ -1,0 +1,226 @@
+# Running Family HQ on the home server
+
+The server runs two containers from two images, started together by one
+Compose file:
+
+| Container | Image | What it does |
+|---|---|---|
+| `family-hq` | [`kaizenflow/family-hq`](https://hub.docker.com/r/kaizenflow/family-hq) | Our Rust server: commands, database, replies |
+| `gowa` | `aldinokemal2104/go-whatsapp-web-multidevice` | Logs in to WhatsApp as the bot's number |
+
+```
+ WhatsApp ⇄ gowa ──webhook──▶ family-hq ──▶ SQLite (/data volume)
+              ▲                    │
+              └──── replies ───────┘      (both on Compose's private network)
+```
+
+**Why two containers, not one:** each gets its own restarts and logs, GOWA
+is upgraded by changing one tag (we don't rebuild it), and the WhatsApp
+login and the database live in separate volumes you can back up or reset
+on their own. Compose makes running both a single command anyway.
+
+Nothing needs to be opened to the internet: GOWA connects *out* to
+WhatsApp, and GOWA → family-hq traffic stays inside Docker.
+
+---
+
+## 1. One-time server setup
+
+You need Docker with the Compose plugin. On a Debian/Ubuntu server:
+
+```sh
+curl -fsSL https://get.docker.com | sudo sh
+sudo usermod -aG docker $USER     # run docker without sudo (log out and back in)
+docker compose version             # should print a version
+```
+
+Check the CPU is x86-64 (the image is built for `linux/amd64`):
+
+```sh
+uname -m    # x86_64
+```
+
+## 2. Copy the two files to the server
+
+Everything the server needs is in `deploy/`. From your laptop, in the repo:
+
+```sh
+ssh you@homeserver 'mkdir -p ~/family-hq'
+scp deploy/compose.yaml deploy/.env.example you@homeserver:~/family-hq/
+```
+
+No source code, no building: the server only pulls images.
+
+## 3. Create the server's `.env`
+
+On the server:
+
+```sh
+cd ~/family-hq
+cp .env.example .env
+echo "GOWA_BASIC_AUTH=admin:$(openssl rand -hex 16)"
+echo "GOWA_WEBHOOK_SECRET=$(openssl rand -hex 32)"
+```
+
+Paste those two lines into `.env` (replacing the `change-me` ones) with
+`nano .env`. Leave `FAMILY_HQ_TAG=0.1.0`. Then lock it down, since it holds
+the passwords:
+
+```sh
+chmod 600 .env
+```
+
+## 4. Hand the bot over from your laptop
+
+> ⚠️ **Only one GOWA may be linked to the bot at a time.** If your laptop's
+> GOWA and the server's GOWA are both linked, both receive every message
+> and both reply, so the family sees every answer twice (and two separate
+> databases).
+
+On the laptop, in the repo:
+
+```sh
+docker compose down          # stops laptop GOWA, family-hq, echo (keeps volumes)
+```
+
+Then on the **bot's phone**: WhatsApp → Settings → **Linked devices** →
+tap **FamilyHQ** → **Log out**.
+
+(Your laptop's test database stays on the laptop. The server starts with a
+fresh, empty one.)
+
+## 5. Start it
+
+On the server:
+
+```sh
+cd ~/family-hq
+docker compose up -d
+docker compose ps
+```
+
+Both should be `Up`; `family-hq` turns `(healthy)` after a few seconds.
+
+```sh
+curl localhost:3000/health          # {"status":"ok"}
+docker compose logs family-hq       # "database ready", "listening on ..."
+```
+
+## 6. Pair the bot's phone
+
+GOWA's web UI only listens on the server itself. From your **laptop**, open
+an SSH tunnel and leave it running:
+
+```sh
+ssh -L 3001:localhost:3001 you@homeserver
+```
+
+Now open <http://localhost:3001> on the laptop. That's the server's GOWA,
+through the tunnel. Log in with the `GOWA_BASIC_AUTH` user and password from
+the server's `.env`, add a device, and scan the QR code from the bot's
+phone (Linked devices → Link a device). Close the tunnel when done.
+
+Check it from the server:
+
+```sh
+AUTH=$(grep ^GOWA_BASIC_AUTH= .env | cut -d= -f2-)
+curl -s -u "$AUTH" localhost:3001/app/status
+# ... "is_connected":true,"is_logged_in":true ...
+```
+
+The login is saved in the `gowa_storages` volume: restarts, reboots and
+updates don't need pairing again.
+
+## 7. Try it
+
+In the family group, send `+todo test the server`. You should get a 👍
+reaction and a "📝 Added" reply. Watch it happen:
+
+```sh
+docker compose logs -f family-hq
+```
+
+Both containers have `restart: unless-stopped`, so they come back by
+themselves after a crash or a server reboot (as long as Docker starts at
+boot, which `get.docker.com` sets up).
+
+---
+
+## Releasing a new version (on the laptop)
+
+1. Bump `version` in `Cargo.toml` (e.g. `0.1.0` → `0.2.0`).
+2. If you changed any SQL: `cargo sqlx prepare` (and commit `.sqlx/`).
+3. Check: `cargo fmt --check && cargo clippy --all-targets && cargo test`.
+4. Commit, then build and push both tags:
+
+   ```sh
+   V=0.2.0
+   docker build --platform linux/amd64 -t kaizenflow/family-hq:$V -t kaizenflow/family-hq:latest .
+   docker push kaizenflow/family-hq:$V
+   docker push kaizenflow/family-hq:latest
+   ```
+
+   (`docker login` first if Docker says you're not logged in.)
+
+## Updating the server
+
+```sh
+cd ~/family-hq
+nano .env                     # FAMILY_HQ_TAG=0.2.0
+docker compose pull
+docker compose up -d          # recreates only what changed
+docker image prune -f         # delete the old image
+```
+
+New migrations run automatically when family-hq starts. To roll back, put
+the old tag back and `up -d` again. (A version whose migrations already ran
+is fine to roll back to only if the newer migrations didn't remove
+anything it needs, so take a backup before updating.)
+
+**Updating GOWA** is the same, but by editing the `image:` tag in
+`compose.yaml`. Read GOWA's release notes first: its webhook format is what
+our parser depends on.
+
+## Backups
+
+The database is one file in the `family-hq_family_hq_data` volume. To copy
+it out safely (with the server stopped, so nothing is half-written):
+
+```sh
+cd ~/family-hq
+docker compose stop family-hq
+docker run --rm -v family-hq_family_hq_data:/data -v "$PWD":/backup \
+  debian:bookworm-slim tar czf /backup/family-hq-$(date +%F).tgz -C /data .
+docker compose start family-hq
+```
+
+Restore by doing the reverse (`tar xzf` into the volume) with family-hq
+stopped. Keep a copy somewhere other than the server. (Automatic daily
+backups are planned for Stage 1.6.)
+
+The GOWA login (`family-hq_gowa_storages`) can be backed up the same way,
+but re-pairing is only a QR scan, so it matters less.
+
+## Day-to-day
+
+```sh
+docker compose ps                    # status and health
+docker compose logs -f family-hq     # what the bot is doing
+docker compose logs -f gowa          # WhatsApp connection problems
+docker compose restart family-hq
+docker compose down                  # stop everything (keeps all data)
+```
+
+`docker compose down -v` also **deletes the volumes**: the database and the
+WhatsApp login. Don't, unless you mean it.
+
+## Troubleshooting
+
+| Symptom | Check |
+|---|---|
+| No reaction or reply | `docker compose logs family-hq`: is the message arriving? If not, `logs gowa` and `/app/status` (step 6). |
+| `webhook: rejected, bad or missing signature` | The two containers disagree on `GOWA_WEBHOOK_SECRET`. Both read it from the same `.env`, so run `docker compose up -d` after any edit. |
+| `couldn't reply ... 401` | `GOWA_BASIC_AUTH` changed but one container wasn't recreated: `docker compose up -d`. |
+| Every answer appears twice | Two GOWAs are linked (step 4). Log one out under Linked devices. |
+| `family-hq` keeps restarting | `docker compose logs family-hq`: a missing variable or a database problem is printed at startup. |
+| `exec format error` | The server isn't x86-64; the image needs building for its CPU. |

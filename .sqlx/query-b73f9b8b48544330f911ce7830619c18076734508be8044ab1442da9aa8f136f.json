@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT prayer FROM prayer_log WHERE user_id = ? AND prayer_date = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "prayer",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "prayer_log",
+            "name": "prayer"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "b73f9b8b48544330f911ce7830619c18076734508be8044ab1442da9aa8f136f"
+}

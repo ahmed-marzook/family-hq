@@ -5,3 +5,6 @@ target/
 *.db
 *.db-*
 storages/
+# Not needed to build the image.
+deploy/
+docs/

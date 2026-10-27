@@ -252,6 +252,16 @@ family-hq/
 
 Starts after Phase 1 has been in daily use for two weeks.
 
+> **Brought forward (done early, WhatsApp only):** a basic version of
+> Stages 2.3 and 2.4 already runs. Daily times come from AlAdhan
+> (`timingsByCity`, city and method set in `.env`, cached in memory). Chats
+> opt in with `/prayers on`, and a reminder goes out a set number of minutes
+> before each prayer (`src/reminders.rs`, with `prayer_reminders` making
+> sure each one is sent only once). Any reaction on a reminder, or
+> `+prayed asr`, marks it in `prayer_log`. `/prayers` shows the day with ✅/⬜.
+> Still to do from 2.3/2.4: window *ends*, the yesterday's-times fallback,
+> the warning/missed stages, and ntfy.
+
 ### Stage 2.1: ntfy push notifications
 - Add the `ntfy` container. Each user subscribes to their own topic.
 - `notify.rs`: send a push with action buttons (Done / Slipped / Snooze).

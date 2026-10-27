@@ -1,5 +1,5 @@
--- Phase 1 schema: users, chats, shopping, todos, and the WhatsApp
--- bookkeeping tables.
+-- Initial schema: users, chats, shopping, todos, prayer reminders and
+-- tracking, and the WhatsApp bookkeeping tables.
 --
 -- Conventions:
 -- * STRICT tables: SQLite normally stores any value in any column. STRICT
@@ -12,7 +12,7 @@
 -- Never edit this file once it has run anywhere. Schema changes go in a
 -- new file, 0002_....sql.
 
--- People who can use the bot. Messages from anyone else are ignored.
+-- People who use the bot. Registered automatically on their first message.
 CREATE TABLE users (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     -- The name used in `+todo @Khadija`. NOCASE makes comparisons (and the
@@ -41,6 +41,9 @@ CREATE TABLE chats (
     -- Whose DM this is. UNIQUE: one DM chat per user. (UNIQUE allows any
     -- number of NULLs, so groups aren't affected.)
     dm_user_id  INTEGER UNIQUE REFERENCES users(id),
+    -- 1 = send prayer reminders here (`/prayers on`), 0 = don't.
+    -- SQLite has no boolean type; 0/1 integers are the convention.
+    prayer_reminders  INTEGER NOT NULL DEFAULT 0 CHECK (prayer_reminders IN (0, 1)),
     created_at  TEXT NOT NULL,
     -- A DM has an owner and a group doesn't. `(a) = (b)` on two
     -- true/false tests means "both true or both false".
@@ -117,4 +120,37 @@ CREATE TABLE wa_message_context (
     item_id        INTEGER NOT NULL,
     created_at     TEXT NOT NULL,
     PRIMARY KEY (wa_message_id, position)
+) STRICT;
+
+-- One reminder the bot sent (or is sending) for one prayer, in one chat.
+-- People react to it to say they've prayed, so its WhatsApp message ID is
+-- how a reaction is matched back to a prayer and a day.
+CREATE TABLE prayer_reminders (
+    id             INTEGER PRIMARY KEY,
+    chat_id        INTEGER NOT NULL REFERENCES chats(id),
+    -- The day in Europe/London ('2026-10-27'). date() gives back exactly
+    -- the same text only for a real date in this format, so this rejects
+    -- '2026-02-31' and '27-10-2026' alike.
+    prayer_date    TEXT NOT NULL CHECK (date(prayer_date) IS prayer_date),
+    prayer         TEXT NOT NULL
+                   CHECK (prayer IN ('fajr', 'dhuhr', 'asr', 'maghrib', 'isha')),
+    prayer_time    TEXT NOT NULL,       -- when the prayer starts, UTC
+    -- Set once WhatsApp has accepted the message. NULL if sending failed.
+    wa_message_id  TEXT UNIQUE,
+    sent_at        TEXT NOT NULL,
+    -- At most one reminder per prayer per day per chat. The reminder loop
+    -- inserts first and only sends if the insert worked, so a restart or a
+    -- second check can never send the same reminder twice.
+    UNIQUE (chat_id, prayer_date, prayer)
+) STRICT;
+
+-- Who has prayed what. Per person, not per chat: reacting in any chat
+-- counts, and reacting in two chats is still one prayer.
+CREATE TABLE prayer_log (
+    user_id      INTEGER NOT NULL REFERENCES users(id),
+    prayer_date  TEXT NOT NULL CHECK (date(prayer_date) IS prayer_date),
+    prayer       TEXT NOT NULL
+                 CHECK (prayer IN ('fajr', 'dhuhr', 'asr', 'maghrib', 'isha')),
+    prayed_at    TEXT NOT NULL,
+    PRIMARY KEY (user_id, prayer_date, prayer)
 ) STRICT;

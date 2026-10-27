@@ -30,6 +30,16 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # Same Debian release as the builder, so the binary's system libraries match.
 FROM debian:bookworm-slim
 
+# Shown on Docker Hub and by `docker inspect`.
+LABEL org.opencontainers.image.title="family-hq" \
+      org.opencontainers.image.description="Family HQ: a WhatsApp bot for shared todos and shopping lists"
+
+# CA certificates, so HTTPS calls (to the AlAdhan prayer times API) can
+# check who they're talking to. The slim image ships without them.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
 # Don't run as root inside the container.
 RUN useradd --system --uid 10001 --no-create-home familyhq
 
@@ -44,6 +54,13 @@ USER familyhq
 ENV PORT=3000
 ENV DATABASE_URL=sqlite:/data/family-hq.db
 EXPOSE 3000
+
+# Lets Docker (and `docker compose ps`) show "healthy" / "unhealthy".
+# The slim image has no curl, so bash opens a TCP connection itself
+# (/dev/tcp is a bash feature), sends a bare HTTP request to /health and
+# looks for "ok" in the answer.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD ["bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/3000 && printf 'GET /health HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q '\"ok\"' <&3"]
 
 # `docker stop` (and Ctrl+C on `docker compose up`) sends SIGTERM by default,
 # but main.rs only listens for Ctrl+C, which is SIGINT. Ask Docker to send

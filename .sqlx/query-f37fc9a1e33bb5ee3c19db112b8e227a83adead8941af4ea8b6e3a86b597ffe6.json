@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM prayer_log WHERE user_id = ? AND prayer_date = ? AND prayer = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "f37fc9a1e33bb5ee3c19db112b8e227a83adead8941af4ea8b6e3a86b597ffe6"
+}

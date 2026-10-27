@@ -18,6 +18,12 @@ services:
       # Compose it's the service name and GOWA's own port, not 3001.
       GOWA_URL: http://gowa:3000
       GOWA_BASIC_AUTH: ${GOWA_BASIC_AUTH:?set GOWA_BASIC_AUTH in .env}
+      # Prayer times (AlAdhan). Defaults shown; set them in .env to change.
+      PRAYER_CITY: ${PRAYER_CITY:-Milton Keynes}
+      PRAYER_COUNTRY: ${PRAYER_COUNTRY:-GB}
+      PRAYER_METHOD: ${PRAYER_METHOD:-3}          # 3 = Muslim World League
+      PRAYER_SCHOOL: ${PRAYER_SCHOOL:-0}          # Asr: 0 = standard, 1 = Hanafi
+      PRAYER_REMINDER_MINUTES: ${PRAYER_REMINDER_MINUTES:-10}
     volumes:
       # The SQLite database (DATABASE_URL in the Dockerfile points here).
       # A named volume survives `docker compose down` and rebuilds.
