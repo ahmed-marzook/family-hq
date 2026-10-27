@@ -10,9 +10,22 @@ async fn main() {
 
     // Opens the database (creating it on first run) and applies any new
     // migrations before the server accepts a single request.
-    let db = family_hq::db::connect(&config.database_url)
-        .await
-        .expect("failed to open database");
+    // On failure, explain the usual cause (a folder the program can't write
+    // to) instead of panicking with a backtrace hint. `exit(1)` stops the
+    // program with an error code, so Docker shows it as failed.
+    let db = match family_hq::db::connect(&config.database_url).await {
+        Ok(db) => db,
+        Err(err) => {
+            eprintln!(
+                "could not open the database at {}: {err}\n\
+                 Usually the folder isn't writable by the user family-hq runs as \
+                 (PUID:PGID, default 1000:1000). On the host, for example:\n  \
+                 sudo chown -R 1000:1000 /opt/stacks/family-hq/data",
+                config.database_url
+            );
+            std::process::exit(1);
+        }
+    };
     println!("database ready at {}", config.database_url);
 
     let port = config.port;

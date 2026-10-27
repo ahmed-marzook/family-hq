@@ -40,17 +40,18 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Don't run as root inside the container.
-RUN useradd --system --uid 10001 --no-create-home familyhq
-
-# Where the SQLite file lives. Owned by familyhq so it can write there.
-# Compose mounts a volume here; Docker copies this ownership into a new,
-# empty named volume, so the volume is writable too.
-RUN mkdir /data && chown familyhq /data
+# Where the SQLite file lives (usually a mounted folder).
+RUN mkdir /data
 
 COPY --from=builder /usr/local/bin/family-hq /usr/local/bin/family-hq
 
-USER familyhq
+# The entrypoint starts as root only long enough to make /data writable by
+# PUID:PGID, then runs family-hq as that user (never as root). See the
+# script for details. `--chmod` makes it executable without a RUN step.
+COPY --chmod=755 docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+
+ENV PUID=1000
+ENV PGID=1000
 ENV PORT=3000
 ENV DATABASE_URL=sqlite:/data/family-hq.db
 EXPOSE 3000
@@ -67,4 +68,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 # SIGINT instead so the graceful shutdown runs.
 STOPSIGNAL SIGINT
 
-CMD ["family-hq"]
+ENTRYPOINT ["docker-entrypoint.sh"]

@@ -438,7 +438,10 @@ fn format_shop_list(to_buy: &[ShopItem], bought: i64) -> String {
     for (i, item) in to_buy.iter().enumerate() {
         text.push_str(&format!("{}. {}\n", i + 1, item.name));
     }
-    text.push_str("\nReply to this message with the numbers you bought, e.g. `1 3`.");
+    text.push_str(
+        "\nTick off what you bought: reply to this message with the numbers \
+         (e.g. `1 3`), or send `+got 1 3` or `+got milk` at any time.",
+    );
     text.push_str(&cleanup);
     text
 }
@@ -906,6 +909,18 @@ mod tests {
             })
             .collect();
         (text, items)
+    }
+
+    #[test]
+    fn shop_list_explains_both_ways_to_tick_off() {
+        let items = [ShopItem {
+            id: 1,
+            name: "milk".to_string(),
+        }];
+        let text = format_shop_list(&items, 0);
+        assert!(text.contains("reply to this message"), "{text}");
+        assert!(text.contains("`+got 1 3`"), "{text}");
+        assert!(text.contains("`+got milk`"), "{text}");
     }
 
     #[test]

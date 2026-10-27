@@ -1,0 +1,4 @@
+# Shell scripts run inside Linux containers: always LF line endings, even
+# on a Windows checkout (core.autocrlf would otherwise turn them into CRLF
+# and `sh` would fail with "not found").
+*.sh text eol=lf
