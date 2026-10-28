@@ -20,6 +20,7 @@ use crate::handlers::{self, Context, Outcome};
 use crate::metrics::{self, Event};
 use crate::parser::{self, BotCommand, ReplyCommand};
 use crate::person::{Assignee, Person};
+use crate::prayer;
 use crate::repo::messages::{self, ListItem};
 use crate::repo::metrics::Logged;
 use crate::repo::{self, chats, prayers, users};
@@ -394,8 +395,9 @@ async fn handle_reaction(
     };
 
     // Adding the same reaction twice, or removing one that's already
-    // gone, is harmless: both repo calls are safe to repeat. So retried
-    // webhooks need no dedupe here.
+    // gone, is harmless: both repo calls are safe to repeat, and say
+    // whether anything changed. So retried webhooks need no dedupe here,
+    // and only a real change gets a reply.
     let removed = r.reaction.is_empty();
     // The chat is already known (the reminder was sent there), so this only
     // looks it up.
@@ -414,17 +416,46 @@ async fn handle_reaction(
     };
     repo::metrics::record(&mut tx, &row).await?;
 
-    if removed {
-        prayers::unmark_prayed(&mut tx, user.id, date, prayer).await?;
+    let changed = if removed {
+        let changed = prayers::unmark_prayed(&mut tx, user.id, date, prayer).await?;
         println!(
             "webhook: {} un-prayed {prayer} on {date}",
             user.display_name
         );
+        changed
     } else {
-        prayers::mark_prayed(&mut tx, user.id, date, prayer, now).await?;
+        let changed = prayers::mark_prayed(&mut tx, user.id, date, prayer, now).await?;
         println!("webhook: {} prayed {prayer} on {date}", user.display_name);
-    }
+        changed
+    };
+    let prayed = prayers::prayed_on(&mut tx, user.id, date).await?.len();
     tx.commit().await?;
+
+    // Swapping 👍 for ❤️ changes nothing, so it gets no second reply.
+    if !changed {
+        return Ok(());
+    }
+    // In a group, @mention them by their phone number (from `users`, as the
+    // reminders do: a group reaction's `from` may be a LID, not a number).
+    let phone = user
+        .wa_jid
+        .split_once('@')
+        .map_or(user.wa_jid.as_str(), |(number, _)| number);
+    let mention = is_group.then_some(phone);
+    let text = prayer::reaction_reply(prayer, removed, prayed, mention);
+    let mentions: Vec<String> = mention.map(str::to_string).into_iter().collect();
+    // Saved already, so a failure here is logged, not returned: a 500
+    // would only make GOWA retry, and the retry changes nothing.
+    if let Err(err) = state
+        .gowa
+        .send_text(&r.chat_id, &text, Some(&r.reacted_message_id), &mentions)
+        .await
+    {
+        println!(
+            "webhook: couldn't confirm {prayer} for {}: {err}",
+            user.display_name
+        );
+    }
     Ok(())
 }
 

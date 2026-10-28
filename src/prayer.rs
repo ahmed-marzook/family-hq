@@ -10,6 +10,7 @@ use chrono::{DateTime, Duration, NaiveDate, Utc};
 use chrono_tz::Tz;
 
 use crate::geo::Coordinates;
+use crate::progress;
 use crate::settings::Settings;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -300,6 +301,39 @@ pub fn due_reminders(
 
 /// The reminder message.
 ///
+/// The reply to a reaction on a reminder, so the person knows it counted:
+/// "✅ *Asr* prayed · ■■■■■■□□□□ 3/5 prayed", or "↩️ *Asr* unticked · ..."
+/// when the reaction was removed. `prayed` is how many of that day's five
+/// they've now marked. In a group, `mention` (a phone number) @mentions them
+/// so it's clear whose it was.
+pub fn reaction_reply(
+    prayer: Prayer,
+    removed: bool,
+    prayed: usize,
+    mention: Option<&str>,
+) -> String {
+    let done = prayed as i64;
+    let total = Prayer::ALL.len() as i64;
+    let (mark, what) = if removed {
+        (UNDONE, "unticked")
+    } else {
+        (TICK, "prayed")
+    };
+    let all = if done == total && !removed {
+        " 🎉"
+    } else {
+        ""
+    };
+    let who = mention.map_or(String::new(), |phone| format!("@{phone} "));
+    format!(
+        "{who}{mark} *{prayer}* {what} · {} {done}/{total} prayed{all}",
+        progress::bar(done, total)
+    )
+}
+
+const TICK: &str = "✅";
+const UNDONE: &str = "↩️";
+
 /// `place` names the city when it matters (in a group whose members are in
 /// different places): "has started in Colombo". `None` leaves it out.
 pub fn reminder_text(
@@ -353,6 +387,22 @@ mod tests {
         assert_eq!(date(10, 12, 1447).to_string(), "10 Dhu al-Hijjah 1447 AH");
         assert_eq!(date(1, 0, 1448).to_string(), "1 ? 1448 AH", "no crash");
         assert_eq!(date(1, 13, 1448).to_string(), "1 ? 1448 AH", "no crash");
+    }
+
+    #[test]
+    fn reaction_replies_say_what_changed() {
+        assert_eq!(
+            reaction_reply(Prayer::Asr, false, 3, None),
+            "✅ *Asr* prayed · ■■■■■■□□□□ 3/5 prayed"
+        );
+        assert_eq!(
+            reaction_reply(Prayer::Asr, true, 2, None),
+            "↩️ *Asr* unticked · ■■■■□□□□□□ 2/5 prayed"
+        );
+        assert_eq!(
+            reaction_reply(Prayer::Isha, false, 5, Some("447700900001")),
+            "@447700900001 ✅ *Isha* prayed · ■■■■■■■■■■ 5/5 prayed 🎉"
+        );
     }
 
     fn day() -> DayTimes {

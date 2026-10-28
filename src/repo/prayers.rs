@@ -147,9 +147,9 @@ pub async fn mark_prayed(
     date: NaiveDate,
     prayer: Prayer,
     now: DateTime<Utc>,
-) -> Result<(), sqlx::Error> {
+) -> Result<bool, sqlx::Error> {
     let prayer = prayer.as_db_str();
-    sqlx::query!(
+    let result = sqlx::query!(
         "INSERT INTO prayer_log (user_id, prayer_date, prayer, prayed_at)
          VALUES (?, ?, ?, ?)
          ON CONFLICT (user_id, prayer_date, prayer) DO NOTHING",
@@ -160,7 +160,9 @@ pub async fn mark_prayed(
     )
     .execute(conn)
     .await?;
-    Ok(())
+    // `true` if it's newly marked; `false` if it already was (a second
+    // reaction, or a retried webhook), so the caller needn't say so twice.
+    Ok(result.rows_affected() == 1)
 }
 
 /// Undoes `mark_prayed` (the reaction was removed).
@@ -169,9 +171,9 @@ pub async fn unmark_prayed(
     user_id: i64,
     date: NaiveDate,
     prayer: Prayer,
-) -> Result<(), sqlx::Error> {
+) -> Result<bool, sqlx::Error> {
     let prayer = prayer.as_db_str();
-    sqlx::query!(
+    let result = sqlx::query!(
         "DELETE FROM prayer_log WHERE user_id = ? AND prayer_date = ? AND prayer = ?",
         user_id,
         date,
@@ -179,7 +181,8 @@ pub async fn unmark_prayed(
     )
     .execute(conn)
     .await?;
-    Ok(())
+    // `true` if it was marked and now isn't.
+    Ok(result.rows_affected() == 1)
 }
 
 /// The prayers `user_id` has marked on `date`.
@@ -333,12 +336,13 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        mark_prayed(&mut conn, user.id, date(), Prayer::Fajr, now)
+        let first = mark_prayed(&mut conn, user.id, date(), Prayer::Fajr, now)
             .await
             .unwrap();
-        mark_prayed(&mut conn, user.id, date(), Prayer::Fajr, now)
+        let again = mark_prayed(&mut conn, user.id, date(), Prayer::Fajr, now)
             .await
             .unwrap();
+        assert!(first && !again, "only the first one changes anything");
         mark_prayed(&mut conn, user.id, date(), Prayer::Asr, now)
             .await
             .unwrap();
@@ -346,9 +350,17 @@ mod tests {
         prayed.sort_by_key(|p| p.as_db_str());
         assert_eq!(prayed, [Prayer::Asr, Prayer::Fajr]);
 
-        unmark_prayed(&mut conn, user.id, date(), Prayer::Fajr)
-            .await
-            .unwrap();
+        assert!(
+            unmark_prayed(&mut conn, user.id, date(), Prayer::Fajr)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !unmark_prayed(&mut conn, user.id, date(), Prayer::Fajr)
+                .await
+                .unwrap(),
+            "already gone"
+        );
         assert_eq!(
             prayed_on(&mut conn, user.id, date()).await.unwrap(),
             [Prayer::Asr]

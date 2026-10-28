@@ -93,7 +93,7 @@ In a group, everyone is @mentioned on *their own* times: someone abroad gets the
 The \"ending soon\" reminder only goes to people who haven't prayed yet.
 
 *Mark a prayer as prayed*
-• React to its reminder with any emoji (remove the reaction to undo).
+• React to its reminder with any emoji (remove the reaction to undo). I'll reply to confirm, with how many you've prayed that day.
 • Or type `+prayed asr`. Several: `+prayed fajr, dhuhr`. All five: `+prayed all`. Spellings like zuhr, asar, esha work too.
 • Or by number, 1 (Fajr) to 5 (Isha), as shown in `/prayers`: `+p 3` is Asr, `+p 1 3` is Fajr and Asr.
 
