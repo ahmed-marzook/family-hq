@@ -44,6 +44,6 @@ Short forms: `+s` = `+shop`, `+g` = `+got`, `+t` = `+todo`, `+d` = `+done`, `+p`
 | `+prayed asr` or `+p 3` | Mark a prayer as prayed without reacting (by name, or 1 Fajr to 5 Isha) |
 | `/settings` | This chat's city, timezone and prayer settings (in a DM: your own); `/settings city Leicester, GB` etc. |
 | `/settings everyone` | Each group member's own settings |
-| `/weather`, `/weather tomorrow`, `/weather week` | The forecast for your own town; `/weather` also shows the season, year and daylight |
+| `/weather`, `/weather hourly`, `/weather tomorrow`, `/weather week` | The forecast for your own town; `/weather` also shows the season, year and daylight |
 | `/moon` | Moon phase and % lit, Islamic date, moonrise/moonset, next new and full moon |
 | `/help` | Overview; `/help shop`, `/help todo`, `/help prayers`, `/help settings`, `/help weather`, `/help moon` for a full page |

@@ -28,6 +28,10 @@ const WINTER: &str = "❄️";
 const YEAR: &str = "🗓️";
 const DAY: &str = "⏳";
 const TROPICS: &str = "🌴";
+const WET: &str = "🌧️";
+const DRY: &str = "☀️";
+const HOT: &str = "🔥";
+const COOLER: &str = "🍃";
 
 impl Season {
     pub fn emoji(self) -> &'static str {
@@ -160,6 +164,162 @@ impl Climate {
     }
 }
 
+/// A place's usual weather month by month: the average of several years,
+/// January first. From Open-Meteo's history (`Weather::normals`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Normals {
+    /// Average rain in each month, mm.
+    pub rain: [f64; 12],
+    /// Average temperature in each month, °C.
+    pub temperature: [f64; 12],
+}
+
+/// Below this much rain a year (mm), a place is desert: its seasons are
+/// hot and cooler, since there's hardly any rain to have seasons of.
+const DESERT_RAIN: f64 = 250.0;
+
+/// A season in the tropics, found from the place's own history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TropicalSeason {
+    Wet,
+    Dry,
+    /// In a desert, the months warmer than its average.
+    Hot,
+    Cooler,
+}
+
+impl TropicalSeason {
+    pub fn emoji(self) -> &'static str {
+        match self {
+            TropicalSeason::Wet => WET,
+            TropicalSeason::Dry => DRY,
+            TropicalSeason::Hot => HOT,
+            TropicalSeason::Cooler => COOLER,
+        }
+    }
+
+    /// The name in the middle of a sentence: "34d to the dry season".
+    fn lower(self) -> &'static str {
+        match self {
+            TropicalSeason::Wet => "wet season",
+            TropicalSeason::Dry => "dry season",
+            TropicalSeason::Hot => "hot season",
+            TropicalSeason::Cooler => "cooler season",
+        }
+    }
+}
+
+impl fmt::Display for TropicalSeason {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str(match self {
+            TropicalSeason::Wet => "Wet season",
+            TropicalSeason::Dry => "Dry season",
+            TropicalSeason::Hot => "Hot season",
+            TropicalSeason::Cooler => "Cooler season",
+        })
+    }
+}
+
+/// One stretch of months with the same season.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Run {
+    pub season: TropicalSeason,
+    /// 0 = January.
+    pub first_month: usize,
+    pub months: usize,
+}
+
+/// Each month's season, from its averages:
+/// * a desert's months are hot when warmer than its yearly average, and
+///   cooler when not;
+/// * anywhere else, a month is wet when its rain (averaged with the months
+///   either side) is above the place's monthly average. The averaging
+///   keeps one slightly drier month from splitting a monsoon in two.
+fn month_seasons(normals: &Normals) -> [TropicalSeason; 12] {
+    // `std::array::from_fn` builds a fixed-size array by calling the
+    // closure with each index, 0 to 11.
+    let smooth = |values: &[f64; 12]| -> [f64; 12] {
+        std::array::from_fn(|m| (values[(m + 11) % 12] + values[m] + values[(m + 1) % 12]) / 3.0)
+    };
+    let yearly_rain: f64 = normals.rain.iter().sum();
+    if yearly_rain < DESERT_RAIN {
+        let average = normals.temperature.iter().sum::<f64>() / 12.0;
+        let warmth = smooth(&normals.temperature);
+        std::array::from_fn(|m| {
+            if warmth[m] > average {
+                TropicalSeason::Hot
+            } else {
+                TropicalSeason::Cooler
+            }
+        })
+    } else {
+        let average = yearly_rain / 12.0;
+        let rain = smooth(&normals.rain);
+        std::array::from_fn(|m| {
+            if rain[m] > average {
+                TropicalSeason::Wet
+            } else {
+                TropicalSeason::Dry
+            }
+        })
+    }
+}
+
+/// The year as runs of months with the same season, the first starting
+/// where a season begins (the year wraps: a dry season can run Dec-Apr).
+/// Empty if every month is the same, i.e. there are no seasons.
+pub fn tropical_runs(normals: &Normals) -> Vec<Run> {
+    let seasons = month_seasons(normals);
+    // A month where the season changes from the one before.
+    let Some(start) = (0..12).find(|&m| seasons[m] != seasons[(m + 11) % 12]) else {
+        return Vec::new();
+    };
+    let mut runs: Vec<Run> = Vec::new();
+    for offset in 0..12 {
+        let month = (start + offset) % 12;
+        match runs.last_mut() {
+            Some(run) if run.season == seasons[month] => run.months += 1,
+            _ => runs.push(Run {
+                season: seasons[month],
+                first_month: month,
+                months: 1,
+            }),
+        }
+    }
+    runs
+}
+
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/// "May–Nov", or "May" for one month.
+fn month_range(run: Run) -> String {
+    let last = (run.first_month + run.months - 1) % 12;
+    if run.months == 1 {
+        MONTHS[run.first_month].to_string()
+    } else {
+        format!("{}–{}", MONTHS[run.first_month], MONTHS[last])
+    }
+}
+
+/// The run `today` is in, how far through it, and the one after.
+pub fn tropical_season(today: NaiveDate, normals: &Normals) -> Option<(Run, Stretch, Run)> {
+    let runs = tropical_runs(normals);
+    let month = today.month0() as usize;
+    // Months from a run's first month to `month`, going forward round the
+    // year: 0 if it starts this month.
+    let since = |run: &Run| (month + 12 - run.first_month) % 12;
+    let index = runs.iter().position(|run| since(run) < run.months)?;
+    let run = runs[index];
+    let next = runs[(index + 1) % runs.len()];
+
+    let first_of_month = today.with_day(1)?;
+    let start = first_of_month - Months::new(since(&run) as u32);
+    let end = start + Months::new(run.months as u32);
+    Some((run, Stretch::between(start, end, today), next))
+}
+
 /// The season and year part of `/weather`, for a place at `latitude`:
 ///
 /// ```text
@@ -170,8 +330,10 @@ impl Climate {
 /// ■■■■■■■■□□ 82% done · 65d to 2027
 /// ```
 ///
-/// In the tropics the season part is one line saying there aren't four.
-pub fn format(today: NaiveDate, latitude: f64) -> String {
+/// In the tropics, the season is the place's own wet and dry (or hot and
+/// cooler) season from `normals`, if there are any; otherwise a line saying
+/// there aren't four.
+pub fn format(today: NaiveDate, latitude: f64, normals: Option<&Normals>) -> String {
     let season_part = match Climate::at(latitude) {
         Climate::FourSeasons { southern } => {
             let (season, s) = season(today, southern);
@@ -183,9 +345,20 @@ pub fn format(today: NaiveDate, latitude: f64) -> String {
                 progress_line(s, &season.next().to_string())
             )
         }
-        Climate::Tropical => {
-            format!("{TROPICS} No spring, summer, autumn or winter this close to the equator.")
-        }
+        Climate::Tropical => match normals.and_then(|n| tropical_season(today, n)) {
+            Some((run, s, next)) => format!(
+                "{} *{}* ({}, day {} of {})\n{}",
+                run.season.emoji(),
+                run.season,
+                month_range(run),
+                s.day,
+                s.length,
+                progress_line(s, &format!("the {}", next.season.lower()))
+            ),
+            None => {
+                format!("{TROPICS} No spring, summer, autumn or winter this close to the equator.")
+            }
+        },
     };
     let y = year(today);
     format!(
@@ -315,7 +488,7 @@ mod tests {
 
     #[test]
     fn the_tropics_get_the_year_but_no_four_seasons() {
-        let text = format(date(2026, 10, 28), 21.42);
+        let text = format(date(2026, 10, 28), 21.42, None);
         assert!(
             text.starts_with("🌴 No spring, summer, autumn or winter"),
             "{text}"
@@ -323,7 +496,121 @@ mod tests {
         assert!(!text.contains("Autumn"), "{text}");
         assert!(text.ends_with("82% done · 65d to 2027"), "{text}");
         // Sydney: spring in October.
-        assert!(format(date(2026, 10, 28), -33.87).starts_with("🌸 *Spring*"));
+        assert!(format(date(2026, 10, 28), -33.87, None).starts_with("🌸 *Spring*"));
+    }
+
+    // Monthly averages for 2015-2024 from Open-Meteo's history (rain mm,
+    // then °C), January first.
+    fn colombo() -> Normals {
+        Normals {
+            rain: [
+                78., 54., 106., 160., 422., 305., 224., 243., 293., 393., 390., 168.,
+            ],
+            temperature: [
+                26.1, 26.8, 27.4, 27.6, 27.3, 27.0, 26.9, 26.6, 26.4, 26.1, 25.7, 25.9,
+            ],
+        }
+    }
+
+    fn jaffna() -> Normals {
+        Normals {
+            rain: [
+                60., 28., 19., 56., 125., 50., 45., 75., 75., 227., 375., 190.,
+            ],
+            temperature: [
+                25.6, 26.3, 28.1, 29.4, 29.4, 29.1, 28.8, 28.5, 28.2, 27.5, 26.4, 26.0,
+            ],
+        }
+    }
+
+    fn makkah() -> Normals {
+        Normals {
+            rain: [22., 16., 8., 25., 8., 0., 0., 7., 6., 9., 31., 23.],
+            temperature: [
+                22.0, 23.3, 26.5, 29.4, 33.0, 34.9, 34.6, 33.9, 33.6, 30.8, 26.6, 23.9,
+            ],
+        }
+    }
+
+    fn runs(normals: &Normals) -> Vec<(TropicalSeason, String)> {
+        tropical_runs(normals)
+            .into_iter()
+            .map(|run| (run.season, month_range(run)))
+            .collect()
+    }
+
+    #[test]
+    fn colombo_has_a_long_wet_season() {
+        use TropicalSeason::*;
+        assert_eq!(
+            runs(&colombo()),
+            [(Wet, "May–Nov".to_string()), (Dry, "Dec–Apr".to_string())]
+        );
+        let (run, s, next) = tropical_season(date(2026, 10, 28), &colombo()).unwrap();
+        assert_eq!((run.season, next.season), (Wet, Dry));
+        // 1 May to 28 Oct, of 1 May to 1 Dec.
+        assert_eq!((s.day, s.length, s.days_left), (181, 214, 34));
+    }
+
+    #[test]
+    fn jaffna_gets_the_northeast_monsoon() {
+        use TropicalSeason::*;
+        assert_eq!(
+            runs(&jaffna()),
+            // Listed from January, where the season changes.
+            [(Dry, "Jan–Aug".to_string()), (Wet, "Sep–Dec".to_string())]
+        );
+        let (run, s, next) = tropical_season(date(2026, 10, 28), &jaffna()).unwrap();
+        assert_eq!((run.season, next.season), (Wet, Dry));
+        assert_eq!((s.day, s.length, s.days_left), (58, 122, 65));
+    }
+
+    #[test]
+    fn a_dry_season_over_new_year() {
+        // 15 Feb in Colombo: Dec-Apr started on 1 Dec the year before.
+        let (run, s, next) = tropical_season(date(2027, 2, 15), &colombo()).unwrap();
+        assert_eq!(run.season, TropicalSeason::Dry);
+        assert_eq!(next.season, TropicalSeason::Wet);
+        assert_eq!((s.day, s.length), (77, 151), "31 + 31 + 15; Dec-Apr");
+    }
+
+    #[test]
+    fn a_desert_has_hot_and_cooler_seasons() {
+        use TropicalSeason::*;
+        assert_eq!(
+            runs(&makkah()),
+            [
+                (Hot, "Apr–Oct".to_string()),
+                (Cooler, "Nov–Mar".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn the_same_all_year_means_no_seasons() {
+        let even = Normals {
+            rain: [200.0; 12],
+            temperature: [27.0; 12],
+        };
+        assert!(tropical_runs(&even).is_empty());
+        assert_eq!(tropical_season(date(2026, 10, 28), &even), None);
+        let text = format(date(2026, 10, 28), 1.35, Some(&even));
+        assert!(text.starts_with("🌴"), "{text}");
+    }
+
+    #[test]
+    fn tropical_season_in_weather() {
+        let text = format(date(2026, 10, 28), 6.93, Some(&colombo()));
+        assert!(
+            text.starts_with(
+                "🌧️ *Wet season* (May–Nov, day 181 of 214)\n\
+                 ■■■■■■■■□□ 85% done · 34d to the dry season\n\n🗓️ *2026*"
+            ),
+            "{text}"
+        );
+        // Outside the tropics the averages are ignored.
+        let text = format(date(2026, 10, 28), 52.04, Some(&colombo()));
+        assert!(text.starts_with("🍂 *Autumn*"), "{text}");
     }
 
     #[test]
@@ -379,7 +666,7 @@ mod tests {
 
     #[test]
     fn formatted_like_the_rest_of_weather() {
-        let text = format(date(2026, 10, 28), 52.04);
+        let text = format(date(2026, 10, 28), 52.04, None);
         assert_eq!(
             text,
             "🍂 *Autumn* (day 58 of 91)\n■■■■■■□□□□ 64% done · 34d to Winter\n\n\

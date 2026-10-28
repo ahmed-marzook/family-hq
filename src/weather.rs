@@ -4,12 +4,12 @@
 
 use std::time::{Duration, Instant};
 
-use chrono::{NaiveDate, NaiveDateTime};
+use chrono::{Datelike, NaiveDate, NaiveDateTime};
 use chrono_tz::Tz;
 use serde::Deserialize;
 
 use crate::cache::{PlaceKey, TtlCache};
-use crate::calendar;
+use crate::calendar::{self, Climate, Normals};
 use crate::error::AppError;
 use crate::geo::Coordinates;
 use crate::moon::RiseSet;
@@ -23,11 +23,15 @@ pub enum When {
     Tomorrow,
     /// `/weather week`: the next seven days.
     Week,
+    /// `/weather hourly`: the next 12 hours.
+    Hourly,
 }
 
 /// The weather now.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Current {
+    /// When this was measured, local time (to the quarter hour).
+    pub time: NaiveDateTime,
     pub temperature: f64,
     pub feels_like: f64,
     /// WMO weather code (see `describe`).
@@ -36,6 +40,19 @@ pub struct Current {
     pub wind: f64,
     /// Where the wind comes from, in degrees: 0 north, 90 east.
     pub wind_from: f64,
+}
+
+/// One hour's forecast.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Hour {
+    /// The start of the hour, local time.
+    pub time: NaiveDateTime,
+    pub code: u8,
+    pub temperature: f64,
+    /// Chance of rain, 0-100.
+    pub rain_chance: Option<f64>,
+    /// Whether the sun is up, for a 🌙 instead of a ☀️ on a clear night.
+    pub is_day: bool,
 }
 
 /// One day's forecast.
@@ -61,16 +78,28 @@ pub struct Forecast {
     pub current: Current,
     /// Today first, then the following days.
     pub days: Vec<Day>,
+    /// Every hour from yesterday on; `/weather hourly` picks from now.
+    pub hours: Vec<Hour>,
     /// Seconds of daylight yesterday, to say how today's compares.
     pub yesterday_daylight: Option<f64>,
     /// Where the forecast is for: it decides the seasons (none in the
     /// tropics, the other way round below the equator).
     pub latitude: f64,
+    /// The place's usual year, for its seasons. Only fetched in the
+    /// tropics; `None` elsewhere or if the history couldn't be fetched.
+    pub normals: Option<Normals>,
 }
 
 /// How long a forecast is reused. Open-Meteo updates "current" every 15
 /// minutes, so anything longer would show older weather than it has.
 const FORECAST_FOR: Duration = Duration::from_secs(15 * 60);
+
+/// How long a place's monthly averages are reused. They're ten years of
+/// history, so a new month barely changes them.
+const NORMALS_FOR: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+
+/// How many full years of history the averages are from.
+const HISTORY_YEARS: i32 = 10;
 
 /// How long moonrise and moonset are reused. They never change for a
 /// given day; this only stops old days piling up.
@@ -84,6 +113,10 @@ pub struct Weather {
     forecasts: TtlCache<PlaceKey, Forecast>,
     /// Moonrise and moonset per place and day.
     moon_times: TtlCache<(PlaceKey, NaiveDate), RiseSet>,
+    /// Monthly averages per place (tropical places only).
+    normals: TtlCache<PlaceKey, Normals>,
+    /// Open-Meteo's history is a separate address from its forecasts.
+    archive_url: String,
 }
 
 impl Default for Weather {
@@ -99,6 +132,8 @@ impl Weather {
             base_url: "https://api.open-meteo.com/v1".to_string(),
             forecasts: TtlCache::new(FORECAST_FOR),
             moon_times: TtlCache::new(MOON_TIMES_FOR),
+            normals: TtlCache::new(NORMALS_FOR),
+            archive_url: "https://archive-api.open-meteo.com/v1".to_string(),
         }
     }
 
@@ -113,11 +148,56 @@ impl Weather {
         if let Some(forecast) = self.forecasts.get(&key, Instant::now()) {
             return Ok(forecast);
         }
-        let forecast = self.fetch_forecast(at, timezone).await?;
+        let mut forecast = self.fetch_forecast(at, timezone).await?;
+        // The tropics' seasons come from the place's history. If that
+        // fails, the forecast still goes out (with a note instead).
+        if Climate::at(forecast.latitude) == Climate::Tropical {
+            let this_year = forecast.days[0].date.year();
+            forecast.normals = self
+                .normals(at, timezone, this_year)
+                .await
+                .inspect_err(|err| println!("weather: no monthly averages: {err}"))
+                .ok();
+        }
         // Only answers are cached, never errors, so a failure is retried
         // on the next request.
         self.forecasts.insert(key, forecast.clone(), Instant::now());
         Ok(forecast)
+    }
+
+    /// The place's average rain and temperature for each month over the
+    /// last ten full years before `this_year`. One request of about 85 KB,
+    /// then cached for 30 days.
+    async fn normals(
+        &self,
+        at: Coordinates,
+        timezone: Tz,
+        this_year: i32,
+    ) -> Result<Normals, AppError> {
+        let key = PlaceKey::new(at, timezone);
+        if let Some(normals) = self.normals.get(&key, Instant::now()) {
+            return Ok(normals);
+        }
+        let first_year = this_year - HISTORY_YEARS;
+        let reply: ArchiveReply = self
+            .http
+            .get(format!("{}/archive", self.archive_url))
+            .query(&[
+                ("latitude", at.latitude.to_string()),
+                ("longitude", at.longitude.to_string()),
+                ("start_date", format!("{first_year}-01-01")),
+                ("end_date", format!("{}-12-31", this_year - 1)),
+                ("daily", "precipitation_sum,temperature_2m_mean".to_string()),
+                ("timezone", "UTC".to_string()),
+            ])
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        let normals = to_normals(&reply.daily).map_err(AppError::Weather)?;
+        self.normals.insert(key, normals.clone(), Instant::now());
+        Ok(normals)
     }
 
     async fn fetch_forecast(&self, at: Coordinates, timezone: Tz) -> Result<Forecast, AppError> {
@@ -138,6 +218,10 @@ impl Weather {
                     "weather_code,temperature_2m_max,temperature_2m_min,\
                      precipitation_probability_max,sunrise,sunset,daylight_duration"
                         .to_string(),
+                ),
+                (
+                    "hourly",
+                    "temperature_2m,weather_code,precipitation_probability,is_day".to_string(),
                 ),
                 ("timezone", timezone.name().to_string()),
                 ("forecast_days", "7".to_string()),
@@ -197,6 +281,60 @@ impl Weather {
     }
 }
 
+/// Daily history: `{"daily":{"time":["2015-01-01",...],
+/// "precipitation_sum":[0.4,...],"temperature_2m_mean":[26.3,...]}}`.
+#[derive(Deserialize)]
+struct ArchiveReply {
+    daily: ArchiveDaily,
+}
+
+#[derive(Deserialize)]
+struct ArchiveDaily {
+    time: Vec<String>,
+    precipitation_sum: Vec<Option<f64>>,
+    temperature_2m_mean: Vec<Option<f64>>,
+}
+
+/// Averages daily history into 12 months: rain is each month's total,
+/// averaged over the years; temperature the average day. Days with a
+/// missing value are skipped. Pure, so it's tested with made-up days.
+fn to_normals(daily: &ArchiveDaily) -> Result<Normals, String> {
+    let mut rain_total = [0.0; 12];
+    let mut temperature_total = [0.0; 12];
+    let mut temperature_days = [0_u32; 12];
+    // Which years each month was seen in, to divide rain totals by.
+    let mut years: [std::collections::BTreeSet<&str>; 12] = Default::default();
+
+    for (i, date) in daily.time.iter().enumerate() {
+        // "2015-01-31": the year is [0..4], the month [5..7]. `get` rather
+        // than `[..]` so a short string is skipped, not a panic.
+        let (Some(year), Some(month)) = (date.get(0..4), date.get(5..7)) else {
+            continue;
+        };
+        let Ok(month) = month.parse::<usize>() else {
+            continue;
+        };
+        let Some(m) = month.checked_sub(1).filter(|m| *m < 12) else {
+            continue;
+        };
+        if let Some(Some(rain)) = daily.precipitation_sum.get(i) {
+            rain_total[m] += rain;
+            years[m].insert(year);
+        }
+        if let Some(Some(temperature)) = daily.temperature_2m_mean.get(i) {
+            temperature_total[m] += temperature;
+            temperature_days[m] += 1;
+        }
+    }
+    if years.iter().any(|y| y.is_empty()) || temperature_days.contains(&0) {
+        return Err("history is missing a month".to_string());
+    }
+    Ok(Normals {
+        rain: std::array::from_fn(|m| rain_total[m] / years[m].len() as f64),
+        temperature: std::array::from_fn(|m| temperature_total[m] / f64::from(temperature_days[m])),
+    })
+}
+
 /// `{"daily":{"moonrise":["2026-10-28T17:24"],"moonset":[null]}}`: one day,
 /// local times without an offset. `null` when the moon doesn't rise or set
 /// that day.
@@ -241,10 +379,22 @@ struct Reply {
     latitude: f64,
     current: ReplyCurrent,
     daily: ReplyDaily,
+    hourly: ReplyHourly,
+}
+
+#[derive(Deserialize)]
+struct ReplyHourly {
+    time: Vec<String>,
+    temperature_2m: Vec<f64>,
+    weather_code: Vec<u8>,
+    precipitation_probability: Vec<Option<f64>>,
+    /// 1 when the sun is up, 0 when not.
+    is_day: Vec<u8>,
 }
 
 #[derive(Deserialize)]
 struct ReplyCurrent {
+    time: String,
     temperature_2m: f64,
     apparent_temperature: f64,
     weather_code: u8,
@@ -301,9 +451,23 @@ fn to_forecast(reply: Reply) -> Result<Forecast, String> {
         return Err("no days in the forecast".to_string());
     }
     let yesterday = days.remove(0);
+    let h = reply.hourly;
+    let mut hours = Vec::new();
+    for (i, time) in h.time.iter().enumerate() {
+        let missing = || format!("hour {time} is missing a value");
+        hours.push(Hour {
+            time: local_time(Some(time))?.ok_or_else(missing)?,
+            code: *h.weather_code.get(i).ok_or_else(missing)?,
+            temperature: *h.temperature_2m.get(i).ok_or_else(missing)?,
+            rain_chance: h.precipitation_probability.get(i).copied().flatten(),
+            is_day: *h.is_day.get(i).ok_or_else(missing)? == 1,
+        });
+    }
+
     let c = reply.current;
     Ok(Forecast {
         current: Current {
+            time: local_time(Some(&c.time))?.ok_or("no current time")?,
             temperature: c.temperature_2m,
             feels_like: c.apparent_temperature,
             code: c.weather_code,
@@ -311,8 +475,10 @@ fn to_forecast(reply: Reply) -> Result<Forecast, String> {
             wind_from: c.wind_direction_10m,
         },
         days,
+        hours,
         yesterday_daylight: yesterday.daylight,
         latitude: reply.latitude,
+        normals: None,
     })
 }
 
@@ -405,6 +571,60 @@ fn sun_line(today: &Day, yesterday_daylight: Option<f64>) -> Option<String> {
     Some(line)
 }
 
+const NIGHT: &str = "🌙";
+
+/// The weather's emoji, without a sun at night: a moon when it's clear,
+/// a plain cloud when it's partly cloudy.
+fn icon_at(code: u8, is_day: bool) -> &'static str {
+    match code {
+        0 | 1 if !is_day => NIGHT,
+        2 if !is_day => describe(3).0,
+        _ => describe(code).0,
+    }
+}
+
+/// How many hours `/weather hourly` shows.
+const HOURS: usize = 12;
+
+/// `/weather hourly`: the next 12 hours from the current one, with the
+/// day named when it passes midnight.
+fn format_hours(forecast: &Forecast, city: &str) -> String {
+    // The hour `current.time` is in: 20:15 → 20:00. `with_minute(0)` can't
+    // fail, but it returns an `Option`, so fall back to the time itself.
+    let now = forecast.current.time;
+    let this_hour = chrono::Timelike::with_minute(&now, 0).unwrap_or(now);
+    let coming: Vec<&Hour> = forecast
+        .hours
+        .iter()
+        .filter(|hour| hour.time >= this_hour)
+        .take(HOURS)
+        .collect();
+    let Some(first) = coming.first() else {
+        return "❓ No hourly forecast right now. Try `/weather`.".to_string();
+    };
+
+    let mut text = format!("🕐 *Next {HOURS} hours in {city}*\n");
+    let mut day = first.time.date();
+    for hour in coming {
+        if hour.time.date() != day {
+            day = hour.time.date();
+            text.push_str(&format!("\n*{}*\n", day.format("%a %-d %b")));
+        }
+        let rain = match hour.rain_chance {
+            Some(chance) if chance >= 20.0 => format!(" · {chance:.0}% rain"),
+            _ => String::new(),
+        };
+        text.push_str(&format!(
+            "{} {} {:.0}°C{rain}\n",
+            hour.time.format("%H:%M"),
+            icon_at(hour.code, hour.is_day),
+            hour.temperature
+        ));
+    }
+    text.push_str("\n`/weather` · `/weather tomorrow` · `/weather week`");
+    text
+}
+
 /// The `/weather` reply.
 pub fn format(forecast: &Forecast, when: When, city: &str) -> String {
     let today = &forecast.days[0];
@@ -426,15 +646,20 @@ pub fn format(forecast: &Forecast, when: When, city: &str) -> String {
             );
             // The forecast's first day is the person's today (it was asked
             // for in their timezone), so no clock is needed here.
-            text.push_str(&calendar::format(today.date, forecast.latitude));
+            text.push_str(&calendar::format(
+                today.date,
+                forecast.latitude,
+                forecast.normals.as_ref(),
+            ));
             text.push_str("\n\n");
             if let Some(sun) = sun_line(today, forecast.yesterday_daylight) {
                 text.push_str(&sun);
                 text.push_str("\n\n");
             }
-            text.push_str("`/weather tomorrow` · `/weather week`");
+            text.push_str("`/weather hourly` · `/weather tomorrow` · `/weather week`");
             text
         }
+        When::Hourly => format_hours(forecast, city),
         When::Tomorrow => match forecast.days.get(1) {
             Some(day) => {
                 let (icon, words) = describe(day.code);
@@ -473,6 +698,11 @@ mod tests {
         "current": {"time":"2026-10-27T20:15","interval":900,"temperature_2m":9.3,
                     "apparent_temperature":6.2,"weather_code":0,"wind_speed_10m":14.4,
                     "wind_direction_10m":230},
+"hourly": {"time":["2026-10-27T18:00","2026-10-27T19:00","2026-10-27T20:00","2026-10-27T21:00","2026-10-27T22:00","2026-10-27T23:00","2026-10-28T00:00","2026-10-28T01:00","2026-10-28T02:00","2026-10-28T03:00","2026-10-28T04:00","2026-10-28T05:00","2026-10-28T06:00","2026-10-28T07:00","2026-10-28T08:00","2026-10-28T09:00"],
+                  "temperature_2m":[10.1,9.8,9.3,9.0,8.7,8.4,8.2,8.0,7.8,7.6,7.5,7.5,7.6,8.1,9.0,10.2],
+                  "weather_code":[2,1,0,0,1,2,3,61,61,63,3,3,2,1,1,2],
+                  "precipitation_probability":[10,5,0,0,0,10,30,70,80,90,40,20,10,null,0,0],
+                  "is_day":[0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1]},
         "daily": {"time":["2026-10-26","2026-10-27","2026-10-28","2026-10-29"],
                   "weather_code":[3,53,61,3],
                   "temperature_2m_max":[14.0,15.4,13.1,12.0],
@@ -559,9 +789,39 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.ends_with("`/weather tomorrow` · `/weather week`"),
+            text.ends_with("`/weather hourly` · `/weather tomorrow` · `/weather week`"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn hourly_starts_at_this_hour_and_names_the_next_day() {
+        // It's 20:15 on the 27th: 20:00 to 07:00, 12 hours.
+        let text = format(&forecast(), When::Hourly, "Milton Keynes");
+        let expected = "🕐 *Next 12 hours in Milton Keynes*\n\
+             20:00 🌙 9°C\n\
+             21:00 🌙 9°C\n\
+             22:00 🌙 9°C\n\
+             23:00 ☁️ 8°C\n\
+             \n*Wed 28 Oct*\n\
+             00:00 ☁️ 8°C · 30% rain\n\
+             01:00 🌦️ 8°C · 70% rain\n\
+             02:00 🌦️ 8°C · 80% rain\n\
+             03:00 🌧️ 8°C · 90% rain\n\
+             04:00 ☁️ 8°C · 40% rain\n\
+             05:00 ☁️ 8°C · 20% rain\n\
+             06:00 ☁️ 8°C\n\
+             07:00 🌤️ 8°C\n\n\
+             `/weather` · `/weather tomorrow` · `/weather week`";
+        assert_eq!(text, expected);
+    }
+
+    #[test]
+    fn hourly_with_no_hours_left_says_so() {
+        let mut forecast = forecast();
+        forecast.hours.clear();
+        let text = format(&forecast, When::Hourly, "Milton Keynes");
+        assert!(text.starts_with("❓ No hourly forecast"), "{text}");
     }
 
     #[test]
@@ -582,6 +842,38 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("🗓️ *2026*"), "{text}");
+    }
+
+    #[test]
+    fn history_is_averaged_into_months() {
+        // Two Januaries (10 mm and 30 mm of rain) and a February each year;
+        // every other month one day. A missing value is skipped.
+        let mut time = vec!["2015-01-01", "2016-01-01", "2015-02-01", "2016-02-01"];
+        let mut rain = vec![Some(10.0), Some(30.0), Some(4.0), None];
+        let mut temperature = vec![Some(20.0), Some(22.0), Some(25.0), Some(27.0)];
+        let others: Vec<String> = (3..=12).map(|m| format!("2015-{m:02}-01")).collect();
+        for day in &others {
+            time.push(day);
+            rain.push(Some(100.0));
+            temperature.push(Some(30.0));
+        }
+        let daily = ArchiveDaily {
+            time: time.into_iter().map(str::to_string).collect(),
+            precipitation_sum: rain,
+            temperature_2m_mean: temperature,
+        };
+        let normals = to_normals(&daily).unwrap();
+        assert_eq!(normals.rain[0], 20.0, "average of the two Januaries");
+        assert_eq!(normals.rain[1], 4.0, "only one February had rain data");
+        assert_eq!(normals.temperature[1], 26.0);
+        assert_eq!(normals.rain[11], 100.0);
+
+        let short = ArchiveDaily {
+            time: vec!["2015-01-01".to_string()],
+            precipitation_sum: vec![Some(1.0)],
+            temperature_2m_mean: vec![Some(1.0)],
+        };
+        assert!(to_normals(&short).unwrap_err().contains("missing a month"));
     }
 
     #[test]

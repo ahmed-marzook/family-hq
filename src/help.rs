@@ -26,7 +26,7 @@ I keep shared lists for each group I'm in, and private ones when you message me 
 📝 *Todos*: `+todo fix the tap` · `/todo` · `+done 2` or `+done gym`
 🕌 *Prayers*: `/prayers` · `/prayers on` · `+prayed asr`
 ⚙️ *Settings*: `/settings` · `/settings city Leicester, GB` · or share your location with me
-🌤️ *Weather*: `/weather` · `/weather tomorrow` · `/weather week`
+🌤️ *Weather*: `/weather` · `/weather hourly` · `/weather tomorrow` · `/weather week`
 🌙 *Moon*: `/moon`
 
 Short forms: `+s` shop · `+g` got · `+t` todo · `+d` done · `+p` prayed · `/s` · `/t` · `/p` · `/w` · `/m` · `/h`
@@ -121,10 +121,11 @@ Settings belong to a chat: in a DM with me they're *your own*; in a group they'r
 
 const WEATHER: &str = "🌤️ *Help: weather*
 `/weather`: the weather now and the rest of today, how far through the season and the year we are, and sunrise, sunset and daylight.
+`/weather hourly`: the next 12 hours, with the chance of rain.
 `/weather tomorrow` (or `tmr`): tomorrow's forecast.
 `/weather week`: the next seven days.
 
-It's for *your* town: the one in your own settings (message me `/settings city …` or share your location privately), or this group's if you haven't set one. Seasons are your town's: the other way round south of the equator, and none in the tropics.";
+It's for *your* town: the one in your own settings (message me `/settings city …` or share your location privately), or this group's if you haven't set one. Seasons are your town's: the other way round south of the equator. In the tropics they're its usual wet and dry seasons (hot and cooler in a desert), from the last 10 years of weather there.";
 
 const MOON: &str = "🌙 *Help: moon*
 `/moon` (or `/m`): the moon's phase and how much of it is lit, today's Islamic date, moonrise and moonset in your town, and when the next new and full moons are.

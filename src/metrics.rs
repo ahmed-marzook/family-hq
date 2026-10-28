@@ -163,6 +163,7 @@ pub fn command(command: &BotCommand) -> Event {
                 When::Now => "now",
                 When::Tomorrow => "tomorrow",
                 When::Week => "week",
+                When::Hourly => "hourly",
             }),
         ),
         BotCommand::Moon => event("moon", None),

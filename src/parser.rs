@@ -48,7 +48,7 @@ pub enum BotCommand {
     Prayed(Vec<Prayer>),
     /// `/settings ...`: show or change this chat's settings
     Settings(SettingsCommand),
-    /// `/weather`, `/weather tomorrow`, `/weather week`
+    /// `/weather`, `/weather hourly`, `/weather tomorrow`, `/weather week`
     Weather(When),
     /// `/moon`: today's phase, moonrise and moonset, the next new and full
     Moon,
@@ -176,6 +176,7 @@ pub fn parse(text: &str) -> Option<BotCommand> {
             "" | "now" | "today" => Some(BotCommand::Weather(When::Now)),
             "tomorrow" | "tmr" | "tmrw" => Some(BotCommand::Weather(When::Tomorrow)),
             "week" | "7 days" => Some(BotCommand::Weather(When::Week)),
+            "hourly" | "hours" | "hour" | "today hourly" => Some(BotCommand::Weather(When::Hourly)),
             _ => None,
         },
         "/moon" if rest.is_empty() => Some(BotCommand::Moon),
@@ -765,6 +766,11 @@ mod tests {
             parse("/weather week"),
             Some(BotCommand::Weather(When::Week))
         );
+        assert_eq!(
+            parse("/weather hourly"),
+            Some(BotCommand::Weather(When::Hourly))
+        );
+        assert_eq!(parse("/w hours"), Some(BotCommand::Weather(When::Hourly)));
         assert_eq!(parse("/weather in paris"), None);
     }
 
