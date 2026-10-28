@@ -100,7 +100,7 @@ jobs:
           run() {
             docker run -d --name "$1" \
               -e GOWA_URL=http://gowa:3000 -e GOWA_BASIC_AUTH=ci:ci \
-              -e GOWA_WEBHOOK_SECRET=ci -e DATABASE_URL=sqlite:///data/family_hq.db \
+              -e GOWA_WEBHOOK_SECRET=ci \
               -v "$PWD/data:/data" "$2"
           }
           wait_healthy() {
