@@ -244,6 +244,7 @@ mod tests {
                 "chat_members",
                 "chat_settings",
                 "chats",
+                "command_log",
                 "prayer_log",
                 "prayer_reminders",
                 "processed_messages",

@@ -15,7 +15,8 @@ and habit tracking.
 Phase 1 in progress. See [docs/ROADMAP.md](docs/ROADMAP.md) for the phases,
 stages and schema. To run GOWA locally and experiment with WhatsApp, see
 [docs/GOWA.md](docs/GOWA.md). To run it on a home server from the Docker Hub
-image, see [docs/DEPLOY.md](docs/DEPLOY.md).
+image, see [docs/DEPLOY.md](docs/DEPLOY.md). To see how the bot is used
+(which commands, by whom, what fails), see [docs/METRICS.md](docs/METRICS.md).
 
 ## Commands
 

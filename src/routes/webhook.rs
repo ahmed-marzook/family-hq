@@ -6,6 +6,7 @@
 //! 3. Decide whether the event needs any action.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use axum::{body::Bytes, extract::State, http::HeaderMap, http::StatusCode};
 use chrono::{DateTime, Utc};
@@ -16,10 +17,12 @@ use sha2::Sha256;
 use crate::AppState;
 use crate::error::AppError;
 use crate::handlers::{self, Context, Outcome};
+use crate::metrics::{self, Event};
 use crate::parser::{self, BotCommand, ReplyCommand};
 use crate::person::{Assignee, Person};
 use crate::repo::messages::{self, ListItem};
-use crate::repo::{chats, prayers, users};
+use crate::repo::metrics::Logged;
+use crate::repo::{self, chats, prayers, users};
 use crate::whatsapp;
 
 /// HMAC using SHA-256 as its hash. A type alias just gives a long type a
@@ -225,8 +228,23 @@ async fn handle_message(
         }
         _ => None,
     };
+    let is_group = dm_owner.is_none();
     let Some(action) = action else {
-        // Ordinary chat: keep the registration, nothing else to do.
+        // Ordinary chat: keep the registration, nothing else to do. But a
+        // `+word` or `/word` the bot didn't understand is worth knowing
+        // about: it's what people expect the bot to do.
+        if let Some(event) = msg.body.as_deref().and_then(metrics::unknown) {
+            let row = Logged {
+                event: &event,
+                chat_id,
+                user_id: user.id,
+                is_group,
+                ok: false,
+                duration_ms: 0,
+                at: now,
+            };
+            repo::metrics::record(&mut tx, &row).await?;
+        }
         tx.commit().await?;
         println!("webhook: message {} is chat, not a command", msg.id);
         return Ok(());
@@ -241,26 +259,66 @@ async fn handle_message(
 
     let ctx = Context {
         chat_id,
-        is_group: dm_owner.is_none(),
+        is_group,
         sender: user,
         now,
     };
-    let outcome = match action {
+    // Named before running, because running uses the command up.
+    let event = match &action {
+        Action::Command(command) => metrics::command(command),
+        Action::ListReply(items, reply) => metrics::list_reply(&items[0].item_type, reply),
+    };
+    let event = match msg.body.as_deref() {
+        Some(text) => event.typed_as(text),
+        None => event,
+    };
+
+    // `Instant` is a monotonic clock, made for measuring how long
+    // something took (unlike `Utc::now()`, it never jumps if the system
+    // clock is changed).
+    let started = Instant::now();
+    let result = match action {
         Action::Command(command) => {
             println!(
                 "webhook: {} in {}: {command:?}",
                 ctx.sender.display_name, msg.chat_id
             );
-            handlers::run_command(&mut tx, &ctx, &state.apis, command).await?
+            handlers::run_command(&mut tx, &ctx, &state.apis, command).await
         }
         Action::ListReply(items, reply) => {
             println!(
                 "webhook: {} replied {reply:?} to a list",
                 ctx.sender.display_name
             );
-            handlers::run_list_reply(&mut tx, &ctx, &items, reply).await?
+            handlers::run_list_reply(&mut tx, &ctx, &items, reply).await
         }
     };
+    // `try_from` because `as_millis` is a u128; anything that doesn't fit
+    // an i64 (290 million years) is capped.
+    let duration_ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
+    let row = Logged {
+        event: &event,
+        chat_id,
+        user_id: ctx.sender.id,
+        is_group,
+        ok: result.is_ok(),
+        duration_ms,
+        at: now,
+    };
+
+    let outcome = match result {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            // The transaction rolls back (nothing saved, GOWA retries), so
+            // the failure is logged separately. Only best effort: the
+            // original error is what matters.
+            drop(tx);
+            log_failure(state, &row).await;
+            return Err(err);
+        }
+    };
+    // Saved with everything else, so a retried webhook isn't counted twice.
+    repo::metrics::record(&mut tx, &row).await?;
     tx.commit().await?;
 
     // Saved. From here on, failures are logged but not returned: a 500
@@ -288,6 +346,18 @@ async fn handle_message(
         }
     }
     Ok(())
+}
+
+/// Records a failed command outside the (rolled back) transaction. Any
+/// error here is printed, not returned.
+async fn log_failure(state: &AppState, row: &Logged<'_>) {
+    let result = match state.db.acquire().await {
+        Ok(mut conn) => repo::metrics::record(&mut conn, row).await,
+        Err(err) => Err(err),
+    };
+    if let Err(err) = result {
+        println!("webhook: couldn't log a failed {}: {err}", row.event.name);
+    }
 }
 
 /// Handles a reaction. The only reactions that mean anything are on prayer
@@ -326,7 +396,25 @@ async fn handle_reaction(
     // Adding the same reaction twice, or removing one that's already
     // gone, is harmless: both repo calls are safe to repeat. So retried
     // webhooks need no dedupe here.
-    if r.reaction.is_empty() {
+    let removed = r.reaction.is_empty();
+    // The chat is already known (the reminder was sent there), so this only
+    // looks it up.
+    let is_group = r.chat_id.ends_with("@g.us");
+    let dm_owner = (!is_group).then_some(user.id);
+    let chat_id = chats::find_or_create(&mut tx, &r.chat_id, dm_owner, now).await?;
+    let event: Event = metrics::reaction(removed);
+    let row = Logged {
+        event: &event,
+        chat_id,
+        user_id: user.id,
+        is_group,
+        ok: true,
+        duration_ms: 0,
+        at: now,
+    };
+    repo::metrics::record(&mut tx, &row).await?;
+
+    if removed {
         prayers::unmark_prayed(&mut tx, user.id, date, prayer).await?;
         println!(
             "webhook: {} un-prayed {prayer} on {date}",

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO command_log\n            (at, chat_id, user_id, kind, name, detail, typed, is_group, ok, duration_ms)\n         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 10
+    },
+    "nullable": []
+  },
+  "hash": "5b6766eb85619c885d673ba5796643a206ca41ee4d583cb9fc3bf6270fc79865"
+}

@@ -226,6 +226,9 @@ All of these are released and tested:
 - **Todo views**: `/todo` grouped by person, `/todo all`, `/todo <name>`,
   `/todo mine`, all with the same numbers.
 - **`/moon`** and the Islamic date and moon phase in `/prayers`.
+- **Usage metrics**: every command, list reply, reminder reaction and
+  unrecognised `+`/`/` word goes in `command_log` (names only, never
+  message text); queries in `docs/METRICS.md`.
 - **Deployment:** Docker Hub image, a stack in `my-homeserver-stacks`
   (Dockhand), and an entrypoint that fixes the data folder's ownership by
   itself.

@@ -133,20 +133,22 @@ const MOON: &str = "🌙 *Help: moon*
 
 The Islamic date comes from AlAdhan's calculated calendar, so it can be a day off from the moon sighting your mosque follows. A new Islamic month starts once the new crescent is seen, usually a day or two after the new moon.";
 
+/// The topic a typed word leads to ("namaz" → "prayers"), if any.
+pub fn topic(word: &str) -> Option<&'static str> {
+    let word = word.trim().to_lowercase();
+    // Find the topic whose list of words contains what was typed.
+    TOPICS
+        .iter()
+        .find(|(_, words)| words.contains(&word.as_str()))
+        .map(|(name, _)| *name)
+}
+
 /// The help text for `/help` (no topic) or `/help <topic>`.
 pub fn page(topic: Option<&str>) -> String {
     let Some(topic) = topic else {
         return OVERVIEW.to_string();
     };
-    let word = topic.trim().to_lowercase();
-
-    // Find the topic whose list of words contains what was typed.
-    let found = TOPICS
-        .iter()
-        .find(|(_, words)| words.contains(&word.as_str()))
-        .map(|(name, _)| *name);
-
-    match found {
+    match self::topic(topic) {
         Some("shop") => SHOP.to_string(),
         Some("todo") => TODO.to_string(),
         Some("prayers") => PRAYERS.to_string(),

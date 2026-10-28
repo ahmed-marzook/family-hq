@@ -12,6 +12,7 @@
 
 pub mod chats;
 pub mod messages;
+pub mod metrics;
 pub mod prayers;
 pub mod settings;
 pub mod shop;
