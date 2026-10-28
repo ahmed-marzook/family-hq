@@ -24,7 +24,7 @@ private list.
 
 Short forms: `+s` = `+shop`, `+g` = `+got`, `+t` = `+todo`, `+d` = `+done`, `+p` = `+prayed`,
 `/s` = `/shop`, `/t` = `/todo`, `/p` = `/prayers`, `/w` = `/weather`,
-`/h` = `/help`.
+`/m` = `/moon`, `/h` = `/help`.
 
 | Message | Effect |
 |---|---|
@@ -34,13 +34,15 @@ Short forms: `+s` = `+shop`, `+g` = `+got`, `+t` = `+todo`, `+d` = `+done`, `+p`
 | `/shop clear` | Empty the whole list (`/shop clear bought` removes only ticked-off items) |
 | `+todo fix the tap` | Add a todo, assigned to you |
 | `+todo @Khadija book dentist` | Add a todo assigned to someone in the group |
-| `/todo` | Progress bar, open (⬜) and done (✅, who and when) todos; reply `done 2` to complete one |
+| `/todo` | Progress bar, then each person's open (⬜) and done (✅, when) todos under their name; reply `done 2` to complete one |
+| `/todo all` / `/todo Khadija` / `/todo mine` | All todos as one list in order / one person's / your own (same numbers in every view) |
 | `+done 2` or `+done gym` | Complete todos without replying (numbers from the latest `/todo`, or part of the title) |
 | `/todo clear` / `/todo clear done` | Empty the list / remove only completed todos |
-| `/prayers` | Today's prayer times, ✅ for the ones you've prayed |
+| `/prayers` | Today's prayer times, Islamic (Hijri) date and moon phase, ✅ for the ones you've prayed |
 | `/prayers on` / `off` | Reminders when each prayer starts and before it ends; react to one once you've prayed |
 | `+prayed asr` or `+p 3` | Mark a prayer as prayed without reacting (by name, or 1 Fajr to 5 Isha) |
 | `/settings` | This chat's city, timezone and prayer settings (in a DM: your own); `/settings city Leicester, GB` etc. |
 | `/settings everyone` | Each group member's own settings |
 | `/weather`, `/weather tomorrow`, `/weather week` | The forecast for your own town |
-| `/help` | Overview; `/help shop`, `/help todo`, `/help prayers`, `/help settings`, `/help weather` for a full page |
+| `/moon` | Moon phase and % lit, Islamic date, moonrise/moonset, next new and full moon |
+| `/help` | Overview; `/help shop`, `/help todo`, `/help prayers`, `/help settings`, `/help weather`, `/help moon` for a full page |

@@ -10,7 +10,7 @@ use crate::error::AppError;
 use chrono_tz::Tz;
 
 use crate::geo::Coordinates;
-use crate::prayer::{DayTimes, Location, Prayer, Window};
+use crate::prayer::{DayTimes, HijriDate, Location, Prayer, Window};
 use crate::settings::Settings;
 
 /// Fetches prayer times and remembers them per location and day, so the
@@ -121,7 +121,9 @@ impl PrayerTimes {
             .json()
             .await?;
 
-        to_day_times(date, &response.data.timings).map_err(AppError::PrayerTimes)
+        let mut day = to_day_times(date, &response.data.timings).map_err(AppError::PrayerTimes)?;
+        day.hijri = response.data.date.as_ref().and_then(ApiDate::hijri);
+        Ok(day)
     }
 
     /// The timezone at `at`, as AlAdhan works it out from the coordinates
@@ -165,6 +167,42 @@ struct ApiResponse {
 struct ApiData {
     timings: ApiTimings,
     meta: ApiMeta,
+    /// `Option`, so a reply without it still gives prayer times.
+    date: Option<ApiDate>,
+}
+
+/// `"date":{"hijri":{"day":"16","month":{"number":5,...},"year":"1448"}}`.
+/// AlAdhan sends the day and year as strings but the month as a number.
+#[derive(Deserialize)]
+struct ApiDate {
+    hijri: ApiHijri,
+}
+
+#[derive(Deserialize)]
+struct ApiHijri {
+    day: String,
+    month: ApiHijriMonth,
+    year: String,
+}
+
+#[derive(Deserialize)]
+struct ApiHijriMonth {
+    number: u8,
+}
+
+impl ApiDate {
+    /// The Hijri date, or `None` if any part doesn't make sense. It's only
+    /// shown in `/prayers`, so a bad one is left out rather than an error.
+    fn hijri(&self) -> Option<HijriDate> {
+        let h = &self.hijri;
+        let date = HijriDate {
+            day: h.day.parse().ok()?,
+            month: h.month.number,
+            year: h.year.parse().ok()?,
+        };
+        let valid = (1..=30).contains(&date.day) && (1..=12).contains(&date.month);
+        valid.then_some(date)
+    }
 }
 
 /// `"meta":{"timezone":"Europe/London",...}`: the timezone AlAdhan says the
@@ -214,6 +252,7 @@ fn to_day_times(date: NaiveDate, t: &ApiTimings) -> Result<DayTimes, String> {
     let window = |prayer, start, end| Window { prayer, start, end };
     Ok(DayTimes {
         date,
+        hijri: None,
         windows: [
             window(Prayer::Fajr, fajr, sunrise),
             window(Prayer::Dhuhr, dhuhr, asr),
@@ -235,6 +274,8 @@ mod tests {
         "Sunset":"2026-10-27T16:44:00+00:00","Maghrib":"2026-10-27T16:44:00+00:00",
         "Isha":"2026-10-27T18:31:00+00:00","Imsak":"2026-10-27T04:45:00+00:00",
         "Midnight":"2026-10-27T23:46:00+00:00"},
+        "date":{"hijri":{"date":"16-05-1448","day":"16","year":"1448",
+            "month":{"number":5,"en":"Jumādá al-ūlá","days":30}}},
         "meta":{"timezone":"Europe/London"}}}"#;
 
     fn utc(s: &str) -> DateTime<Utc> {
@@ -295,6 +336,35 @@ mod tests {
         reply.data.timings.sunrise = "06:49".to_string();
         let err = parse(&reply).unwrap_err();
         assert!(err.contains("Sunrise"), "{err}");
+    }
+
+    #[test]
+    fn hijri_date_is_read_from_the_reply() {
+        let reply: ApiResponse = serde_json::from_str(REPLY).unwrap();
+        let hijri = reply.data.date.as_ref().and_then(ApiDate::hijri);
+        assert_eq!(
+            hijri,
+            Some(HijriDate {
+                day: 16,
+                month: 5,
+                year: 1448
+            })
+        );
+    }
+
+    #[test]
+    fn a_bad_or_missing_hijri_date_is_left_out() {
+        let mut reply: ApiResponse = serde_json::from_str(REPLY).unwrap();
+        let date = reply.data.date.as_mut().unwrap();
+        date.hijri.month.number = 13;
+        assert_eq!(date.hijri(), None, "month 13");
+        date.hijri.month.number = 5;
+        date.hijri.day = "first".to_string();
+        assert_eq!(date.hijri(), None, "day isn't a number");
+
+        let without = REPLY.replace(r#""date":"#, r#""unused":"#);
+        let reply: ApiResponse = serde_json::from_str(&without).unwrap();
+        assert!(reply.data.date.is_none(), "still parses without it");
     }
 
     #[tokio::test]

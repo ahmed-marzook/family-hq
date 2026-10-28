@@ -4,7 +4,7 @@
 //! changes, change its page here. Pure functions, no database.
 
 /// The topics `/help <topic>` knows, and the words that lead to each.
-const TOPICS: [(&str, &[&str]); 5] = [
+const TOPICS: [(&str, &[&str]); 6] = [
     ("shop", &["shop", "shopping", "buy", "got", "list"]),
     ("todo", &["todo", "todos", "task", "tasks"]),
     (
@@ -16,6 +16,7 @@ const TOPICS: [(&str, &[&str]); 5] = [
         &["settings", "setting", "city", "timezone", "location"],
     ),
     ("weather", &["weather", "forecast", "rain"]),
+    ("moon", &["moon", "hijri", "islamic", "month", "crescent"]),
 ];
 
 const OVERVIEW: &str = "🤖 *Family HQ help*
@@ -26,11 +27,12 @@ I keep shared lists for each group I'm in, and private ones when you message me 
 🕌 *Prayers*: `/prayers` · `/prayers on` · `+prayed asr`
 ⚙️ *Settings*: `/settings` · `/settings city Leicester, GB` · or share your location with me
 🌤️ *Weather*: `/weather` · `/weather tomorrow` · `/weather week`
+🌙 *Moon*: `/moon`
 
-Short forms: `+s` shop · `+g` got · `+t` todo · `+d` done · `+p` prayed · `/s` · `/t` · `/p` · `/w` · `/h`
+Short forms: `+s` shop · `+g` got · `+t` todo · `+d` done · `+p` prayed · `/s` · `/t` · `/p` · `/w` · `/m` · `/h`
 
 For the full page on a topic, with examples:
-`/help shop` · `/help todo` · `/help prayers` · `/help settings` · `/help weather`
+`/help shop` · `/help todo` · `/help prayers` · `/help settings` · `/help weather` · `/help moon`
 
 I react 👍 to every command I understand. No reaction means I didn't recognise it.";
 
@@ -63,7 +65,10 @@ Each group has its own todos; in a DM with me they're your private ones.
 `+todo @Khadija book dentist`: assigned to someone in this group. Names are what I show in `/settings everyone`; people appear once they've sent a message here.
 
 *See them*
-`/todo`: a progress bar, then the list: ⬜ still to do (with who it's for), ✅ done (with who did it and when).
+`/todo`: a progress bar, then everyone's todos under their name: ⬜ still to do, ✅ done (with when, and who if someone else did it).
+`/todo all`: the same todos as one list, in order, with who each is for.
+`/todo Khadija` (or `/todo @Khadija`): just one person's, with their own progress. `/todo mine` for yours.
+Every view uses the same numbers, so `+done 5` is the same todo whichever you looked at.
 
 *Finish one*
 • Reply to a `/todo` list: `done 2`, or `1 3` for several.
@@ -79,7 +84,7 @@ The numbers always mean the list you replied to, even if it's old.";
 
 const PRAYERS: &str = "🕌 *Help: prayers*
 *Today's times*
-`/prayers`: each prayer's start and end time, ✅ for the ones you've prayed.
+`/prayers`: today's Islamic date and moon phase, then each prayer's start and end time, ✅ for the ones you've prayed.
 
 *Reminders*
 `/prayers on`: in this chat, a reminder when each prayer starts, and another shortly before it ends (20 min by default). `/prayers off` stops them.
@@ -121,6 +126,13 @@ const WEATHER: &str = "🌤️ *Help: weather*
 
 It's for *your* town: the one in your own settings (message me `/settings city …` or share your location privately), or this group's if you haven't set one.";
 
+const MOON: &str = "🌙 *Help: moon*
+`/moon` (or `/m`): the moon's phase and how much of it is lit, today's Islamic date, moonrise and moonset in your town, and when the next new and full moons are.
+
+`/prayers` shows the Islamic date and phase too.
+
+The Islamic date comes from AlAdhan's calculated calendar, so it can be a day off from the moon sighting your mosque follows. A new Islamic month starts once the new crescent is seen, usually a day or two after the new moon.";
+
 /// The help text for `/help` (no topic) or `/help <topic>`.
 pub fn page(topic: Option<&str>) -> String {
     let Some(topic) = topic else {
@@ -140,9 +152,10 @@ pub fn page(topic: Option<&str>) -> String {
         Some("prayers") => PRAYERS.to_string(),
         Some("settings") => SETTINGS.to_string(),
         Some("weather") => WEATHER.to_string(),
+        Some("moon") => MOON.to_string(),
         _ => format!(
             "❓ There's no help page for \"{topic}\". Try `/help shop`, `/help todo`, \
-             `/help prayers`, `/help settings` or `/help weather`."
+             `/help prayers`, `/help settings`, `/help weather` or `/help moon`."
         ),
     }
 }
@@ -169,6 +182,7 @@ mod tests {
         assert!(page(Some("todos")).starts_with("📝 *Help: todos*"));
         assert!(page(Some("namaz")).starts_with("🕌 *Help: prayers*"));
         assert!(page(Some("timezone")).starts_with("⚙️ *Help: settings*"));
+        assert!(page(Some("hijri")).starts_with("🌙 *Help: moon*"));
     }
 
     #[test]
@@ -184,5 +198,6 @@ mod tests {
         assert!(page(Some("todo")).contains("remove 2"));
         assert!(page(Some("prayers")).contains("+prayed all"));
         assert!(page(Some("settings")).contains("/settings everyone"));
+        assert!(page(Some("moon")).contains("`/moon` (or `/m`)"));
     }
 }

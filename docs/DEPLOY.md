@@ -63,7 +63,7 @@ echo "GOWA_WEBHOOK_SECRET=$(openssl rand -hex 32)"
 ```
 
 Paste those two lines into `.env` (replacing the `change-me` ones) with
-`nano .env`. Leave `FAMILY_HQ_TAG=0.4.2`. Then lock it down, since it holds
+`nano .env`. Leave `FAMILY_HQ_TAG=0.5.0`. Then lock it down, since it holds
 the passwords:
 
 ```sh
@@ -146,23 +146,67 @@ boot, which `get.docker.com` sets up).
 
 ---
 
-## Releasing a new version (on the laptop)
+## Releasing a new version
 
-1. Bump `version` in `Cargo.toml` (e.g. `0.4.0` → `0.5.0`).
-2. If you changed any SQL: `cargo sqlx prepare` (and commit `.sqlx/`).
-3. Check: `cargo fmt --check && cargo clippy --all-targets && cargo test`.
-4. Commit, then build and push both tags:
+The server runs whatever version the **stacks repo**
+(`my-homeserver-stacks/family-hq`) names in `FAMILY_HQ_VERSION`; Dockhand
+deploys from it. So a release is: an image on Docker Hub, then a PR in the
+stacks repo that points at it.
 
-   ```sh
-   V=0.5.0
-   docker build --platform linux/amd64 -t kaizenflow/family-hq:$V -t kaizenflow/family-hq:latest .
-   docker push kaizenflow/family-hq:$V
-   docker push kaizenflow/family-hq:latest
-   ```
+### 1. In this repo: check, bump, commit
 
-   (`docker login` first if Docker says you're not logged in.)
+```sh
+cargo fmt --check
+cargo clippy --all-targets      # no warnings
+cargo test
+cargo sqlx prepare              # only if SQL changed; commit .sqlx/
+```
 
-## Updating the server
+Bump `version` in `Cargo.toml` (`cargo build` updates `Cargo.lock`), and
+`FAMILY_HQ_TAG` in `deploy/.env.example` and step 3 above. Patch
+(`0.4.2` → `0.4.3`) for fixes, minor (`0.4.x` → `0.5.0`) for new commands
+or a new migration. Commit as `Release 0.5.0: <what changed>` and push
+`main`.
+
+### 2. Build, check and push the image
+
+```sh
+V=0.5.0
+docker build --platform linux/amd64 -t kaizenflow/family-hq:$V -t kaizenflow/family-hq:latest .
+```
+
+Before pushing, check the image:
+
+- **Upgrade test:** start the *previous* version on a scratch data folder,
+  send it a message or two, stop it, then start the new image on the same
+  folder. It should turn `(healthy)` and log the new migrations.
+- **No secrets inside:** `docker run --rm --entrypoint sh kaizenflow/family-hq:$V -c 'ls -a /app'`
+  shows no `.env`, `*.db` or GOWA data.
+- **Runs unprivileged:** the process runs as `1000:1000`
+  (`docker top <container>`).
+
+Then push (`docker login` first if asked):
+
+```sh
+docker push kaizenflow/family-hq:$V
+docker push kaizenflow/family-hq:latest
+```
+
+### 3. In the stacks repo: a PR for the new version
+
+```sh
+cd ../my-homeserver-stacks
+git switch main && git pull
+git switch -c family-hq-$V
+# family-hq/.env.example: FAMILY_HQ_VERSION=0.5.0
+git commit -am "family-hq: $V" && git push -u origin family-hq-$V
+gh pr create --title "family-hq: $V" --body "What changed, and any migrations."
+```
+
+Merge the PR once you're happy; Dockhand then pulls the new image and
+recreates the container. New migrations run on start-up.
+
+## Updating a server run by hand (without Dockhand)
 
 ```sh
 cd ~/family-hq

@@ -222,7 +222,10 @@ All of these are released and tested:
 - **Per-chat settings** (`/settings`, `/settings everyone`): timezone,
   city, prayer method, Asr school, reminder timing. Set a location by
   **sharing it in WhatsApp** (nearest town via OpenStreetMap Nominatim).
-- **Short forms**: `+s +g +t +p`, `/s /t /p /w /h`.
+- **Short forms**: `+s +g +t +p`, `/s /t /p /w /m /h`.
+- **Todo views**: `/todo` grouped by person, `/todo all`, `/todo <name>`,
+  `/todo mine`, all with the same numbers.
+- **`/moon`** and the Islamic date and moon phase in `/prayers`.
 - **Deployment:** Docker Hub image, a stack in `my-homeserver-stacks`
   (Dockhand), and an entrypoint that fixes the data folder's ownership by
   itself.
@@ -246,8 +249,8 @@ Build:
 - `/todo` sorts as the CLI did: overdue first, then by due date, then
   priority. Each line shows `📅 Fri 15 Mar` and `🔴`/`🟠`/`🟢` for priority,
   and `⚠️ overdue` when it's late.
-- Filters: `/todo overdue`, `/todo due`, `/todo high`, `/todo mine`
-  (assigned to me), like the CLI's `-f`.
+- Filters: `/todo overdue`, `/todo due`, `/todo high`, like the CLI's
+  `-f` (`/todo mine` and `/todo <name>` already exist).
 - Change after adding, by replying to a `/todo` list: `due 2 fri`,
   `due 2 none`, `priority 2 high`.
 - Migration `0003`: `todos.due_date` (`date(due_date) IS due_date` CHECK,
@@ -429,7 +432,7 @@ Done when:
 - Still to do: if AlAdhan fails, use yesterday's times shifted one day,
   and log a warning (today it retries every minute until it answers).
 - Done when:
-  - [x] `/prayers` shows today's times
+  - [x] `/prayers` shows today's times (and the Hijri date)
   - [ ] They're checked correct across the BST/GMT clock changes (the code
         converts each time from AlAdhan's offset; a test for the change
         days themselves is still to write)

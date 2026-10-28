@@ -9,7 +9,8 @@ use crate::aladhan::PrayerTimes;
 use crate::error::AppError;
 use crate::geo::Coordinates;
 use crate::help;
-use crate::parser::{BotCommand, Got, ReplyCommand, SettingsCommand};
+use crate::moon::{self, Moon};
+use crate::parser::{BotCommand, Got, ReplyCommand, SettingsCommand, TodoView};
 use crate::person::Assignee;
 use crate::prayer::{self, DayTimes, Prayer};
 use crate::repo::messages::{self, ListItem};
@@ -36,6 +37,7 @@ const GEAR: &str = "⚙️";
 const PIN: &str = "📍";
 const CLOCK: &str = "🕰️";
 const PEOPLE: &str = "👥";
+const MOON: &str = "🌙";
 
 /// `item_type` values in `wa_message_context` (the schema's CHECK allows
 /// exactly these two).
@@ -96,13 +98,31 @@ pub async fn run_command(
     let prayer_times = &apis.prayer_times;
     let text = match command {
         BotCommand::AddTodo { title, assignee } => add_todo(conn, ctx, &title, assignee).await?,
-        BotCommand::ListTodos => {
+        BotCommand::ListTodos(view) => {
+            let layout = match view {
+                TodoView::ByPerson => Layout::ByPerson,
+                TodoView::All => Layout::All,
+                TodoView::Mine => Layout::Only(ctx.sender.display_name.clone()),
+                // Checked against the chat's members, so a typo gets the
+                // list of names rather than "Bilql has no todos".
+                TodoView::Person(name) => {
+                    match users::find_member_by_name(conn, ctx.chat_id, &name).await? {
+                        Some(user) => Layout::Only(user.display_name),
+                        None => {
+                            let known = users::member_names(conn, ctx.chat_id).await?;
+                            return Ok(Outcome::Reply(unknown_name(&name, &known)));
+                        }
+                    }
+                }
+            };
             // The sender's timezone, for the "done at 14:05" times.
             let settings = my_settings(conn, ctx, prayer_times).await?;
             let items = todos::list_all(conn, ctx.chat_id).await?;
             return Ok(Outcome::List {
-                text: format_todo_list(&items, &settings, ctx.now),
+                text: format_todo_list(&items, &layout, &settings, ctx.now),
                 item_type: TODO_ITEM,
+                // Every todo, even in one person's view, so the numbers
+                // mean the same todo in every view.
                 item_ids: items.iter().map(|t| t.id).collect(),
             });
         }
@@ -202,6 +222,7 @@ pub async fn run_command(
         }
         BotCommand::Settings(command) => settings_command(conn, ctx, apis, command).await?,
         BotCommand::Weather(when) => weather(conn, ctx, apis, when).await?,
+        BotCommand::Moon => moon_command(conn, ctx, apis).await?,
         BotCommand::SharedLocation {
             latitude,
             longitude,
@@ -398,6 +419,43 @@ async fn weather(
     }
 }
 
+/// `/moon`: the phase now, today's moonrise and moonset in the sender's
+/// town, and the next new and full moons. The phase is worked out here;
+/// only the rise and set times need the network, and if that fails (or
+/// the town can't be found) the rest still shows.
+async fn moon_command(
+    conn: &mut SqliteConnection,
+    ctx: &Context,
+    apis: &Apis,
+) -> Result<String, AppError> {
+    let settings = my_settings(conn, ctx, &apis.prayer_times).await?;
+    let today = settings.today(ctx.now);
+
+    // `.ok()` turns each `Result` into an `Option`: a failed lookup is
+    // "not shown", not an error for the whole reply.
+    let at = apis.coordinates(&settings).await.ok();
+    let rise_set = match at {
+        Some(at) => apis
+            .weather
+            .moon_times(at, settings.timezone, today)
+            .await
+            .inspect_err(|err| println!("moon times: {err}"))
+            .ok(),
+        None => None,
+    };
+    // The Hijri date comes with the prayer times (usually already cached).
+    let hijri = match apis.prayer_location(&settings).await {
+        Ok(location) => apis
+            .prayer_times
+            .for_date(&location, today)
+            .await
+            .ok()
+            .and_then(|day| day.hijri),
+        Err(_) => None,
+    };
+    Ok(moon::format(ctx.now, &settings, rise_set, hijri))
+}
+
 /// The sender's own settings: in a DM, the DM's; in a group, their personal
 /// ones (from their DM with the bot) on top of the group's. Prayer times
 /// and "today" follow the person, so someone abroad sees their own.
@@ -427,7 +485,12 @@ async fn prayer_day(
     let location = apis.prayer_location(settings).await?;
     let day = apis.prayer_times.for_date(&location, today).await?;
     let prayed = prayers::prayed_on(conn, ctx.sender.id, today).await?;
-    Ok(format_prayer_day(&day, settings, &prayed))
+    Ok(format_prayer_day(
+        &day,
+        settings,
+        &prayed,
+        Moon::at(ctx.now),
+    ))
 }
 
 /// `/settings ...`. Each change is checked first, then saved, then the
@@ -746,12 +809,20 @@ fn unknown_name(name: &str, known: &[String]) -> String {
 
 /// The `/prayers` reply: each prayer's time on the chat's own clock,
 /// ticked if the sender has prayed it.
-fn format_prayer_day(day: &DayTimes, settings: &Settings, prayed: &[Prayer]) -> String {
+fn format_prayer_day(day: &DayTimes, settings: &Settings, prayed: &[Prayer], moon: Moon) -> String {
     let mut text = format!(
         "{MOSQUE} *Prayer times* ({}, {})\n",
         settings.city,
         day.date.format("%a %-d %b")
     );
+    // "🌙 16 Jumada al-Ula 1448 AH · 🌖 Waning gibbous", or just the phase
+    // if AlAdhan didn't send the date.
+    let phase = moon.phase();
+    let phase = format!("{} {phase}", phase.emoji());
+    match day.hijri {
+        Some(hijri) => text.push_str(&format!("{MOON} {hijri} · {phase}\n")),
+        None => text.push_str(&format!("{phase}\n")),
+    }
     // Numbered 1-5 in the day's order, which is what `+p 3` refers to.
     for (number, window) in (1..).zip(&day.windows) {
         let mark = if prayed.contains(&window.prayer) {
@@ -842,42 +913,72 @@ fn format_methods() -> String {
     text
 }
 
-/// The `/todo` reply: a progress bar, then open todos (⬜) and done ones
-/// (✅, struck through, with who did it and when). Numbers start at 1 and
-/// match `item_ids` order.
-fn format_todo_list(items: &[ListedTodo], settings: &Settings, now: DateTime<Utc>) -> String {
-    if items.is_empty() {
+/// How `/todo` lays the list out (see `TodoView`).
+#[derive(Debug, Clone, PartialEq)]
+enum Layout {
+    ByPerson,
+    All,
+    /// Only this person's (their display name, as stored).
+    Only(String),
+}
+
+/// The heading for todos nobody is assigned to (made before todos had to
+/// have someone).
+const ANYONE: &str = "Anyone";
+
+/// The `/todo` reply: a progress bar, then the todos, ✅ ones struck through
+/// with who did them and when. Numbers are each todo's place in the whole
+/// list, so they match `item_ids` whichever layout is used.
+fn format_todo_list(
+    items: &[ListedTodo],
+    layout: &Layout,
+    settings: &Settings,
+    now: DateTime<Utc>,
+) -> String {
+    // One person's view says whose list is empty (below), even if all are.
+    if items.is_empty() && !matches!(layout, Layout::Only(_)) {
         return format!("{LIST} No todos. Add one with `+todo fix the tap`.");
     }
 
-    let total = items.len() as i64;
-    let done = items.iter().filter(|t| t.done.is_some()).count() as i64;
-    let mut text = format!("{LIST} *Todos*\n{}\n\n", progress_bar(done, total));
-
-    for (i, todo) in items.iter().enumerate() {
-        let number = i + 1;
-        let assignee = todo
-            .assignee
-            .as_deref()
-            .map_or(String::new(), |name| format!(" ({name})"));
-        let line = match &todo.done {
-            None => format!("{NOT_YET} {number}. {}{assignee}", todo.title),
-            Some(done) => {
-                // "14:05" if it was today (their today), else "Tue 14:05".
-                let when = if settings.today(done.at) == settings.today(now) {
-                    settings.clock(done.at)
-                } else {
-                    let local = done.at.with_timezone(&settings.timezone);
-                    local.format("%a %H:%M").to_string()
-                };
-                format!(
-                    "{DONE} {number}. ~{}~{assignee} · {} {when}",
-                    todo.title, done.by
-                )
+    // `(1..).zip(items)` pairs each todo with its number: (1, first), ...
+    let numbered: Vec<Numbered> = (1..).zip(items).collect();
+    let (title, shown) = match layout {
+        Layout::Only(name) => {
+            let theirs: Vec<_> = numbered
+                .into_iter()
+                .filter(|(_, todo)| is_for(todo, name))
+                .collect();
+            if theirs.is_empty() {
+                return format!("{LIST} {name} has no todos. Add one with `+todo @{name} ...`.");
             }
-        };
-        text.push_str(&line);
+            (format!("*{name}'s todos*"), theirs)
+        }
+        Layout::ByPerson | Layout::All => ("*Todos*".to_string(), numbered),
+    };
+
+    let total = shown.len() as i64;
+    let done = shown.iter().filter(|(_, t)| t.done.is_some()).count() as i64;
+    let mut text = format!("{LIST} {title}\n{}\n", progress_bar(done, total));
+
+    let groups = match layout {
+        Layout::ByPerson => group_by_person(&shown),
+        // One group, with no heading.
+        Layout::All | Layout::Only(_) => vec![(None, shown.clone())],
+    };
+    // A heading over each person's todos, unless they're all one person's
+    // (in a DM, say), where it would only repeat the obvious.
+    let headings = groups.len() > 1;
+    for (person, todos) in &groups {
         text.push('\n');
+        if headings {
+            text.push_str(&format!("*{}*\n", person.unwrap_or(ANYONE)));
+        }
+        for (number, todo) in todos {
+            // The "(Bilal)" after a title is only needed in the flat list.
+            let show_assignee = *layout == Layout::All;
+            text.push_str(&todo_line(*number, todo, show_assignee, settings, now));
+            text.push('\n');
+        }
     }
 
     if done < total {
@@ -894,12 +995,75 @@ fn format_todo_list(items: &[ListedTodo], settings: &Settings, now: DateTime<Utc
     text
 }
 
+/// A todo with its number in the whole list.
+type Numbered<'a> = (usize, &'a ListedTodo);
+
+/// Whether `todo` is assigned to `name` (ignoring case, like `@names`).
+fn is_for(todo: &ListedTodo, name: &str) -> bool {
+    todo.assignee
+        .as_deref()
+        .is_some_and(|assignee| assignee.eq_ignore_ascii_case(name))
+}
+
+/// One numbered todo per person, people in the order their first todo
+/// appears (so whoever has the earliest open todo comes first), and the
+/// todos keeping their order within each.
+///
+/// The lifetime `'a` says the names and todos in the result are borrowed
+/// from `shown`: the groups can't outlive the list they point into.
+fn group_by_person<'a>(shown: &[Numbered<'a>]) -> Vec<(Option<&'a str>, Vec<Numbered<'a>>)> {
+    let mut groups: Vec<(Option<&str>, Vec<Numbered>)> = Vec::new();
+    for &(number, todo) in shown {
+        let person = todo.assignee.as_deref();
+        // A `Vec` searched each time rather than a `HashMap`, because a
+        // `HashMap` forgets the order, and a family has a handful of people.
+        match groups.iter_mut().find(|(p, _)| *p == person) {
+            Some((_, todos)) => todos.push((number, todo)),
+            None => groups.push((person, vec![(number, todo)])),
+        }
+    }
+    groups
+}
+
+/// "⬜ 4. fix the tap", or "✅ 2. ~bins~ · Bilal 14:05" when done. The
+/// "Bilal" (who did it) is left out when it was the assignee themselves,
+/// since they're already named. `show_assignee` adds " (Khadija)".
+fn todo_line(
+    number: usize,
+    todo: &ListedTodo,
+    show_assignee: bool,
+    settings: &Settings,
+    now: DateTime<Utc>,
+) -> String {
+    let assignee = match &todo.assignee {
+        Some(name) if show_assignee => format!(" ({name})"),
+        _ => String::new(),
+    };
+    let Some(done) = &todo.done else {
+        return format!("{NOT_YET} {number}. {}{assignee}", todo.title);
+    };
+    // "14:05" if it was today (their today), else "Tue 14:05".
+    let when = if settings.today(done.at) == settings.today(now) {
+        settings.clock(done.at)
+    } else {
+        let local = done.at.with_timezone(&settings.timezone);
+        local.format("%a %H:%M").to_string()
+    };
+    let by_themselves = !show_assignee && is_for(todo, &done.by);
+    let by = if by_themselves {
+        String::new()
+    } else {
+        format!("{} ", done.by)
+    };
+    format!("{DONE} {number}. ~{}~{assignee} · {by}{when}", todo.title)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::db::test_pool;
     use crate::person::Person;
-    use crate::prayer::Window;
+    use crate::prayer::{HijriDate, Window};
     use crate::repo::chats;
     use crate::settings::tests::defaults;
     use chrono::NaiveDate;
@@ -914,6 +1078,11 @@ mod tests {
         };
         DayTimes {
             date: NaiveDate::from_ymd_opt(2026, 10, 27).unwrap(),
+            hijri: Some(HijriDate {
+                day: 16,
+                month: 5,
+                year: 1448,
+            }),
             windows: [
                 w(Prayer::Fajr, "2026-10-27T04:55:00Z", "2026-10-27T06:49:00Z"),
                 w(
@@ -950,7 +1119,7 @@ mod tests {
     #[test]
     fn empty_list_says_so() {
         let now = Utc::now();
-        assert!(format_todo_list(&[], &defaults(), now).contains("No todos"));
+        assert!(format_todo_list(&[], &Layout::ByPerson, &defaults(), now).contains("No todos"));
     }
 
     #[test]
@@ -983,7 +1152,7 @@ mod tests {
                 }),
             },
         ];
-        let text = format_todo_list(&items, &defaults(), now);
+        let text = format_todo_list(&items, &Layout::All, &defaults(), now);
         assert!(text.contains("▓▓▓▓▓▓▓░░░ 2/3 done"), "{text}");
         assert!(text.contains("⬜ 1. go gym (Bilal)\n"), "{text}");
         assert!(
@@ -992,6 +1161,92 @@ mod tests {
         );
         assert!(text.contains("✅ 3. ~bins~ · Bilal Tue 08:30\n"), "{text}");
         assert!(text.contains("`+done 2`"), "{text}");
+    }
+
+    /// Bilal's, Khadija's, Bilal's, nobody's, and one of Khadija's that
+    /// Bilal did for her: numbered 1-5.
+    fn family_todos() -> Vec<ListedTodo> {
+        let at = |s: &str| s.parse::<DateTime<Utc>>().unwrap();
+        let todo = |id, title: &str, assignee: Option<&str>, done_by: Option<&str>| ListedTodo {
+            id,
+            title: title.to_string(),
+            assignee: assignee.map(str::to_string),
+            done: done_by.map(|by| todos::Completion {
+                by: by.to_string(),
+                at: at("2026-10-28T14:05:00Z"),
+            }),
+        };
+        vec![
+            todo(11, "hoover", Some("Bilal"), None),
+            todo(12, "call the school", Some("Khadija"), None),
+            todo(13, "bins", Some("Bilal"), Some("Bilal")),
+            todo(14, "fix the tap", None, None),
+            todo(15, "book dentist", Some("Khadija"), Some("Bilal")),
+        ]
+    }
+
+    #[test]
+    fn todo_list_by_person_keeps_the_numbers() {
+        let now = "2026-10-28T18:00:00Z".parse().unwrap();
+        let text = format_todo_list(&family_todos(), &Layout::ByPerson, &defaults(), now);
+        let expected = "📋 *Todos*\n▓▓▓▓░░░░░░ 2/5 done\n\n\
+             *Bilal*\n⬜ 1. hoover\n✅ 3. ~bins~ · 14:05\n\n\
+             *Khadija*\n⬜ 2. call the school\n✅ 5. ~book dentist~ · Bilal 14:05\n\n\
+             *Anyone*\n⬜ 4. fix the tap\n";
+        assert!(text.starts_with(expected), "{text}");
+    }
+
+    #[test]
+    fn todo_list_of_one_person_has_their_own_progress() {
+        let now = "2026-10-28T18:00:00Z".parse().unwrap();
+        let only = Layout::Only("Khadija".to_string());
+        let text = format_todo_list(&family_todos(), &only, &defaults(), now);
+        let expected = "📋 *Khadija's todos*\n▓▓▓▓▓░░░░░ 1/2 done\n\n\
+             ⬜ 2. call the school\n✅ 5. ~book dentist~ · Bilal 14:05\n";
+        assert!(text.starts_with(expected), "{text}");
+
+        let only = Layout::Only("Yusuf".to_string());
+        let text = format_todo_list(&family_todos(), &only, &defaults(), now);
+        assert!(text.starts_with("📋 Yusuf has no todos."), "{text}");
+    }
+
+    #[test]
+    fn todo_list_of_one_persons_todos_has_no_heading() {
+        let now = "2026-10-28T18:00:00Z".parse().unwrap();
+        let mine: Vec<_> = family_todos()
+            .into_iter()
+            .filter(|t| t.assignee.as_deref() == Some("Bilal"))
+            .collect();
+        let text = format_todo_list(&mine, &Layout::ByPerson, &defaults(), now);
+        assert!(text.contains("done\n\n⬜ 1. hoover\n"), "{text}");
+        assert!(!text.contains("*Bilal*"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn todo_for_a_person_checks_the_name() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let ctx = setup(&mut conn).await;
+        let apis = Apis::new(times());
+        let list = |name: &str| BotCommand::ListTodos(TodoView::Person(name.to_string()));
+
+        let reply = run_command(&mut conn, &ctx, &apis, list("nobody"))
+            .await
+            .unwrap()
+            .into_text();
+        assert!(
+            reply.contains("I don't know anyone called nobody"),
+            "{reply}"
+        );
+
+        // Any case finds them; the heading uses their name as stored.
+        let me = ctx.sender.display_name.to_lowercase();
+        let reply = run_command(&mut conn, &ctx, &apis, list(&me))
+            .await
+            .unwrap()
+            .into_text();
+        let expected = format!("{} has no todos", ctx.sender.display_name);
+        assert!(reply.contains(&expected), "{reply}");
     }
 
     #[test]
@@ -1193,11 +1448,14 @@ mod tests {
                 .unwrap();
         }
 
-        let Outcome::List { item_ids, .. } =
-            run_command(&mut conn, &ctx, &Apis::new(times()), BotCommand::ListTodos)
-                .await
-                .unwrap()
-        else {
+        let Outcome::List { item_ids, .. } = run_command(
+            &mut conn,
+            &ctx,
+            &Apis::new(times()),
+            BotCommand::ListTodos(TodoView::All),
+        )
+        .await
+        .unwrap() else {
             panic!("expected a list");
         };
         let items: Vec<ListItem> = item_ids
@@ -1237,15 +1495,34 @@ mod tests {
 
     #[test]
     fn prayer_day_ticks_what_was_prayed() {
-        let text = format_prayer_day(&day(), &defaults(), &[Prayer::Fajr, Prayer::Asr]);
+        let text = format_prayer_day(
+            &day(),
+            &defaults(),
+            &[Prayer::Fajr, Prayer::Asr],
+            Moon { elongation: 205.0 },
+        );
         assert!(
-            text.starts_with("🕌 *Prayer times* (Milton Keynes, Tue 27 Oct)\n"),
+            text.starts_with(
+                "🕌 *Prayer times* (Milton Keynes, Tue 27 Oct)\n\
+                 🌙 16 Jumada al-Ula 1448 AH · 🌖 Waning gibbous\n"
+            ),
             "{text}"
         );
         assert!(text.contains("✅ 1. Fajr 04:55–06:49\n"), "{text}");
         assert!(text.contains("⬜ 2. Dhuhr 11:47–14:16\n"));
         assert!(text.contains("✅ 3. Asr 14:16–16:44\n"));
         assert!(text.contains("⬜ 5. Isha 18:31–23:46\n"));
+    }
+
+    #[test]
+    fn prayer_day_without_a_hijri_date_still_shows_the_phase() {
+        let day = DayTimes {
+            hijri: None,
+            ..day()
+        };
+        let text = format_prayer_day(&day, &defaults(), &[], Moon { elongation: 0.0 });
+        assert!(!text.contains("AH"), "{text}");
+        assert!(text.contains(")\n🌑 New moon\n⬜ 1. Fajr"), "{text}");
     }
 
     #[tokio::test]

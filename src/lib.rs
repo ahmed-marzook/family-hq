@@ -8,6 +8,7 @@ pub mod error;
 pub mod geo;
 pub mod handlers;
 pub mod help;
+pub mod moon;
 pub mod parser;
 pub mod person;
 pub mod prayer;

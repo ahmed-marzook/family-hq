@@ -1,12 +1,13 @@
 //! Weather forecasts from Open-Meteo (<https://open-meteo.com>): free, no
 //! API key. One request gives the current weather and seven days.
 
-use chrono::NaiveDate;
+use chrono::{NaiveDate, NaiveDateTime};
 use chrono_tz::Tz;
 use serde::Deserialize;
 
 use crate::error::AppError;
 use crate::geo::Coordinates;
+use crate::moon::RiseSet;
 
 /// Which forecast `/weather` asks for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,6 +97,72 @@ impl Weather {
             .await?;
         to_forecast(reply).map_err(AppError::Weather)
     }
+
+    /// Moonrise and moonset at `at` on `date` (a day in `timezone`), in
+    /// local time. Open-Meteo works these out too, so `/moon` uses the
+    /// same service as the weather.
+    pub async fn moon_times(
+        &self,
+        at: Coordinates,
+        timezone: Tz,
+        date: NaiveDate,
+    ) -> Result<RiseSet, AppError> {
+        let day = date.format("%Y-%m-%d").to_string();
+        let reply: MoonReply = self
+            .http
+            .get(format!("{}/forecast", self.base_url))
+            .query(&[
+                ("latitude", at.latitude.to_string()),
+                ("longitude", at.longitude.to_string()),
+                ("daily", "moonrise,moonset".to_string()),
+                ("timezone", timezone.name().to_string()),
+                ("start_date", day.clone()),
+                ("end_date", day),
+            ])
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        to_rise_set(reply).map_err(AppError::Weather)
+    }
+}
+
+/// `{"daily":{"moonrise":["2026-10-28T17:24"],"moonset":[null]}}`: one day,
+/// local times without an offset. `null` when the moon doesn't rise or set
+/// that day.
+#[derive(Deserialize)]
+struct MoonReply {
+    daily: MoonDaily,
+}
+
+#[derive(Deserialize)]
+struct MoonDaily {
+    moonrise: Vec<Option<String>>,
+    moonset: Vec<Option<String>>,
+}
+
+/// The first (only) day's moonrise and moonset. Pure, so it's tested with a
+/// saved reply.
+fn to_rise_set(reply: MoonReply) -> Result<RiseSet, String> {
+    // `Option<&Option<String>>` -> `Option<NaiveDateTime>`: `flatten` drops
+    // the outer "is there a first day" and inner "is there a time" layers
+    // into one, then the text is parsed if there is any.
+    let parse = |times: &[Option<String>]| -> Result<Option<NaiveDateTime>, String> {
+        times
+            .first()
+            .cloned()
+            .flatten()
+            .map(|text| {
+                NaiveDateTime::parse_from_str(&text, "%Y-%m-%dT%H:%M")
+                    .map_err(|e| format!("bad moon time {text:?}: {e}"))
+            })
+            .transpose()
+    };
+    Ok(RiseSet {
+        rise: parse(&reply.daily.moonrise)?,
+        set: parse(&reply.daily.moonset)?,
+    })
 }
 
 /// Open-Meteo's reply. `daily` is "one array per field", so day *i* is the
@@ -265,6 +332,28 @@ mod tests {
 
     fn forecast() -> Forecast {
         to_forecast(serde_json::from_str(REPLY).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn moonrise_and_moonset_are_read_as_local_times() {
+        let reply = r#"{"daily":{"time":["2026-10-28"],
+            "moonrise":["2026-10-28T17:24"],"moonset":["2026-10-28T10:21"]}}"#;
+        let times = to_rise_set(serde_json::from_str(reply).unwrap()).unwrap();
+        let at = |s: &str| NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M").unwrap();
+        assert_eq!(times.rise, Some(at("2026-10-28 17:24")));
+        assert_eq!(times.set, Some(at("2026-10-28 10:21")));
+    }
+
+    #[test]
+    fn a_day_without_moonrise_is_none_not_an_error() {
+        let reply = r#"{"daily":{"moonrise":[null],"moonset":["2026-10-28T10:21"]}}"#;
+        let times = to_rise_set(serde_json::from_str(reply).unwrap()).unwrap();
+        assert_eq!(times.rise, None);
+        assert!(times.set.is_some());
+
+        let bad = r#"{"daily":{"moonrise":["5pm"],"moonset":[]}}"#;
+        let err = to_rise_set(serde_json::from_str(bad).unwrap()).unwrap_err();
+        assert!(err.contains("5pm"), "{err}");
     }
 
     #[test]

@@ -198,8 +198,54 @@ pub struct Window {
 pub struct DayTimes {
     /// The day, in the chat's timezone.
     pub date: NaiveDate,
+    /// The same day in the Islamic (Hijri) calendar, as AlAdhan gives it.
+    /// `None` if the reply didn't include it (prayer times still work).
+    pub hijri: Option<HijriDate>,
     /// The five windows, in UTC, in `Prayer::ALL` order.
     pub windows: [Window; 5],
+}
+
+/// A Hijri (Islamic calendar) date.
+///
+/// It's for the *daytime* of the Gregorian date: the Islamic day really
+/// begins at Maghrib, so after sunset it's already the next one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HijriDate {
+    pub day: u8,
+    /// 1 (Muharram) to 12 (Dhu al-Hijjah).
+    pub month: u8,
+    pub year: u16,
+}
+
+/// The twelve Hijri months, in plain English spelling. AlAdhan's own names
+/// carry transliteration marks ("Jumādá al-ūlá") that read badly in
+/// WhatsApp, so the bot names them by number instead.
+pub const HIJRI_MONTHS: [&str; 12] = [
+    "Muharram",
+    "Safar",
+    "Rabi al-Awwal",
+    "Rabi al-Thani",
+    "Jumada al-Ula",
+    "Jumada al-Akhirah",
+    "Rajab",
+    "Sha'ban",
+    "Ramadan",
+    "Shawwal",
+    "Dhu al-Qadah",
+    "Dhu al-Hijjah",
+];
+
+/// "17 Jumada al-Ula 1448 AH".
+impl fmt::Display for HijriDate {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        // `checked_sub` and `.get` instead of `[month - 1]`: a month of 0 or
+        // 13 shows "?" rather than crashing.
+        let month = usize::from(self.month)
+            .checked_sub(1)
+            .and_then(|i| HIJRI_MONTHS.get(i))
+            .unwrap_or(&"?");
+        write!(f, "{} {month} {} AH", self.day, self.year)
+    }
 }
 
 /// The two reminders each prayer gets.
@@ -299,9 +345,20 @@ mod tests {
     }
 
     /// Milton Keynes, 27 Oct 2026 (GMT, so London time = UTC).
+    #[test]
+    fn hijri_date_reads_like_a_date() {
+        let date = |day, month, year| HijriDate { day, month, year };
+        assert_eq!(date(16, 5, 1448).to_string(), "16 Jumada al-Ula 1448 AH");
+        assert_eq!(date(1, 9, 1448).to_string(), "1 Ramadan 1448 AH");
+        assert_eq!(date(10, 12, 1447).to_string(), "10 Dhu al-Hijjah 1447 AH");
+        assert_eq!(date(1, 0, 1448).to_string(), "1 ? 1448 AH", "no crash");
+        assert_eq!(date(1, 13, 1448).to_string(), "1 ? 1448 AH", "no crash");
+    }
+
     fn day() -> DayTimes {
         DayTimes {
             date: NaiveDate::from_ymd_opt(2026, 10, 27).unwrap(),
+            hijri: None,
             windows: [
                 window(Prayer::Fajr, "2026-10-27T04:55:00Z", "2026-10-27T06:49:00Z"),
                 window(

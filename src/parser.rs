@@ -33,7 +33,7 @@ pub enum BotCommand {
         assignee: Option<Assignee>,
     },
     /// `/todo`
-    ListTodos,
+    ListTodos(TodoView),
     /// `+done 2`, `+done 1 3` (numbers from the latest `/todo` list) or
     /// `+done gym` (by title): complete todos without replying
     DoneTodo(Got),
@@ -50,11 +50,27 @@ pub enum BotCommand {
     Settings(SettingsCommand),
     /// `/weather`, `/weather tomorrow`, `/weather week`
     Weather(When),
+    /// `/moon`: today's phase, moonrise and moonset, the next new and full
+    Moon,
     /// A location shared in WhatsApp (📎 → Location). Not typed: the
     /// webhook builds this from a location message in a DM.
     SharedLocation { latitude: f64, longitude: f64 },
     /// `/help` (overview) or `/help shop` (one topic's page)
     Help(Option<String>),
+}
+
+/// Which todos `/todo` shows, and how. The numbers are the same in every
+/// view, so `+done 5` means the same todo whichever one was sent last.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TodoView {
+    /// `/todo`: grouped under each person's name.
+    ByPerson,
+    /// `/todo all`: one list, in order.
+    All,
+    /// `/todo mine`: the sender's own.
+    Mine,
+    /// `/todo Bilal` or `/todo @Bilal`: one person's, by the name as typed.
+    Person(String),
 }
 
 /// What a `/settings` message asks for. Values are only parsed here; the
@@ -136,10 +152,18 @@ pub fn parse(text: &str) -> Option<BotCommand> {
             _ => None,
         },
         "/todo" => match rest.to_lowercase().as_str() {
-            "" => Some(BotCommand::ListTodos),
+            "" => Some(BotCommand::ListTodos(TodoView::ByPerson)),
+            "all" => Some(BotCommand::ListTodos(TodoView::All)),
+            "mine" | "me" => Some(BotCommand::ListTodos(TodoView::Mine)),
             "clear" => Some(BotCommand::ClearTodos { done_only: false }),
             "clear done" => Some(BotCommand::ClearTodos { done_only: true }),
-            _ => None,
+            // Anything else is a name. Display names are one word (see
+            // `users::base_display_name`), so `/todo fix the tap` isn't one.
+            _ => {
+                let name = rest.strip_prefix('@').unwrap_or(rest);
+                let one_word = !name.is_empty() && !name.contains(char::is_whitespace);
+                one_word.then(|| BotCommand::ListTodos(TodoView::Person(name.to_string())))
+            }
         },
         "/prayers" | "/prayer" => match rest.to_lowercase().as_str() {
             "" => Some(BotCommand::Prayers),
@@ -154,6 +178,7 @@ pub fn parse(text: &str) -> Option<BotCommand> {
             "week" | "7 days" => Some(BotCommand::Weather(When::Week)),
             _ => None,
         },
+        "/moon" if rest.is_empty() => Some(BotCommand::Moon),
         // Any word after /help is a topic; `help::page` handles unknown ones.
         "/help" => Some(BotCommand::Help(
             (!rest.is_empty()).then(|| rest.to_string()),
@@ -181,6 +206,7 @@ fn expand_shorthand(word: &str) -> &str {
         "/t" => "/todo",
         "/p" => "/prayers",
         "/w" => "/weather",
+        "/m" => "/moon",
         "/h" => "/help",
         other => other,
     }
@@ -543,7 +569,10 @@ mod tests {
     #[test]
     fn list_commands() {
         assert_eq!(parse("/shop"), Some(BotCommand::ListShop));
-        assert_eq!(parse("/todo"), Some(BotCommand::ListTodos));
+        assert_eq!(
+            parse("/todo"),
+            Some(BotCommand::ListTodos(TodoView::ByPerson))
+        );
         assert_eq!(parse("/help"), Some(BotCommand::Help(None)));
         assert_eq!(
             parse("/help todo"),
@@ -687,6 +716,37 @@ mod tests {
     }
 
     #[test]
+    fn todo_views() {
+        let view = |text| match parse(text) {
+            Some(BotCommand::ListTodos(view)) => Some(view),
+            _ => None,
+        };
+        assert_eq!(view("/todo"), Some(TodoView::ByPerson));
+        assert_eq!(view("/todo all"), Some(TodoView::All));
+        assert_eq!(view("/todo ALL"), Some(TodoView::All));
+        assert_eq!(view("/todo mine"), Some(TodoView::Mine));
+        assert_eq!(view("/t me"), Some(TodoView::Mine));
+        let bilal = Some(TodoView::Person("Bilal".to_string()));
+        assert_eq!(view("/todo Bilal"), bilal);
+        assert_eq!(view("/todo @Bilal"), bilal);
+        assert_eq!(view("/t @Bilal"), bilal);
+        assert_eq!(view("/todo @"), None, "an @ without a name");
+        assert_eq!(view("/todo fix the tap"), None, "not a name");
+        // The keywords still win over a name.
+        assert_eq!(
+            parse("/todo clear"),
+            Some(BotCommand::ClearTodos { done_only: false })
+        );
+    }
+
+    #[test]
+    fn moon_command() {
+        assert_eq!(parse("/moon"), Some(BotCommand::Moon));
+        assert_eq!(parse("/Moon"), Some(BotCommand::Moon));
+        assert_eq!(parse("/moon tomorrow"), None);
+    }
+
+    #[test]
     fn weather_commands() {
         assert_eq!(parse("/weather"), Some(BotCommand::Weather(When::Now)));
         assert_eq!(
@@ -711,7 +771,8 @@ mod tests {
     #[test]
     fn slash_commands_with_unexpected_words_are_none() {
         assert_eq!(parse("/shop milk"), None);
-        assert_eq!(parse("/todo now"), None);
+        // One word after /todo is a name (see `todo_views`); more isn't.
+        assert_eq!(parse("/todo right now"), None);
         assert_eq!(parse("/prayers maybe"), None);
         assert_eq!(parse("/prayers on off"), None);
     }
@@ -735,6 +796,7 @@ mod tests {
             ("/p on", "/prayers on"),
             ("/w", "/weather"),
             ("/w tmr", "/weather tmr"),
+            ("/m", "/moon"),
             ("/h", "/help"),
             ("/h shop", "/help shop"),
         ];
