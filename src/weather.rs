@@ -1,10 +1,13 @@
 //! Weather forecasts from Open-Meteo (<https://open-meteo.com>): free, no
 //! API key. One request gives the current weather and seven days.
 
+use std::time::{Duration, Instant};
+
 use chrono::{NaiveDate, NaiveDateTime};
 use chrono_tz::Tz;
 use serde::Deserialize;
 
+use crate::cache::{PlaceKey, TtlCache};
 use crate::error::AppError;
 use crate::geo::Coordinates;
 use crate::moon::RiseSet;
@@ -50,9 +53,22 @@ pub struct Forecast {
     pub days: Vec<Day>,
 }
 
+/// How long a forecast is reused. Open-Meteo updates "current" every 15
+/// minutes, so anything longer would show older weather than it has.
+const FORECAST_FOR: Duration = Duration::from_secs(15 * 60);
+
+/// How long moonrise and moonset are reused. They never change for a
+/// given day; this only stops old days piling up.
+const MOON_TIMES_FOR: Duration = Duration::from_secs(12 * 60 * 60);
+
 pub struct Weather {
     http: reqwest::Client,
     base_url: String,
+    /// Recent forecasts per place, so several `/weather`s in a row (or a
+    /// whole group asking) make one request.
+    forecasts: TtlCache<PlaceKey, Forecast>,
+    /// Moonrise and moonset per place and day.
+    moon_times: TtlCache<(PlaceKey, NaiveDate), RiseSet>,
 }
 
 impl Default for Weather {
@@ -66,12 +82,30 @@ impl Weather {
         Weather {
             http: reqwest::Client::new(),
             base_url: "https://api.open-meteo.com/v1".to_string(),
+            forecasts: TtlCache::new(FORECAST_FOR),
+            moon_times: TtlCache::new(MOON_TIMES_FOR),
         }
     }
 
     /// Current weather and seven days at `at`, with days counted in
-    /// `timezone` (so "today" is the person's today).
+    /// `timezone` (so "today" is the person's today). Reuses one fetched
+    /// in the last 15 minutes.
+    ///
+    /// Two requests arriving together before the first answer is cached
+    /// both fetch; that's harmless, and simpler than making one wait.
     pub async fn forecast(&self, at: Coordinates, timezone: Tz) -> Result<Forecast, AppError> {
+        let key = PlaceKey::new(at, timezone);
+        if let Some(forecast) = self.forecasts.get(&key, Instant::now()) {
+            return Ok(forecast);
+        }
+        let forecast = self.fetch_forecast(at, timezone).await?;
+        // Only answers are cached, never errors, so a failure is retried
+        // on the next request.
+        self.forecasts.insert(key, forecast.clone(), Instant::now());
+        Ok(forecast)
+    }
+
+    async fn fetch_forecast(&self, at: Coordinates, timezone: Tz) -> Result<Forecast, AppError> {
         let reply: Reply = self
             .http
             .get(format!("{}/forecast", self.base_url))
@@ -100,8 +134,23 @@ impl Weather {
 
     /// Moonrise and moonset at `at` on `date` (a day in `timezone`), in
     /// local time. Open-Meteo works these out too, so `/moon` uses the
-    /// same service as the weather.
+    /// same service as the weather. Fetched once per place and day.
     pub async fn moon_times(
+        &self,
+        at: Coordinates,
+        timezone: Tz,
+        date: NaiveDate,
+    ) -> Result<RiseSet, AppError> {
+        let key = (PlaceKey::new(at, timezone), date);
+        if let Some(times) = self.moon_times.get(&key, Instant::now()) {
+            return Ok(times);
+        }
+        let times = self.fetch_moon_times(at, timezone, date).await?;
+        self.moon_times.insert(key, times, Instant::now());
+        Ok(times)
+    }
+
+    async fn fetch_moon_times(
         &self,
         at: Coordinates,
         timezone: Tz,
