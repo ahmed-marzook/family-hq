@@ -6,6 +6,7 @@ use sqlx::SqliteConnection;
 
 use crate::Apis;
 use crate::aladhan::PrayerTimes;
+use crate::calendar;
 use crate::error::AppError;
 use crate::geo::Coordinates;
 use crate::help;
@@ -13,6 +14,7 @@ use crate::moon::{self, Moon};
 use crate::parser::{BotCommand, Got, ReplyCommand, SettingsCommand, TodoView};
 use crate::person::Assignee;
 use crate::prayer::{self, DayTimes, Prayer};
+use crate::progress;
 use crate::repo::messages::{self, ListItem};
 use crate::repo::prayers;
 use crate::repo::settings::{self as stored, MemberSettings};
@@ -717,16 +719,12 @@ async fn done_by_name(
     Ok(lines.join("\n"))
 }
 
-/// "▓▓▓▓░░░░░░ 4/10 done": ten blocks, filled in proportion (rounded).
+/// "■■■■□□□□□□ 4/10 done" (the bar itself is `progress::bar`).
 fn progress_bar(done: i64, total: i64) -> String {
     if total == 0 {
         return String::new();
     }
-    const CELLS: i64 = 10;
-    // Integer maths with rounding: add half the divisor before dividing.
-    let filled = ((done * CELLS + total / 2) / total).clamp(0, CELLS);
-    let bar = "▓".repeat(filled as usize) + &"░".repeat((CELLS - filled) as usize);
-    format!("{bar} {done}/{total} done")
+    format!("{} {done}/{total} done", progress::bar(done, total))
 }
 
 /// The row id at list number `n`, or the message to send if there's no
@@ -959,6 +957,11 @@ fn format_todo_list(
     let total = shown.len() as i64;
     let done = shown.iter().filter(|(_, t)| t.done.is_some()).count() as i64;
     let mut text = format!("{LIST} {title}\n{}\n", progress_bar(done, total));
+    // How much of the sender's day is left to do them in.
+    if let Some(day) = calendar::day_line(now, settings.timezone) {
+        text.push_str(&day);
+        text.push('\n');
+    }
 
     let groups = match layout {
         Layout::ByPerson => group_by_person(&shown),
@@ -1153,7 +1156,7 @@ mod tests {
             },
         ];
         let text = format_todo_list(&items, &Layout::All, &defaults(), now);
-        assert!(text.contains("▓▓▓▓▓▓▓░░░ 2/3 done"), "{text}");
+        assert!(text.contains("■■■■■■■□□□ 2/3 done"), "{text}");
         assert!(text.contains("⬜ 1. go gym (Bilal)\n"), "{text}");
         assert!(
             text.contains("✅ 2. ~fix the tap~ · Khadija 14:05\n"),
@@ -1189,7 +1192,8 @@ mod tests {
     fn todo_list_by_person_keeps_the_numbers() {
         let now = "2026-10-28T18:00:00Z".parse().unwrap();
         let text = format_todo_list(&family_todos(), &Layout::ByPerson, &defaults(), now);
-        let expected = "📋 *Todos*\n▓▓▓▓░░░░░░ 2/5 done\n\n\
+        let expected = "📋 *Todos*\n■■■■□□□□□□ 2/5 done\n\
+             ⏳ ■■■■■■■■□□ 75% through the day · 6h 00m left\n\n\
              *Bilal*\n⬜ 1. hoover\n✅ 3. ~bins~ · 14:05\n\n\
              *Khadija*\n⬜ 2. call the school\n✅ 5. ~book dentist~ · Bilal 14:05\n\n\
              *Anyone*\n⬜ 4. fix the tap\n";
@@ -1201,7 +1205,8 @@ mod tests {
         let now = "2026-10-28T18:00:00Z".parse().unwrap();
         let only = Layout::Only("Khadija".to_string());
         let text = format_todo_list(&family_todos(), &only, &defaults(), now);
-        let expected = "📋 *Khadija's todos*\n▓▓▓▓▓░░░░░ 1/2 done\n\n\
+        let expected = "📋 *Khadija's todos*\n■■■■■□□□□□ 1/2 done\n\
+             ⏳ ■■■■■■■■□□ 75% through the day · 6h 00m left\n\n\
              ⬜ 2. call the school\n✅ 5. ~book dentist~ · Bilal 14:05\n";
         assert!(text.starts_with(expected), "{text}");
 
@@ -1218,7 +1223,7 @@ mod tests {
             .filter(|t| t.assignee.as_deref() == Some("Bilal"))
             .collect();
         let text = format_todo_list(&mine, &Layout::ByPerson, &defaults(), now);
-        assert!(text.contains("done\n\n⬜ 1. hoover\n"), "{text}");
+        assert!(text.contains("left\n\n⬜ 1. hoover\n"), "{text}");
         assert!(!text.contains("*Bilal*"), "{text}");
     }
 
@@ -1251,9 +1256,9 @@ mod tests {
 
     #[test]
     fn progress_bar_rounds_and_handles_edges() {
-        assert_eq!(progress_bar(0, 4), "░░░░░░░░░░ 0/4 done");
-        assert_eq!(progress_bar(1, 3), "▓▓▓░░░░░░░ 1/3 done");
-        assert_eq!(progress_bar(4, 4), "▓▓▓▓▓▓▓▓▓▓ 4/4 done");
+        assert_eq!(progress_bar(0, 4), "□□□□□□□□□□ 0/4 done");
+        assert_eq!(progress_bar(1, 3), "■■■□□□□□□□ 1/3 done");
+        assert_eq!(progress_bar(4, 4), "■■■■■■■■■■ 4/4 done");
         assert_eq!(progress_bar(0, 0), "");
     }
 
@@ -1383,7 +1388,7 @@ mod tests {
             .await
             .unwrap()
             .into_text();
-        assert_eq!(reply, "✅ Done: *go gym*\n▓▓▓░░░░░░░ 1/3 done");
+        assert_eq!(reply, "✅ Done: *go gym*\n■■■□□□□□□□ 1/3 done");
 
         // "tap" is in one open title: done.
         let reply = run_command(&mut conn, &ctx, &apis, done("tap"))
@@ -1470,7 +1475,7 @@ mod tests {
             .into_text();
         assert_eq!(
             reply,
-            "✅ Done: *go gym*\n✅ Done: *book dentist*\n▓▓▓▓▓▓▓░░░ 2/3 done"
+            "✅ Done: *go gym*\n✅ Done: *book dentist*\n■■■■■■■□□□ 2/3 done"
         );
 
         // The numbers still refer to the old list: 2 is "fix the tap".

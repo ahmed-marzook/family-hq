@@ -63,7 +63,7 @@ echo "GOWA_WEBHOOK_SECRET=$(openssl rand -hex 32)"
 ```
 
 Paste those two lines into `.env` (replacing the `change-me` ones) with
-`nano .env`. Leave `FAMILY_HQ_TAG=0.6.0`. Then lock it down, since it holds
+`nano .env`. Leave `FAMILY_HQ_TAG=0.6.1`. Then lock it down, since it holds
 the passwords:
 
 ```sh

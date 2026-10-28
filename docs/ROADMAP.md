@@ -209,7 +209,7 @@ Done when:
 All of these are released and tested:
 
 - **Todos like the shopping list:** `/todo` shows a progress bar
-  (`▓▓▓▓░░░░░░ 4/10 done`), open ⬜ and done ✅ todos with who did each
+  (`■■■■□□□□□□ 4/10 done`), open ⬜ and done ✅ todos with who did each
   and when; `+done 2` / `+done gym` (`+d`) completes without replying;
   `/todo clear` and `/todo clear done`.
 - **Prayer times by coordinates:** shared locations keep their exact point

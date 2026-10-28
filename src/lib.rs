@@ -3,6 +3,7 @@
 
 pub mod aladhan;
 pub mod cache;
+pub mod calendar;
 pub mod config;
 pub mod db;
 pub mod error;
@@ -14,6 +15,7 @@ pub mod moon;
 pub mod parser;
 pub mod person;
 pub mod prayer;
+pub mod progress;
 pub mod reminders;
 pub mod repo;
 pub mod routes;

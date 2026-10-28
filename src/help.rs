@@ -65,7 +65,7 @@ Each group has its own todos; in a DM with me they're your private ones.
 `+todo @Khadija book dentist`: assigned to someone in this group. Names are what I show in `/settings everyone`; people appear once they've sent a message here.
 
 *See them*
-`/todo`: a progress bar, then everyone's todos under their name: ⬜ still to do, ✅ done (with when, and who if someone else did it).
+`/todo`: a progress bar (and how much of your day is left), then everyone's todos under their name: ⬜ still to do, ✅ done (with when, and who if someone else did it).
 `/todo all`: the same todos as one list, in order, with who each is for.
 `/todo Khadija` (or `/todo @Khadija`): just one person's, with their own progress. `/todo mine` for yours.
 Every view uses the same numbers, so `+done 5` is the same todo whichever you looked at.
@@ -120,11 +120,11 @@ Settings belong to a chat: in a DM with me they're *your own*; in a group they'r
 `/settings reset`: back to the defaults (reminders stay on or off).";
 
 const WEATHER: &str = "🌤️ *Help: weather*
-`/weather`: the weather now, and the rest of today.
+`/weather`: the weather now and the rest of today, how far through the season and the year we are, and sunrise, sunset and daylight.
 `/weather tomorrow` (or `tmr`): tomorrow's forecast.
 `/weather week`: the next seven days.
 
-It's for *your* town: the one in your own settings (message me `/settings city …` or share your location privately), or this group's if you haven't set one.";
+It's for *your* town: the one in your own settings (message me `/settings city …` or share your location privately), or this group's if you haven't set one. Seasons are your town's: the other way round south of the equator, and none in the tropics.";
 
 const MOON: &str = "🌙 *Help: moon*
 `/moon` (or `/m`): the moon's phase and how much of it is lit, today's Islamic date, moonrise and moonset in your town, and when the next new and full moons are.
