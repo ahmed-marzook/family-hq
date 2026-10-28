@@ -483,10 +483,10 @@ async fn send(state: &AppState, msg: &Message, text: &str, mentions: &[String]) 
 fn assign_to_sender(command: BotCommand, sender: Person) -> BotCommand {
     match command {
         BotCommand::AddTodo {
-            title,
+            titles,
             assignee: None,
         } => BotCommand::AddTodo {
-            title,
+            titles,
             assignee: Some(Assignee::Sender(sender)),
         },
         other => other,
@@ -643,13 +643,13 @@ mod tests {
     #[test]
     fn todo_without_assignee_goes_to_sender() {
         let command = BotCommand::AddTodo {
-            title: "go gym".to_string(),
+            titles: vec!["go gym".to_string()],
             assignee: None,
         };
         assert_eq!(
             assign_to_sender(command, bilal()),
             BotCommand::AddTodo {
-                title: "go gym".to_string(),
+                titles: vec!["go gym".to_string()],
                 assignee: Some(Assignee::Sender(bilal())),
             }
         );
@@ -659,7 +659,7 @@ mod tests {
     fn mentioned_assignee_is_kept() {
         let khadija = Some(Assignee::Mentioned("Khadija".to_string()));
         let command = BotCommand::AddTodo {
-            title: "book dentist".to_string(),
+            titles: vec!["book dentist".to_string()],
             assignee: khadija.clone(),
         };
         let BotCommand::AddTodo { assignee, .. } = assign_to_sender(command, bilal()) else {

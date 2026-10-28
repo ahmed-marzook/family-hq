@@ -62,6 +62,7 @@ Each group has its own todos; in a DM with me they're your private ones.
 
 *Add*
 `+todo fix the tap`: assigned to you.
+`+todo fix the tap, call the school, bins`: several at once (commas or new lines).
 `+todo @Khadija book dentist`: assigned to someone in this group. Names are what I show in `/settings everyone`; people appear once they've sent a message here.
 
 *See them*

@@ -33,7 +33,7 @@ Short forms: `+s` = `+shop`, `+g` = `+got`, `+t` = `+todo`, `+d` = `+done`, `+p`
 | `/shop` | Show the list; reply `1 3` to tick items off, `remove 2` to delete one |
 | `+got milk, eggs` or `+got 1 3` | Tick items off without replying (numbers are from the latest `/shop` list) |
 | `/shop clear` | Empty the whole list (`/shop clear bought` removes only ticked-off items) |
-| `+todo fix the tap` | Add a todo, assigned to you |
+| `+todo fix the tap` | Add a todo, assigned to you; `+todo fix the tap, bins` adds several |
 | `+todo @Khadija book dentist` | Add a todo assigned to someone in the group |
 | `/todo` | Progress bar, then each person's open (⬜) and done (✅, when) todos under their name; reply `done 2` to complete one |
 | `/todo all` / `/todo Khadija` / `/todo mine` | All todos as one list in order / one person's / your own (same numbers in every view) |

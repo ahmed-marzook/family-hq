@@ -24,9 +24,10 @@ pub enum BotCommand {
     /// `+got milk, eggs` or `+got 1 3` (also `+bought`): tick items off
     /// without replying to a list
     GotShop(Got),
-    /// `+todo fix the tap` or `+todo @Khadija book dentist`
+    /// `+todo fix the tap`, `+todo @Khadija book dentist`, or several at
+    /// once: `+todo fix the tap, call the school` (one `@name` is for all)
     AddTodo {
-        title: String,
+        titles: Vec<String>,
         /// The parser only ever sets `Assignee::Mentioned` (from `@name`),
         /// or `None` when no name was typed. It can't know who sent the
         /// message, so the webhook replaces `None` with `Assignee::Sender`.
@@ -137,7 +138,7 @@ pub fn parse(text: &str) -> Option<BotCommand> {
 
     let first = first.to_lowercase();
     match expand_shorthand(&first) {
-        "+shop" | "+buy" => parse_shop_items(rest).map(BotCommand::AddShop),
+        "+shop" | "+buy" => parse_items(rest).map(BotCommand::AddShop),
         "+got" | "+bought" => parse_got(rest).map(BotCommand::GotShop),
         "+done" => parse_got(rest).map(BotCommand::DoneTodo),
         "+todo" => parse_add_todo(rest),
@@ -301,7 +302,7 @@ fn parse_got(rest: &str) -> Option<Got> {
     if let Some(ReplyCommand::Tick(numbers)) = parse_reply(rest) {
         return Some(Got::Numbers(numbers));
     }
-    parse_shop_items(rest).map(Got::Names)
+    parse_items(rest).map(Got::Names)
 }
 
 /// "milk, eggs\nbread" → ["milk", "eggs", "bread"]. `None` if no items.
@@ -309,7 +310,7 @@ fn parse_got(rest: &str) -> Option<Got> {
 /// Items are separated by commas or new lines. "and" is NOT a separator,
 /// because "mac and cheese" is one item. A leading "and " is dropped, so
 /// "milk, eggs, and bread" still works.
-fn parse_shop_items(rest: &str) -> Option<Vec<String>> {
+fn parse_items(rest: &str) -> Option<Vec<String>> {
     let items: Vec<String> = rest
         .split([',', '\n'])
         .map(|item| {
@@ -327,7 +328,9 @@ fn parse_shop_items(rest: &str) -> Option<Vec<String>> {
 }
 
 /// "@Khadija book dentist" → assignee `Mentioned("Khadija")`, title "book dentist".
-/// "fix the tap" → no assignee. `None` if there's no title or no name.
+/// "fix the tap" → no assignee. "fix the tap, call the school" → two todos
+/// (split like `+shop`'s items; an `@name` first is for all of them).
+/// `None` if there's no title or no name.
 fn parse_add_todo(rest: &str) -> Option<BotCommand> {
     let (assignee, title) = match rest.strip_prefix('@') {
         Some(after_at) => {
@@ -342,14 +345,9 @@ fn parse_add_todo(rest: &str) -> Option<BotCommand> {
         None => (None, rest),
     };
 
-    if title.is_empty() {
-        return None;
-    }
-
-    Some(BotCommand::AddTodo {
-        title: title.to_string(),
-        assignee,
-    })
+    // `?`: no titles at all (empty, or only commas) is `None`.
+    let titles = parse_items(title)?;
+    Some(BotCommand::AddTodo { titles, assignee })
 }
 
 /// "asr" → [Asr], "fajr, dhuhr" → [Fajr, Dhuhr], "all" → all five.
@@ -428,10 +426,32 @@ mod tests {
 
     // `mentioned` is the name after `@`, if any.
     fn todo(title: &str, mentioned: Option<&str>) -> Option<BotCommand> {
+        todos(&[title], mentioned)
+    }
+
+    fn todos(titles: &[&str], mentioned: Option<&str>) -> Option<BotCommand> {
         Some(BotCommand::AddTodo {
-            title: title.to_string(),
+            titles: titles.iter().map(|t| t.to_string()).collect(),
             assignee: mentioned.map(|name| Assignee::Mentioned(name.to_string())),
         })
+    }
+
+    #[test]
+    fn several_todos_at_once() {
+        assert_eq!(
+            parse("+todo fix the tap, call the school, and bins"),
+            todos(&["fix the tap", "call the school", "bins"], None)
+        );
+        // One @name is for all of them.
+        assert_eq!(
+            parse("+t @Khadija book dentist, renew passport"),
+            todos(&["book dentist", "renew passport"], Some("Khadija"))
+        );
+        // A new line works like a comma; empty ones are dropped.
+        assert_eq!(
+            parse("+todo hoover\nmop the floor,,\n"),
+            todos(&["hoover", "mop the floor"], None)
+        );
     }
 
     // ---- +shop ----
@@ -555,6 +575,7 @@ mod tests {
     #[test]
     fn todo_without_a_title_is_none() {
         assert_eq!(parse("+todo"), None);
+        assert_eq!(parse("+todo , ,"), None, "only commas");
         assert_eq!(parse("+todo @Khadija"), None);
         assert_eq!(parse("+todo @Khadija   "), None);
     }

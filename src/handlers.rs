@@ -99,7 +99,7 @@ pub async fn run_command(
 ) -> Result<Outcome, AppError> {
     let prayer_times = &apis.prayer_times;
     let text = match command {
-        BotCommand::AddTodo { title, assignee } => add_todo(conn, ctx, &title, assignee).await?,
+        BotCommand::AddTodo { titles, assignee } => add_todo(conn, ctx, &titles, assignee).await?,
         BotCommand::ListTodos(view) => {
             let layout = match view {
                 TodoView::ByPerson => Layout::ByPerson,
@@ -581,7 +581,7 @@ async fn settings_command(
 async fn add_todo(
     conn: &mut SqliteConnection,
     ctx: &Context,
-    title: &str,
+    titles: &[String],
     assignee: Option<Assignee>,
 ) -> Result<String, AppError> {
     let assignee = match assignee {
@@ -598,19 +598,35 @@ async fn add_todo(
         }
     };
 
-    todos::add(
-        conn,
-        ctx.chat_id,
-        title,
-        ctx.sender.id,
-        Some(assignee.id),
-        ctx.now,
-    )
-    .await?;
-    Ok(format!(
-        "{ADDED} Added *{title}* for {}",
-        assignee.display_name
-    ))
+    // All in the webhook's one transaction: if one fails, none are added.
+    for title in titles {
+        todos::add(
+            conn,
+            ctx.chat_id,
+            title,
+            ctx.sender.id,
+            Some(assignee.id),
+            ctx.now,
+        )
+        .await?;
+    }
+    Ok(format_todos_added(titles, &assignee.display_name))
+}
+
+/// "📝 Added *fix the tap* for Bilal", or for several:
+/// "📝 Added 2 todos for Bilal:" and one line each.
+fn format_todos_added(titles: &[String], name: &str) -> String {
+    match titles {
+        [title] => format!("{ADDED} Added *{title}* for {name}"),
+        _ => {
+            let lines: Vec<String> = titles.iter().map(|t| format!("• {t}")).collect();
+            format!(
+                "{ADDED} Added {} todos for {name}:\n{}",
+                titles.len(),
+                lines.join("\n")
+            )
+        }
+    }
 }
 
 /// Runs a reply to one of the bot's numbered lists. `items` is what that
@@ -1313,9 +1329,43 @@ mod tests {
 
     fn add(title: &str, assignee: Option<Assignee>) -> BotCommand {
         BotCommand::AddTodo {
-            title: title.to_string(),
+            titles: vec![title.to_string()],
             assignee,
         }
+    }
+
+    #[tokio::test]
+    async fn several_todos_are_added_together() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let ctx = setup(&mut conn).await;
+        let command = BotCommand::AddTodo {
+            titles: vec!["hoover".to_string(), "bins".to_string()],
+            assignee: Some(Assignee::Sender(Person {
+                name: ctx.sender.display_name.clone(),
+                jid: ctx.sender.wa_jid.clone(),
+                lid: None,
+            })),
+        };
+        let reply = run_command(&mut conn, &ctx, &Apis::new(times()), command)
+            .await
+            .unwrap()
+            .into_text();
+        let name = &ctx.sender.display_name;
+        assert_eq!(
+            reply,
+            format!("📝 Added 2 todos for {name}:\n• hoover\n• bins")
+        );
+
+        let listed = todos::list_all(&mut conn, ctx.chat_id).await.unwrap();
+        let titles: Vec<&str> = listed.iter().map(|t| t.title.as_str()).collect();
+        assert_eq!(titles, ["hoover", "bins"], "in the order typed");
+    }
+
+    #[test]
+    fn one_todo_added_reads_as_before() {
+        let one = format_todos_added(&["go gym".to_string()], "Bilal");
+        assert_eq!(one, "📝 Added *go gym* for Bilal");
     }
 
     #[tokio::test]
