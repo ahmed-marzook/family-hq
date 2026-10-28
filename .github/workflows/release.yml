@@ -1,0 +1,185 @@
+# Releases family-hq when a version tag is pushed:
+#
+#   1. checks:  fmt, clippy, tests, and the tag matches Cargo.toml
+#   2. image:   builds the amd64 image, checks it (upgrade from the current
+#               `latest`, healthy, runs as 1000, no secrets), pushes
+#               `<version>` and `latest` to Docker Hub
+#   3. stacks:  opens a PR in my-homeserver-stacks bumping
+#               FAMILY_HQ_VERSION. Merging it (by hand) deploys.
+#
+# To release: bump `version` in Cargo.toml (and FAMILY_HQ_TAG in
+# deploy/.env.example), commit, then
+#
+#   git tag v0.5.1 && git push origin main v0.5.1
+#
+# Needs (Settings → Secrets and variables → Actions):
+#   variable DOCKERHUB_USERNAME   e.g. kaizenflow
+#   secret   DOCKERHUB_TOKEN      a Docker Hub access token (Read & Write)
+#   secret   STACKS_TOKEN         a fine-grained GitHub token for
+#                                 my-homeserver-stacks only, with Contents
+#                                 and Pull requests: Read and write
+
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+# One release at a time; a second tag waits rather than racing the first.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: kaizenflow/family-hq
+  STACKS_REPO: ahmed-marzook/my-homeserver-stacks
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    env:
+      # Build the SQLx macros from the committed .sqlx/ data, no database.
+      SQLX_OFFLINE: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag matches Cargo.toml
+        id: version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          cargo_version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          if [ "$tag" != "$cargo_version" ]; then
+            echo "::error::Tag v$tag but Cargo.toml says $cargo_version. Bump Cargo.toml first."
+            exit 1
+          fi
+          echo "version=$tag" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+
+  image:
+    needs: checks
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.checks.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # `load: true` keeps the image on the runner for the checks below;
+      # nothing is pushed until they pass.
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: ${{ env.IMAGE }}:${{ env.VERSION }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Upgrade from the current release
+        run: |
+          set -euo pipefail
+          mkdir -p data
+          run() {
+            docker run -d --name "$1" \
+              -e GOWA_URL=http://gowa:3000 -e GOWA_BASIC_AUTH=ci:ci \
+              -e GOWA_WEBHOOK_SECRET=ci -e DATABASE_URL=sqlite:///data/family_hq.db \
+              -v "$PWD/data:/data" "$2"
+          }
+          wait_healthy() {
+            for _ in $(seq 30); do
+              status=$(docker inspect -f '{{.State.Health.Status}}' "$1")
+              [ "$status" = healthy ] && return 0
+              sleep 2
+            done
+            docker logs "$1"
+            echo "::error::$1 never became healthy"
+            return 1
+          }
+
+          # The current release creates the database, then the new image
+          # opens it and runs any new migrations.
+          run old "$IMAGE:latest"
+          wait_healthy old
+          docker rm -f old
+
+          run new "$IMAGE:$VERSION"
+          wait_healthy new
+          docker logs new
+
+          # The entrypoint drops from root to PUID (1000) and `exec`s the
+          # server, so PID 1's real user id should be 1000.
+          uid=$(docker exec new awk '/^Uid:/ { print $2 }' /proc/1/status)
+          if [ "$uid" != 1000 ]; then
+            echo "::error::runs as uid '$uid', not 1000"
+            exit 1
+          fi
+          docker rm -f new
+
+      - name: No secrets in the image
+        run: |
+          found=$(docker run --rm --entrypoint sh "$IMAGE:$VERSION" -c \
+            'find / -xdev \( -name .env -o -name "*.db" -o -name "*.db-wal" \) 2>/dev/null')
+          if [ -n "$found" ]; then
+            echo "::error::found in the image: $found"
+            exit 1
+          fi
+
+      - name: Push
+        run: |
+          docker tag "$IMAGE:$VERSION" "$IMAGE:latest"
+          docker push "$IMAGE:$VERSION"
+          docker push "$IMAGE:latest"
+
+  stacks:
+    needs: [checks, image]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.checks.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.STACKS_REPO }}
+          token: ${{ secrets.STACKS_TOKEN }}
+
+      - name: Open the deploy PR
+        env:
+          GH_TOKEN: ${{ secrets.STACKS_TOKEN }}
+          # The release commit's message becomes the PR's description.
+          NOTES: ${{ github.event.head_commit.message }}
+        run: |
+          set -euo pipefail
+          branch="family-hq-$VERSION"
+          sed -i "s/^FAMILY_HQ_VERSION=.*/FAMILY_HQ_VERSION=$VERSION/" family-hq/.env.example
+          if git diff --quiet; then
+            echo "family-hq/.env.example already says $VERSION; nothing to do."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git commit -am "family-hq: $VERSION"
+          git push -u origin "$branch"
+
+          body=$(printf 'Bumps family-hq to **%s** (`%s:%s`).\n\n%s\n\nChecked by the release workflow: upgrade from the previous image comes up healthy, runs as 1000, no secrets in the image.\n\nMerging deploys it.' \
+            "$VERSION" "$IMAGE" "$VERSION" "${NOTES:-}")
+          gh pr create --repo "$STACKS_REPO" --base main --head "$branch" \
+            --title "family-hq: $VERSION" --body "$body"

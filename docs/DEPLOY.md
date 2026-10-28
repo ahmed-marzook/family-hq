@@ -153,6 +153,32 @@ The server runs whatever version the **stacks repo**
 deploys from it. So a release is: an image on Docker Hub, then a PR in the
 stacks repo that points at it.
 
+### The automatic way: push a tag
+
+`.github/workflows/release.yml` does steps 2 and 3 below on GitHub when a
+version tag is pushed. After bumping and committing (step 1):
+
+```sh
+git tag v0.5.1
+git push origin main v0.5.1
+```
+
+It checks (fmt, clippy, tests, tag = `Cargo.toml` version), builds the
+image, runs the image checks from step 2, pushes both tags to Docker Hub,
+and opens the stacks PR. Follow it in the repo's **Actions** tab. A failed
+check stops it before anything is pushed; fix, then move the tag
+(`git tag -f v0.5.1 && git push -f origin v0.5.1`).
+
+One-time setup, in this repo's Settings → Secrets and variables → Actions:
+
+| Kind | Name | Value |
+|---|---|---|
+| Variable | `DOCKERHUB_USERNAME` | `kaizenflow` |
+| Secret | `DOCKERHUB_TOKEN` | A Docker Hub access token (Account settings → Personal access tokens, Read & Write) |
+| Secret | `STACKS_TOKEN` | A fine-grained GitHub token for `my-homeserver-stacks` only, with Contents and Pull requests: Read and write |
+
+The rest of this section is the same thing by hand.
+
 ### 1. In this repo: check, bump, commit
 
 ```sh
@@ -180,10 +206,9 @@ Before pushing, check the image:
 - **Upgrade test:** start the *previous* version on a scratch data folder,
   send it a message or two, stop it, then start the new image on the same
   folder. It should turn `(healthy)` and log the new migrations.
-- **No secrets inside:** `docker run --rm --entrypoint sh kaizenflow/family-hq:$V -c 'ls -a /app'`
-  shows no `.env`, `*.db` or GOWA data.
-- **Runs unprivileged:** the process runs as `1000:1000`
-  (`docker top <container>`).
+- **No secrets inside:** this prints nothing (no `.env` or database):
+  `docker run --rm --entrypoint sh kaizenflow/family-hq:$V -c 'find / -xdev \( -name .env -o -name "*.db" \) 2>/dev/null'`
+- **Runs unprivileged:** `docker top <container>` shows user `1000`.
 
 Then push (`docker login` first if asked):
 
