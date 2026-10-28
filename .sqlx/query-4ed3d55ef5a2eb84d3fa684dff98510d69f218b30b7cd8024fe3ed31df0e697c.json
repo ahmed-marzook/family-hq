@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT u.id AS user_id, u.display_name, u.wa_jid,\n                  s.chat_id AS \"has_row?\",\n                  s.prayer_reminders AS \"prayer_reminders?: bool\",\n                  s.timezone, s.city, s.country,\n                  s.prayer_method, s.prayer_school, s.prayer_ending_minutes\n           FROM chat_members m\n           JOIN users u ON u.id = m.user_id\n           LEFT JOIN chats dm ON dm.dm_user_id = u.id\n           LEFT JOIN chat_settings s ON s.chat_id = dm.id\n           WHERE m.chat_id = ?\n           ORDER BY u.display_name",
+  "query": "SELECT u.id AS user_id, u.display_name, u.wa_jid,\n                  s.chat_id AS \"has_row?\",\n                  s.prayer_reminders AS \"prayer_reminders?: bool\",\n                  s.timezone, s.city, s.country,\n                  s.latitude, s.longitude, s.prayer_method, s.prayer_school, s.prayer_ending_minutes\n           FROM chat_members m\n           JOIN users u ON u.id = m.user_id\n           LEFT JOIN chats dm ON dm.dm_user_id = u.id\n           LEFT JOIN chat_settings s ON s.chat_id = dm.id\n           WHERE m.chat_id = ?\n           ORDER BY u.display_name",
   "describe": {
     "columns": [
       {
@@ -92,8 +92,30 @@
         }
       },
       {
-        "name": "prayer_method",
+        "name": "latitude",
         "ordinal": 8,
+        "type_info": "Float",
+        "origin": {
+          "Table": {
+            "table": "chat_settings",
+            "name": "latitude"
+          }
+        }
+      },
+      {
+        "name": "longitude",
+        "ordinal": 9,
+        "type_info": "Float",
+        "origin": {
+          "Table": {
+            "table": "chat_settings",
+            "name": "longitude"
+          }
+        }
+      },
+      {
+        "name": "prayer_method",
+        "ordinal": 10,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -104,7 +126,7 @@
       },
       {
         "name": "prayer_school",
-        "ordinal": 9,
+        "ordinal": 11,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -115,7 +137,7 @@
       },
       {
         "name": "prayer_ending_minutes",
-        "ordinal": 10,
+        "ordinal": 12,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -139,8 +161,10 @@
       true,
       true,
       true,
+      true,
+      true,
       true
     ]
   },
-  "hash": "cf3791e207807a2123bffab5efd710a408162832e072c1ec825c3b9c2162e44d"
+  "hash": "4ed3d55ef5a2eb84d3fa684dff98510d69f218b30b7cd8024fe3ed31df0e697c"
 }

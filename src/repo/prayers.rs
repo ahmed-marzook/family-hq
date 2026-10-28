@@ -21,7 +21,7 @@ pub struct ReminderChat {
 pub async fn reminder_chats(conn: &mut SqliteConnection) -> Result<Vec<ReminderChat>, sqlx::Error> {
     let rows = sqlx::query!(
         "SELECT c.id, c.wa_chat_id, c.dm_user_id, s.timezone, s.city, s.country,
-                s.prayer_method, s.prayer_school, s.prayer_ending_minutes
+                s.latitude, s.longitude, s.prayer_method, s.prayer_school, s.prayer_ending_minutes
          FROM chat_settings s
          JOIN chats c ON c.id = s.chat_id
          WHERE s.prayer_reminders = 1
@@ -40,6 +40,8 @@ pub async fn reminder_chats(conn: &mut SqliteConnection) -> Result<Vec<ReminderC
                 timezone: r.timezone,
                 city: r.city,
                 country: r.country,
+                latitude: r.latitude,
+                longitude: r.longitude,
                 prayer_method: r.prayer_method,
                 prayer_school: r.prayer_school,
                 prayer_ending_minutes: r.prayer_ending_minutes,

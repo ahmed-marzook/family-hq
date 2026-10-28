@@ -52,6 +52,32 @@ impl Apis {
             weather: Weather::new(),
         }
     }
+
+    /// Where these settings' prayer times are calculated: their stored
+    /// coordinates, or (for the `.env` default or an older city setting)
+    /// the town's, looked up once by name and remembered.
+    pub async fn prayer_location(
+        &self,
+        settings: &settings::Settings,
+    ) -> Result<prayer::Location, error::AppError> {
+        let at = match settings.coordinates {
+            Some(at) => at,
+            None => {
+                self.geo
+                    .coordinates_of(&settings.city, &settings.country)
+                    .await?
+            }
+        };
+        Ok(settings.prayer_location(at))
+    }
+
+    /// Where these settings' town is (for the weather), the same way.
+    pub async fn coordinates(
+        &self,
+        settings: &settings::Settings,
+    ) -> Result<geo::Coordinates, error::AppError> {
+        Ok(self.prayer_location(settings).await?.coordinates())
+    }
 }
 
 /// Everything the web handlers and the reminder loop share.

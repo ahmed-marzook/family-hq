@@ -4,6 +4,7 @@
 
 use sqlx::SqliteConnection;
 
+use crate::geo::Coordinates;
 use crate::settings::Overrides;
 
 /// A chat's stored settings.
@@ -33,7 +34,7 @@ pub async fn get(conn: &mut SqliteConnection, chat_id: i64) -> Result<ChatSettin
     // `as "prayer_reminders: bool"`: read the 0/1 column as a Rust bool.
     let row = sqlx::query!(
         r#"SELECT prayer_reminders AS "prayer_reminders: bool", timezone, city, country,
-                  prayer_method, prayer_school, prayer_ending_minutes
+                  latitude, longitude, prayer_method, prayer_school, prayer_ending_minutes
            FROM chat_settings WHERE chat_id = ?"#,
         chat_id
     )
@@ -47,6 +48,8 @@ pub async fn get(conn: &mut SqliteConnection, chat_id: i64) -> Result<ChatSettin
             timezone: r.timezone,
             city: r.city,
             country: r.country,
+            latitude: r.latitude,
+            longitude: r.longitude,
             prayer_method: r.prayer_method,
             prayer_school: r.prayer_school,
             prayer_ending_minutes: r.prayer_ending_minutes,
@@ -67,7 +70,7 @@ pub async fn members(
                   s.chat_id AS "has_row?",
                   s.prayer_reminders AS "prayer_reminders?: bool",
                   s.timezone, s.city, s.country,
-                  s.prayer_method, s.prayer_school, s.prayer_ending_minutes
+                  s.latitude, s.longitude, s.prayer_method, s.prayer_school, s.prayer_ending_minutes
            FROM chat_members m
            JOIN users u ON u.id = m.user_id
            LEFT JOIN chats dm ON dm.dm_user_id = u.id
@@ -91,6 +94,8 @@ pub async fn members(
                     timezone: r.timezone,
                     city: r.city,
                     country: r.country,
+                    latitude: r.latitude,
+                    longitude: r.longitude,
                     prayer_method: r.prayer_method,
                     prayer_school: r.prayer_school,
                     prayer_ending_minutes: r.prayer_ending_minutes,
@@ -142,21 +147,27 @@ pub async fn set_prayer_reminders(
     Ok(())
 }
 
-/// City, country and the timezone that goes with them, together.
+/// City, country, where it is, and its timezone, all together.
 pub async fn set_location(
     conn: &mut SqliteConnection,
     chat_id: i64,
     city: &str,
     country: &str,
+    at: Coordinates,
     timezone: &str,
 ) -> Result<(), sqlx::Error> {
     sqlx::query!(
-        "INSERT INTO chat_settings (chat_id, city, country, timezone) VALUES (?, ?, ?, ?)
+        "INSERT INTO chat_settings (chat_id, city, country, latitude, longitude, timezone)
+         VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT (chat_id) DO UPDATE
-         SET city = excluded.city, country = excluded.country, timezone = excluded.timezone",
+         SET city = excluded.city, country = excluded.country,
+             latitude = excluded.latitude, longitude = excluded.longitude,
+             timezone = excluded.timezone",
         chat_id,
         city,
         country,
+        at.latitude,
+        at.longitude,
         timezone
     )
     .execute(conn)
@@ -232,7 +243,8 @@ pub async fn set_prayer_ending_minutes(
 pub async fn reset(conn: &mut SqliteConnection, chat_id: i64) -> Result<(), sqlx::Error> {
     sqlx::query!(
         "UPDATE chat_settings
-         SET timezone = NULL, city = NULL, country = NULL, prayer_method = NULL,
+         SET timezone = NULL, city = NULL, country = NULL, latitude = NULL,
+             longitude = NULL, prayer_method = NULL,
              prayer_school = NULL, prayer_ending_minutes = NULL
          WHERE chat_id = ?",
         chat_id
@@ -250,6 +262,13 @@ mod tests {
     use crate::repo::{chats, users};
     use chrono::Utc;
 
+    fn paris() -> Coordinates {
+        Coordinates {
+            latitude: 48.8566,
+            longitude: 2.3522,
+        }
+    }
+
     async fn group(conn: &mut SqliteConnection) -> i64 {
         chats::find_or_create(conn, "120363000000000001@g.us", None, Utc::now())
             .await
@@ -264,7 +283,7 @@ mod tests {
 
         assert_eq!(get(&mut conn, chat).await.unwrap(), ChatSettings::default());
 
-        set_location(&mut conn, chat, "Paris", "FR", "Europe/Paris")
+        set_location(&mut conn, chat, "Paris", "FR", paris(), "Europe/Paris")
             .await
             .unwrap();
         set_prayer_school(&mut conn, chat, 1).await.unwrap();
@@ -273,6 +292,11 @@ mod tests {
         assert!(s.prayer_reminders);
         assert_eq!(s.overrides.city.as_deref(), Some("Paris"));
         assert_eq!(s.overrides.timezone.as_deref(), Some("Europe/Paris"));
+        assert_eq!(
+            (s.overrides.latitude, s.overrides.longitude),
+            (Some(48.8566), Some(2.3522)),
+            "coordinates are stored with the city"
+        );
         assert_eq!(s.overrides.prayer_school, Some(1));
         assert_eq!(
             s.overrides.prayer_method, None,
@@ -299,7 +323,7 @@ mod tests {
                 .is_err()
         );
         assert!(
-            set_location(&mut conn, chat, "  ", "GB", "Europe/London")
+            set_location(&mut conn, chat, "  ", "GB", paris(), "Europe/London")
                 .await
                 .is_err()
         );
@@ -336,7 +360,7 @@ mod tests {
         let dm = chats::find_or_create(&mut conn, bilal_jid, Some(bilal), now)
             .await
             .unwrap();
-        set_location(&mut conn, dm, "Leicester", "GB", "Europe/London")
+        set_location(&mut conn, dm, "Leicester", "GB", paris(), "Europe/London")
             .await
             .unwrap();
 

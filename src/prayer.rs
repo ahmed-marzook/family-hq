@@ -9,6 +9,7 @@ use std::str::FromStr;
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use chrono_tz::Tz;
 
+use crate::geo::Coordinates;
 use crate::settings::Settings;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,9 +74,15 @@ impl FromStr for Prayer {
 /// is what `Hash` + `Eq` allow (a `HashMap` key needs both).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Location {
+    /// For logs and the place key only; AlAdhan is asked by coordinates.
     pub city: String,
     /// Country name or 2-letter code, e.g. "GB".
     pub country: String,
+    /// Latitude and longitude in ten-thousandths of a degree (about 11 m).
+    /// Whole numbers because `f64` can't be `Eq` or `Hash` (NaN isn't equal
+    /// to itself), and this struct is a `HashMap` key.
+    latitude_e4: i32,
+    longitude_e4: i32,
     /// AlAdhan calculation method, e.g. 3 = Muslim World League.
     pub method: u8,
     /// Asr: `SHAFII` or `HANAFI`.
@@ -85,6 +92,36 @@ pub struct Location {
 }
 
 impl Location {
+    pub fn new(
+        city: &str,
+        country: &str,
+        at: Coordinates,
+        method: u8,
+        school: u8,
+        timezone: Tz,
+    ) -> Self {
+        // `as i32` after rounding: valid coordinates fit easily
+        // (±1,800,000 is far below i32's ±2.1 billion).
+        let to_e4 = |degrees: f64| (degrees * 10_000.0).round() as i32;
+        Location {
+            city: city.to_string(),
+            country: country.to_string(),
+            latitude_e4: to_e4(at.latitude),
+            longitude_e4: to_e4(at.longitude),
+            method,
+            school,
+            timezone,
+        }
+    }
+
+    /// Back to decimal degrees, for the API call.
+    pub fn coordinates(&self) -> Coordinates {
+        Coordinates {
+            latitude: f64::from(self.latitude_e4) / 10_000.0,
+            longitude: f64::from(self.longitude_e4) / 10_000.0,
+        }
+    }
+
     /// One text key for "same place, same times", e.g.
     /// `Milton Keynes|GB|3|0|Europe/London`. Group reminders store it, so a
     /// group with members in two countries gets one reminder per place.

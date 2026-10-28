@@ -62,6 +62,134 @@ pub async fn list_open(
     .await
 }
 
+/// One todo as `/todo` shows it: open or done.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ListedTodo {
+    pub id: i64,
+    pub title: String,
+    /// The assignee's display name, if there is one.
+    pub assignee: Option<String>,
+    /// Who completed it and when; `None` while it's open.
+    pub done: Option<Completion>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Completion {
+    /// Display name of whoever ticked it off.
+    pub by: String,
+    pub at: DateTime<Utc>,
+}
+
+/// The whole list, as `/todo` shows it: open todos (oldest first), then
+/// done ones (in the order they were done). That order is what the numbers
+/// in a `/todo` list refer to.
+pub async fn list_all(
+    conn: &mut SqliteConnection,
+    chat_id: i64,
+) -> Result<Vec<ListedTodo>, sqlx::Error> {
+    // Two LEFT JOINs on `users`, under two names (`a` for the assignee, `c`
+    // for whoever completed it), because a todo points at two people.
+    // `as "x: DateTime<Utc>"` reads the stored text as a chrono time.
+    let rows = sqlx::query!(
+        r#"SELECT t.id, t.title,
+                  a.display_name AS "assignee?",
+                  c.display_name AS "completed_by?",
+                  t.completed_at AS "completed_at?: DateTime<Utc>"
+           FROM todos t
+           LEFT JOIN users a ON a.id = t.assignee_id
+           LEFT JOIN users c ON c.id = t.completed_by
+           WHERE t.chat_id = ?
+           ORDER BY t.status = 'completed', t.completed_at, t.created_at, t.id"#,
+        chat_id
+    )
+    .fetch_all(conn)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| ListedTodo {
+            id: r.id,
+            title: r.title,
+            assignee: r.assignee,
+            // `zip` pairs two `Option`s: `Some` only if both are `Some`.
+            done: r
+                .completed_by
+                .zip(r.completed_at)
+                .map(|(by, at)| Completion { by, at }),
+        })
+        .collect())
+}
+
+/// Open todos whose title matches `words`, for `+done gym`: an exact title
+/// (ignoring case) wins; otherwise every open todo whose title contains
+/// it. The caller decides what to do with none, one or several.
+pub async fn find_open(
+    conn: &mut SqliteConnection,
+    chat_id: i64,
+    words: &str,
+) -> Result<Vec<(i64, String)>, sqlx::Error> {
+    let exact = sqlx::query!(
+        "SELECT id, title FROM todos
+         WHERE chat_id = ? AND status = 'pending' AND title = ? COLLATE NOCASE
+         ORDER BY created_at, id",
+        chat_id,
+        words
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    if !exact.is_empty() {
+        return Ok(exact.into_iter().map(|r| (r.id, r.title)).collect());
+    }
+
+    // `LIKE` is case-insensitive for ASCII in SQLite. `%` matches anything,
+    // so `%gym%` finds "go gym". The `||` joins strings in SQL.
+    let partial = sqlx::query!(
+        "SELECT id, title FROM todos
+         WHERE chat_id = ? AND status = 'pending' AND title LIKE '%' || ? || '%'
+         ORDER BY created_at, id",
+        chat_id,
+        words
+    )
+    .fetch_all(conn)
+    .await?;
+    Ok(partial.into_iter().map(|r| (r.id, r.title)).collect())
+}
+
+/// (done, total) for the chat, for the progress bar.
+pub async fn progress(
+    conn: &mut SqliteConnection,
+    chat_id: i64,
+) -> Result<(i64, i64), sqlx::Error> {
+    let row = sqlx::query!(
+        r#"SELECT COUNT(*) FILTER (WHERE status = 'completed') AS "done!: i64",
+                  COUNT(*) AS "total!: i64"
+           FROM todos WHERE chat_id = ?"#,
+        chat_id
+    )
+    .fetch_one(conn)
+    .await?;
+    Ok((row.done, row.total))
+}
+
+/// Deletes the chat's completed todos (`/todo clear done`). Returns how many.
+pub async fn clear_done(conn: &mut SqliteConnection, chat_id: i64) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query!(
+        "DELETE FROM todos WHERE chat_id = ? AND status = 'completed'",
+        chat_id
+    )
+    .execute(conn)
+    .await?;
+    Ok(result.rows_affected())
+}
+
+/// Deletes every todo in the chat (`/todo clear`). Returns how many.
+pub async fn clear_all(conn: &mut SqliteConnection, chat_id: i64) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query!("DELETE FROM todos WHERE chat_id = ?", chat_id)
+        .execute(conn)
+        .await?;
+    Ok(result.rows_affected())
+}
+
 /// Marks a todo done. Returns its title, or `None` if it isn't a pending
 /// todo in this chat (already done, removed, or another chat's).
 pub async fn complete(

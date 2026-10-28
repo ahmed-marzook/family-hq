@@ -9,6 +9,7 @@ use tokio::sync::Mutex;
 use crate::error::AppError;
 use chrono_tz::Tz;
 
+use crate::geo::Coordinates;
 use crate::prayer::{DayTimes, Location, Prayer, Window};
 use crate::settings::Settings;
 
@@ -41,7 +42,10 @@ impl PrayerTimes {
     /// location, so asking for that never touches the network.
     #[cfg(test)]
     pub(crate) fn with_cached(defaults: Settings, day: DayTimes) -> Self {
-        let key = (defaults.prayer_location(), day.date);
+        let at = defaults
+            .coordinates
+            .expect("test defaults have coordinates");
+        let key = (defaults.prayer_location(at), day.date);
         let source = PrayerTimes::new(defaults);
         PrayerTimes {
             cache: Mutex::new(HashMap::from([(key, day)])),
@@ -90,55 +94,53 @@ impl PrayerTimes {
         Ok(day)
     }
 
+    /// Always by coordinates (`/timings`), never by city name
+    /// (`/timingsByCity`): the by-name lookup goes through AlAdhan's own
+    /// geocoder, which is rate-limited and answers 503 for towns it hasn't
+    /// seen before. Coordinates need no lookup.
     async fn fetch(&self, loc: &Location, date: NaiveDate) -> Result<DayTimes, AppError> {
+        let at = loc.coordinates();
         let response: ApiResponse = self
             .http
             .get(format!(
-                "{}/timingsByCity/{}",
+                "{}/timings/{}",
                 self.base_url,
                 date.format("%d-%m-%Y")
             ))
-            // `.query` builds `?city=Milton%20Keynes&...`, escaping spaces.
             .query(&[
-                ("city", loc.city.as_str()),
-                ("country", loc.country.as_str()),
-                ("method", &loc.method.to_string()),
-                ("school", &loc.school.to_string()),
-                ("timezonestring", loc.timezone.name()),
-                ("iso8601", "true"),
+                ("latitude", at.latitude.to_string()),
+                ("longitude", at.longitude.to_string()),
+                ("method", loc.method.to_string()),
+                ("school", loc.school.to_string()),
+                ("timezonestring", loc.timezone.name().to_string()),
+                ("iso8601", "true".to_string()),
             ])
             .send()
             .await?
-            // A city AlAdhan can't find is a 400 response.
             .error_for_status()?
             .json()
             .await?;
 
         to_day_times(date, &response.data.timings).map_err(AppError::PrayerTimes)
     }
-}
 
-impl PrayerTimes {
-    /// Checks AlAdhan knows `city, country`, and returns the timezone it
-    /// says the city is in. Used when someone sets their location, so they
-    /// don't also have to look up their timezone's name.
+    /// The timezone at `at`, as AlAdhan works it out from the coordinates
+    /// (no geocoding involved). Used for a shared location.
     ///
     /// `date` only has to be a real day; today is the natural choice.
-    pub async fn timezone_of(
-        &self,
-        city: &str,
-        country: &str,
-        date: NaiveDate,
-    ) -> Result<Tz, AppError> {
+    pub async fn timezone_at(&self, at: Coordinates, date: NaiveDate) -> Result<Tz, AppError> {
         let response: ApiResponse = self
             .http
             .get(format!(
-                "{}/timingsByCity/{}",
+                "{}/timings/{}",
                 self.base_url,
                 date.format("%d-%m-%Y")
             ))
-            // No `timezonestring`: AlAdhan then works it out from the city.
-            .query(&[("city", city), ("country", country)])
+            // No `timezonestring`: AlAdhan then works it out from the point.
+            .query(&[
+                ("latitude", at.latitude.to_string()),
+                ("longitude", at.longitude.to_string()),
+            ])
             .send()
             .await?
             .error_for_status()?
@@ -302,7 +304,7 @@ mod tests {
             country: "ZZ".to_string(),
             ..crate::settings::tests::defaults()
         };
-        let nowhere = defaults.prayer_location();
+        let nowhere = defaults.prayer_location(defaults.coordinates.unwrap());
         let reply: ApiResponse = serde_json::from_str(REPLY).unwrap();
         let day = parse(&reply).unwrap();
         let source = PrayerTimes::with_cached(defaults, day.clone());

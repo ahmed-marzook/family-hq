@@ -208,6 +208,14 @@ Done when:
 
 All of these are released and tested:
 
+- **Todos like the shopping list:** `/todo` shows a progress bar
+  (`▓▓▓▓░░░░░░ 4/10 done`), open ⬜ and done ✅ todos with who did each
+  and when; `+done 2` / `+done gym` (`+d`) completes without replying;
+  `/todo clear` and `/todo clear done`.
+- **Prayer times by coordinates:** shared locations keep their exact point
+  and typed cities are looked up with Open-Meteo (migration `0003`), so
+  AlAdhan never has to geocode a name (its geocoder rate-limits and
+  answered 503 for towns like Crawley).
 - **Shopping:** `+got` to tick off by name or number without replying,
   ⬜/✅ in `/shop`, `/shop clear` vs `/shop clear bought`, duplicate items
   skipped, and the buyer @mentioned in groups.
@@ -295,7 +303,7 @@ new file. In short:
 | `users` | People who use the bot: `display_name` (case-insensitive, for `@name`), `wa_jid` (phone ID), `wa_lid` (LID) |
 | `chats` | Each group or DM the bot works in: `wa_chat_id`, `kind` (`group`/`dm`), group `name`, `dm_user_id` |
 | `chat_members` | Who is in which group, so `@name` only matches people in that group |
-| `chat_settings` | Per-chat settings: timezone, city, prayer method/school/reminder timing, reminders on/off |
+| `chat_settings` | Per-chat settings: timezone, city and its coordinates (`0003`), prayer method/school/reminder timing, reminders on/off |
 | `shopping_items` | Items on a chat's list: `chat_id`, `name`, `added_by`, `bought_by` + `bought_at` |
 | `todos` | Todos on a chat's list: `chat_id`, `title`, `created_by`, `assignee_id`, `status`, `completed_by` + `completed_at` |
 | `prayer_reminders` | Each prayer reminder sent, per chat, day, prayer, kind (start/ending) and place (`0002`) |
@@ -321,7 +329,7 @@ family-hq/
 ├── Dockerfile              # two-stage build; image on Docker Hub
 ├── docker-entrypoint.sh    # fixes /data ownership, drops to PUID:PGID
 ├── deploy/                 # plain-compose deploy (the homelab uses Dockhand)
-├── migrations/             # 0001_init.sql, 0002_reminders_per_place.sql
+├── migrations/             # 0001 init, 0002 reminders per place, 0003 coordinates
 ├── .sqlx/                  # SQLx offline query data (committed)
 ├── docs/                   # ROADMAP.md, GOWA.md, DEPLOY.md
 └── src/

@@ -123,8 +123,12 @@ pub fn places_for_group(group: &Settings, members: &[MemberSettings]) -> Vec<Pla
                 .split_once('@')
                 .map_or(member.wa_jid.clone(), |(phone, _)| phone.to_string()),
         };
-        // Same place = same times *and* the same ending-reminder minutes.
-        match places.iter_mut().find(|p| p.settings == settings) {
+        // Same place = same town, method, school, timezone and reminder
+        // timing. Exact coordinates may differ a little (two people sharing
+        // their location in the same town): they still share one message,
+        // on the first one's coordinates.
+        let key = settings.place_key();
+        match places.iter_mut().find(|p| p.settings.place_key() == key) {
             Some(place) => place.recipients.push(recipient),
             None => places.push(Place {
                 settings,
@@ -150,7 +154,7 @@ async fn send_due(
     now: DateTime<Utc>,
 ) -> Result<(), AppError> {
     let settings = &place.settings;
-    let location = settings.prayer_location();
+    let location = state.apis.prayer_location(settings).await?;
     let day = state
         .apis
         .prayer_times

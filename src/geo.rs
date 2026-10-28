@@ -85,13 +85,22 @@ impl Geo {
             .ok_or_else(|| AppError::Geo("no town or country near that location".to_string()))
     }
 
-    /// Where a town is, for the weather forecast.
+    /// Where a town is, for prayer times and the weather. Remembered, since
+    /// towns don't move.
     pub async fn coordinates_of(&self, city: &str, country: &str) -> Result<Coordinates, AppError> {
         let key = (city.to_lowercase(), country.to_uppercase());
         if let Some(found) = self.coordinates.lock().await.get(&key) {
             return Ok(*found);
         }
+        let found = self.find_town(city, country).await?.coordinates;
+        self.coordinates.lock().await.insert(key, found);
+        Ok(found)
+    }
 
+    /// Looks a town up by name: its proper name, country code, coordinates
+    /// and timezone. Used for `/settings city …`, so a typo is caught and
+    /// the timezone comes for free.
+    pub async fn find_town(&self, city: &str, country: &str) -> Result<Town, AppError> {
         let reply: GeocodingReply = self
             .http
             .get(format!("{}/search", self.geocoding_url))
@@ -107,17 +116,19 @@ impl Geo {
             .error_for_status()?
             .json()
             .await?;
-        let found = reply
+        reply
             .results
             .and_then(|r| r.into_iter().next())
-            .map(|r| Coordinates {
-                latitude: r.latitude,
-                longitude: r.longitude,
+            .map(|r| Town {
+                name: r.name,
+                country: r.country_code.to_uppercase(),
+                coordinates: Coordinates {
+                    latitude: r.latitude,
+                    longitude: r.longitude,
+                },
+                timezone: r.timezone.parse().ok(),
             })
-            .ok_or_else(|| AppError::Geo(format!("couldn't find {city}, {country}")))?;
-
-        self.coordinates.lock().await.insert(key, found);
-        Ok(found)
+            .ok_or_else(|| AppError::Geo(format!("couldn't find {city}, {country}")))
     }
 }
 
@@ -165,8 +176,23 @@ struct GeocodingReply {
 
 #[derive(Deserialize)]
 struct GeocodingResult {
+    name: String,
+    country_code: String,
     latitude: f64,
     longitude: f64,
+    timezone: String,
+}
+
+/// A town found by name.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Town {
+    /// As the geocoder spells it ("Crawley", not "crawley").
+    pub name: String,
+    /// 2-letter code, upper case.
+    pub country: String,
+    pub coordinates: Coordinates,
+    /// `None` if the geocoder's timezone name is one we don't know.
+    pub timezone: Option<chrono_tz::Tz>,
 }
 
 #[cfg(test)]

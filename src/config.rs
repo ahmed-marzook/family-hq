@@ -54,6 +54,10 @@ impl Config {
                 timezone: timezone_or("DEFAULT_TIMEZONE", chrono_tz::Europe::London),
                 city: text_or("DEFAULT_CITY", "Milton Keynes"),
                 country: text_or("DEFAULT_COUNTRY", "GB"),
+                // Looked up from DEFAULT_CITY the first time it's needed
+                // (and remembered), so there's no coordinate setting to get
+                // wrong.
+                coordinates: None,
                 prayer_method: number_or("DEFAULT_PRAYER_METHOD", 3),
                 prayer_school: number_or("DEFAULT_PRAYER_SCHOOL", 0),
                 prayer_ending_minutes: number_or("DEFAULT_PRAYER_ENDING_MINUTES", 20),

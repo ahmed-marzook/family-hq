@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO chat_settings (chat_id, city, country, latitude, longitude, timezone)\n         VALUES (?, ?, ?, ?, ?, ?)\n         ON CONFLICT (chat_id) DO UPDATE\n         SET city = excluded.city, country = excluded.country,\n             latitude = excluded.latitude, longitude = excluded.longitude,\n             timezone = excluded.timezone",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "05415b44e7cb441832062b32c2ca4d19cdb40ebd8f04e9f01810ec0387e03042"
+}

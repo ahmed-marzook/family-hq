@@ -16,7 +16,7 @@ use crate::repo::messages::{self, ListItem};
 use crate::repo::prayers;
 use crate::repo::settings::{self as stored, MemberSettings};
 use crate::repo::shop::{self, ShopItem};
-use crate::repo::todos::{self, OpenTodo};
+use crate::repo::todos::{self, ListedTodo};
 use crate::repo::users::{self, User};
 use crate::settings::Settings;
 use crate::weather::{self, When};
@@ -97,12 +97,38 @@ pub async fn run_command(
     let text = match command {
         BotCommand::AddTodo { title, assignee } => add_todo(conn, ctx, &title, assignee).await?,
         BotCommand::ListTodos => {
-            let open = todos::list_open(conn, ctx.chat_id).await?;
+            // The sender's timezone, for the "done at 14:05" times.
+            let settings = my_settings(conn, ctx, prayer_times).await?;
+            let items = todos::list_all(conn, ctx.chat_id).await?;
             return Ok(Outcome::List {
-                text: format_todo_list(&open),
+                text: format_todo_list(&items, &settings, ctx.now),
                 item_type: TODO_ITEM,
-                item_ids: open.iter().map(|t| t.id).collect(),
+                item_ids: items.iter().map(|t| t.id).collect(),
             });
+        }
+        BotCommand::DoneTodo(Got::Numbers(numbers)) => {
+            // Same as replying `1 3` to the newest `/todo` list here.
+            let items = messages::latest_list_items(conn, ctx.chat_id, TODO_ITEM).await?;
+            if items.is_empty() {
+                format!("{PROBLEM} No todo list sent here yet. Send /todo, then `+done 2`.")
+            } else {
+                return run_list_reply(conn, ctx, &items, ReplyCommand::Tick(numbers)).await;
+            }
+        }
+        BotCommand::DoneTodo(Got::Names(names)) => done_by_name(conn, ctx, &names).await?,
+        BotCommand::ClearTodos { done_only: false } => {
+            match todos::clear_all(conn, ctx.chat_id).await? {
+                0 => format!("{LIST} There are no todos to clear."),
+                1 => format!("{CLEARED} Cleared the todo list (1 todo)."),
+                n => format!("{CLEARED} Cleared the todo list ({n} todos)."),
+            }
+        }
+        BotCommand::ClearTodos { done_only: true } => {
+            match todos::clear_done(conn, ctx.chat_id).await? {
+                0 => format!("{LIST} No completed todos to clear."),
+                1 => format!("{CLEARED} Cleared 1 completed todo."),
+                n => format!("{CLEARED} Cleared {n} completed todos."),
+            }
         }
         BotCommand::AddShop(names) => add_shop(conn, ctx, &names).await?,
         BotCommand::ListShop => {
@@ -139,7 +165,7 @@ pub async fn run_command(
         }
         BotCommand::Prayers => {
             let settings = my_settings(conn, ctx, prayer_times).await?;
-            prayer_day(conn, ctx, prayer_times, &settings).await?
+            prayer_day(conn, ctx, apis, &settings).await?
         }
         BotCommand::Prayed(names) => {
             // For people who didn't catch the reminder: same effect as
@@ -149,7 +175,7 @@ pub async fn run_command(
             for prayer in names {
                 prayers::mark_prayed(conn, ctx.sender.id, today, prayer, ctx.now).await?;
             }
-            prayer_day(conn, ctx, prayer_times, &settings).await?
+            prayer_day(conn, ctx, apis, &settings).await?
         }
         BotCommand::PrayerReminders(on) => {
             stored::set_prayer_reminders(conn, ctx.chat_id, on).await?;
@@ -174,7 +200,7 @@ pub async fn run_command(
                 format!("{BELL_OFF} Prayer reminders are off in this chat.")
             }
         }
-        BotCommand::Settings(command) => settings_command(conn, ctx, prayer_times, command).await?,
+        BotCommand::Settings(command) => settings_command(conn, ctx, apis, command).await?,
         BotCommand::Weather(when) => weather(conn, ctx, apis, when).await?,
         BotCommand::SharedLocation {
             latitude,
@@ -283,31 +309,38 @@ async fn chat_settings(
     ))
 }
 
-/// Checks `city, country` with AlAdhan (which also gives its timezone) and
-/// saves both for this chat. `None` if AlAdhan doesn't know the place.
+/// `/settings city …`: looks the town up (Open-Meteo's geocoder, which also
+/// gives its coordinates and timezone) and saves all of it for this chat.
+/// `None` if no such town was found; nothing is saved then.
 async fn save_city(
     conn: &mut SqliteConnection,
     ctx: &Context,
-    prayer_times: &PrayerTimes,
+    apis: &Apis,
     current: &Settings,
     city: &str,
     country: &str,
-) -> Result<Option<chrono_tz::Tz>, AppError> {
-    match prayer_times
-        .timezone_of(city, country, current.today(ctx.now))
-        .await
-    {
-        Ok(timezone) => {
-            stored::set_location(conn, ctx.chat_id, city, country, timezone.name()).await?;
-            Ok(Some(timezone))
-        }
-        // Not found (or AlAdhan unreachable): nothing saved.
-        Err(_) => Ok(None),
-    }
+) -> Result<Option<(String, chrono_tz::Tz)>, AppError> {
+    let Ok(town) = apis.geo.find_town(city, country).await else {
+        return Ok(None);
+    };
+    // A town whose timezone name we don't recognise keeps the current one.
+    let timezone = town.timezone.unwrap_or(current.timezone);
+    stored::set_location(
+        conn,
+        ctx.chat_id,
+        &town.name,
+        &town.country,
+        town.coordinates,
+        timezone.name(),
+    )
+    .await?;
+    Ok(Some((town.name, timezone)))
 }
 
-/// A location shared in a DM: find the nearest town, and use the first
-/// name (most specific first) that AlAdhan can calculate prayer times for.
+/// A location shared in a DM: saves the exact point, named after the
+/// nearest town (OpenStreetMap), with the timezone AlAdhan gives for that
+/// point. Prayer times are then fetched for the point itself, so no name
+/// ever has to be looked up.
 async fn shared_location(
     conn: &mut SqliteConnection,
     ctx: &Context,
@@ -321,23 +354,21 @@ async fn shared_location(
              Try `/settings city Leicester, GB` instead."
         ));
     };
-    for name in &near.names {
-        if let Some(timezone) =
-            save_city(conn, ctx, &apis.prayer_times, &current, name, &near.country).await?
-        {
-            let (settings, _) = chat_settings(conn, ctx, &apis.prayer_times).await?;
-            return Ok(format!(
-                "{PIN} Got it: you're near *{name}, {}* ({timezone}). Prayer times, \
-                 reminders and weather now use it.\n\n{}",
-                near.country,
-                format_settings(&settings, reminders, ctx.is_group)
-            ));
-        }
-    }
+    // `names[0]` is the most specific: the town or village itself.
+    let name = &near.names[0];
+    let timezone = apis
+        .prayer_times
+        .timezone_at(at, current.today(ctx.now))
+        .await
+        .unwrap_or(current.timezone);
+    stored::set_location(conn, ctx.chat_id, name, &near.country, at, timezone.name()).await?;
+
+    let (settings, _) = chat_settings(conn, ctx, &apis.prayer_times).await?;
     Ok(format!(
-        "{PROBLEM} I found {}, {} but couldn't get prayer times there. \
-         Try `/settings city …` with the nearest big town.",
-        near.names[0], near.country
+        "{PIN} Got it: you're near *{name}, {}* ({timezone}). Prayer times, \
+         reminders and weather now use your exact location.\n\n{}",
+        near.country,
+        format_settings(&settings, reminders, ctx.is_group)
     ))
 }
 
@@ -350,11 +381,7 @@ async fn weather(
     when: When,
 ) -> Result<String, AppError> {
     let settings = my_settings(conn, ctx, &apis.prayer_times).await?;
-    let Ok(at) = apis
-        .geo
-        .coordinates_of(&settings.city, &settings.country)
-        .await
-    else {
+    let Ok(at) = apis.coordinates(&settings).await else {
         return Ok(format!(
             "{PROBLEM} I couldn't find {}, {} for the weather. Check `/settings`.",
             settings.city, settings.country
@@ -393,13 +420,12 @@ async fn my_settings(
 async fn prayer_day(
     conn: &mut SqliteConnection,
     ctx: &Context,
-    prayer_times: &PrayerTimes,
+    apis: &Apis,
     settings: &Settings,
 ) -> Result<String, AppError> {
     let today = settings.today(ctx.now);
-    let day = prayer_times
-        .for_date(&settings.prayer_location(), today)
-        .await?;
+    let location = apis.prayer_location(settings).await?;
+    let day = apis.prayer_times.for_date(&location, today).await?;
     let prayed = prayers::prayed_on(conn, ctx.sender.id, today).await?;
     Ok(format_prayer_day(&day, settings, &prayed))
 }
@@ -409,9 +435,10 @@ async fn prayer_day(
 async fn settings_command(
     conn: &mut SqliteConnection,
     ctx: &Context,
-    prayer_times: &PrayerTimes,
+    apis: &Apis,
     command: SettingsCommand,
 ) -> Result<String, AppError> {
+    let prayer_times = &apis.prayer_times;
     let (current, _) = chat_settings(conn, ctx, prayer_times).await?;
     let id = ctx.chat_id;
 
@@ -433,8 +460,10 @@ async fn settings_command(
         SettingsCommand::City { city, country } => {
             // No country typed: keep the one already in use.
             let country = country.unwrap_or_else(|| current.country.clone());
-            match save_city(conn, ctx, prayer_times, &current, &city, &country).await? {
-                Some(timezone) => Some(format!("Timezone set to {timezone} to match.")),
+            match save_city(conn, ctx, apis, &current, &city, &country).await? {
+                Some((name, timezone)) => Some(format!(
+                    "Found {name}. Timezone set to {timezone} to match."
+                )),
                 None => {
                     return Ok(format!(
                         "{PROBLEM} I couldn't find {city}, {country}. \
@@ -542,6 +571,8 @@ pub async fn run_list_reply(
     let mut lines = Vec::new();
     // Shopping items ticked off: reported together, mentioning the buyer.
     let mut bought = Vec::new();
+    // Any todo completed: the reply ends with the updated progress bar.
+    let mut completed_any = false;
     for n in numbers {
         let id = match item_at(items, n) {
             Ok(id) => id,
@@ -565,14 +596,74 @@ pub async fn run_list_reply(
         match (name, is_shop, removing) {
             (None, _, _) => lines.push(gone(n)),
             (Some(name), _, true) => lines.push(format!("{REMOVED} Removed *{name}*")),
-            (Some(name), false, false) => lines.push(format!("{DONE} Done: *{name}*")),
+            (Some(name), false, false) => {
+                lines.push(format!("{DONE} Done: *{name}*"));
+                completed_any = true;
+            }
             (Some(name), true, false) => bought.push(name),
         }
     }
     if is_shop && !removing {
         return Ok(bought_reply(ctx, &bought, &lines));
     }
+    if completed_any {
+        let (done, total) = todos::progress(conn, ctx.chat_id).await?;
+        lines.push(progress_bar(done, total));
+    }
     Ok(Outcome::Reply(lines.join("\n")))
+}
+
+/// `+done gym`: completes the open todo whose title matches each name.
+/// Several matches is a question back rather than a guess.
+async fn done_by_name(
+    conn: &mut SqliteConnection,
+    ctx: &Context,
+    names: &[String],
+) -> Result<String, AppError> {
+    let mut lines = Vec::new();
+    let mut completed_any = false;
+    for name in names {
+        let matches = todos::find_open(conn, ctx.chat_id, name).await?;
+        // A slice pattern: exactly one match, bound as `(id, title)`.
+        match matches.as_slice() {
+            [] => lines.push(format!("{PROBLEM} No open todo matches \"{name}\".")),
+            [(id, title)] => {
+                if todos::complete(conn, *id, ctx.chat_id, ctx.sender.id, ctx.now)
+                    .await?
+                    .is_some()
+                {
+                    lines.push(format!("{DONE} Done: *{title}*"));
+                    completed_any = true;
+                }
+            }
+            several => {
+                let titles: Vec<&str> = several.iter().map(|(_, t)| t.as_str()).collect();
+                lines.push(format!(
+                    "{PROBLEM} \"{name}\" matches {}: {}. Say more of the title, or use \
+                     the number from /todo (`+done 2`).",
+                    titles.len(),
+                    titles.join(", ")
+                ));
+            }
+        }
+    }
+    if completed_any {
+        let (done, total) = todos::progress(conn, ctx.chat_id).await?;
+        lines.push(progress_bar(done, total));
+    }
+    Ok(lines.join("\n"))
+}
+
+/// "▓▓▓▓░░░░░░ 4/10 done": ten blocks, filled in proportion (rounded).
+fn progress_bar(done: i64, total: i64) -> String {
+    if total == 0 {
+        return String::new();
+    }
+    const CELLS: i64 = 10;
+    // Integer maths with rounding: add half the divisor before dividing.
+    let filled = ((done * CELLS + total / 2) / total).clamp(0, CELLS);
+    let bar = "▓".repeat(filled as usize) + &"░".repeat((CELLS - filled) as usize);
+    format!("{bar} {done}/{total} done")
 }
 
 /// The row id at list number `n`, or the message to send if there's no
@@ -751,22 +842,55 @@ fn format_methods() -> String {
     text
 }
 
-/// The `/todo` reply. Numbers start at 1 and match `item_ids` order.
-fn format_todo_list(open: &[OpenTodo]) -> String {
-    if open.is_empty() {
-        return format!("{LIST} No open todos. Add one with `+todo fix the tap`.");
+/// The `/todo` reply: a progress bar, then open todos (⬜) and done ones
+/// (✅, struck through, with who did it and when). Numbers start at 1 and
+/// match `item_ids` order.
+fn format_todo_list(items: &[ListedTodo], settings: &Settings, now: DateTime<Utc>) -> String {
+    if items.is_empty() {
+        return format!("{LIST} No todos. Add one with `+todo fix the tap`.");
     }
 
-    let mut text = format!("{LIST} *Todos*\n");
-    // `enumerate` counts from 0, hence `i + 1`.
-    for (i, todo) in open.iter().enumerate() {
-        text.push_str(&format!("{}. {}", i + 1, todo.title));
-        if let Some(name) = &todo.assignee {
-            text.push_str(&format!(" ({name})"));
-        }
+    let total = items.len() as i64;
+    let done = items.iter().filter(|t| t.done.is_some()).count() as i64;
+    let mut text = format!("{LIST} *Todos*\n{}\n\n", progress_bar(done, total));
+
+    for (i, todo) in items.iter().enumerate() {
+        let number = i + 1;
+        let assignee = todo
+            .assignee
+            .as_deref()
+            .map_or(String::new(), |name| format!(" ({name})"));
+        let line = match &todo.done {
+            None => format!("{NOT_YET} {number}. {}{assignee}", todo.title),
+            Some(done) => {
+                // "14:05" if it was today (their today), else "Tue 14:05".
+                let when = if settings.today(done.at) == settings.today(now) {
+                    settings.clock(done.at)
+                } else {
+                    let local = done.at.with_timezone(&settings.timezone);
+                    local.format("%a %H:%M").to_string()
+                };
+                format!(
+                    "{DONE} {number}. ~{}~{assignee} · {} {when}",
+                    todo.title, done.by
+                )
+            }
+        };
+        text.push_str(&line);
         text.push('\n');
     }
-    text.push_str("\nReply to this message with `done 2` or `remove 2`.");
+
+    if done < total {
+        text.push_str(
+            "\nFinish one: reply to this message with `done 2`, or send `+done 2` or \
+             `+done gym` any time.",
+        );
+    } else {
+        text.push_str("\nAll done! 🎉");
+    }
+    if done > 0 {
+        text.push_str(" `/todo clear done` removes the ✅ ones; `/todo clear` empties the list.");
+    }
     text
 }
 
@@ -825,26 +949,57 @@ mod tests {
 
     #[test]
     fn empty_list_says_so() {
-        assert!(format_todo_list(&[]).contains("No open todos"));
+        let now = Utc::now();
+        assert!(format_todo_list(&[], &defaults(), now).contains("No todos"));
     }
 
     #[test]
-    fn list_is_numbered_from_one_with_assignees() {
-        let open = [
-            OpenTodo {
+    fn todo_list_shows_progress_open_and_done_with_times() {
+        let at = |s: &str| s.parse::<DateTime<Utc>>().unwrap();
+        let now = at("2026-10-28T18:00:00Z");
+        let items = [
+            ListedTodo {
                 id: 7,
                 title: "go gym".to_string(),
                 assignee: Some("Bilal".to_string()),
+                done: None,
             },
-            OpenTodo {
+            ListedTodo {
                 id: 3,
                 title: "fix the tap".to_string(),
                 assignee: None,
+                done: Some(todos::Completion {
+                    by: "Khadija".to_string(),
+                    at: at("2026-10-28T14:05:00Z"),
+                }),
+            },
+            ListedTodo {
+                id: 4,
+                title: "bins".to_string(),
+                assignee: None,
+                done: Some(todos::Completion {
+                    by: "Bilal".to_string(),
+                    at: at("2026-10-27T08:30:00Z"),
+                }),
             },
         ];
-        let text = format_todo_list(&open);
-        assert!(text.contains("1. go gym (Bilal)\n"));
-        assert!(text.contains("2. fix the tap\n"));
+        let text = format_todo_list(&items, &defaults(), now);
+        assert!(text.contains("▓▓▓▓▓▓▓░░░ 2/3 done"), "{text}");
+        assert!(text.contains("⬜ 1. go gym (Bilal)\n"), "{text}");
+        assert!(
+            text.contains("✅ 2. ~fix the tap~ · Khadija 14:05\n"),
+            "{text}"
+        );
+        assert!(text.contains("✅ 3. ~bins~ · Bilal Tue 08:30\n"), "{text}");
+        assert!(text.contains("`+done 2`"), "{text}");
+    }
+
+    #[test]
+    fn progress_bar_rounds_and_handles_edges() {
+        assert_eq!(progress_bar(0, 4), "░░░░░░░░░░ 0/4 done");
+        assert_eq!(progress_bar(1, 3), "▓▓▓░░░░░░░ 1/3 done");
+        assert_eq!(progress_bar(4, 4), "▓▓▓▓▓▓▓▓▓▓ 4/4 done");
+        assert_eq!(progress_bar(0, 0), "");
     }
 
     #[test]
@@ -956,6 +1111,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn done_by_name_and_clearing_todos() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let ctx = setup(&mut conn).await;
+        let apis = Apis::new(times());
+        for title in ["go gym", "gym bag wash", "fix the tap"] {
+            run_command(&mut conn, &ctx, &apis, add(title, None))
+                .await
+                .unwrap();
+        }
+        let done = |name: &str| BotCommand::DoneTodo(Got::Names(vec![name.to_string()]));
+
+        // Exact title wins over a partial match.
+        let reply = run_command(&mut conn, &ctx, &apis, done("go gym"))
+            .await
+            .unwrap()
+            .into_text();
+        assert_eq!(reply, "✅ Done: *go gym*\n▓▓▓░░░░░░░ 1/3 done");
+
+        // "tap" is in one open title: done.
+        let reply = run_command(&mut conn, &ctx, &apis, done("tap"))
+            .await
+            .unwrap()
+            .into_text();
+        assert!(reply.starts_with("✅ Done: *fix the tap*"), "{reply}");
+
+        // Nothing left that matches "gym" twice now, but "xyz" matches none.
+        let reply = run_command(&mut conn, &ctx, &apis, done("xyz"))
+            .await
+            .unwrap()
+            .into_text();
+        assert!(reply.contains("No open todo matches"), "{reply}");
+
+        let clear_done = BotCommand::ClearTodos { done_only: true };
+        let reply = run_command(&mut conn, &ctx, &apis, clear_done)
+            .await
+            .unwrap()
+            .into_text();
+        assert_eq!(reply, "🧹 Cleared 2 completed todos.");
+        let clear_all = BotCommand::ClearTodos { done_only: false };
+        let reply = run_command(&mut conn, &ctx, &apis, clear_all)
+            .await
+            .unwrap()
+            .into_text();
+        assert_eq!(reply, "🧹 Cleared the todo list (1 todo).");
+    }
+
+    #[tokio::test]
+    async fn done_by_name_asks_when_several_match() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let ctx = setup(&mut conn).await;
+        let apis = Apis::new(times());
+        for title in ["gym", "gym bag", "gym shoes"] {
+            run_command(&mut conn, &ctx, &apis, add(title, None))
+                .await
+                .unwrap();
+        }
+        // "bag" is only in one; "shoe" only in one; but "gy" is in all three
+        // and none is exactly "gy".
+        let ask = BotCommand::DoneTodo(Got::Names(vec!["gy".to_string()]));
+        let reply = run_command(&mut conn, &ctx, &apis, ask)
+            .await
+            .unwrap()
+            .into_text();
+        assert!(
+            reply.contains("matches 3: gym, gym bag, gym shoes"),
+            "{reply}"
+        );
+    }
+
+    #[tokio::test]
     async fn list_then_done_and_remove_by_number() {
         let pool = test_pool().await;
         let mut conn = pool.acquire().await.unwrap();
@@ -983,7 +1210,10 @@ mod tests {
             .await
             .unwrap()
             .into_text();
-        assert_eq!(reply, "✅ Done: *go gym*\n✅ Done: *book dentist*");
+        assert_eq!(
+            reply,
+            "✅ Done: *go gym*\n✅ Done: *book dentist*\n▓▓▓▓▓▓▓░░░ 2/3 done"
+        );
 
         // The numbers still refer to the old list: 2 is "fix the tap".
         let reply = run_list_reply(&mut conn, &ctx, &items, ReplyCommand::Remove(2))

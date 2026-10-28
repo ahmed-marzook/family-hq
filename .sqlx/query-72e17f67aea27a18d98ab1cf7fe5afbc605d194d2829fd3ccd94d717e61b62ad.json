@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT c.id, c.wa_chat_id, c.dm_user_id, s.timezone, s.city, s.country,\n                s.prayer_method, s.prayer_school, s.prayer_ending_minutes\n         FROM chat_settings s\n         JOIN chats c ON c.id = s.chat_id\n         WHERE s.prayer_reminders = 1\n         ORDER BY c.id",
+  "query": "SELECT c.id, c.wa_chat_id, c.dm_user_id, s.timezone, s.city, s.country,\n                s.latitude, s.longitude, s.prayer_method, s.prayer_school, s.prayer_ending_minutes\n         FROM chat_settings s\n         JOIN chats c ON c.id = s.chat_id\n         WHERE s.prayer_reminders = 1\n         ORDER BY c.id",
   "describe": {
     "columns": [
       {
@@ -70,8 +70,30 @@
         }
       },
       {
-        "name": "prayer_method",
+        "name": "latitude",
         "ordinal": 6,
+        "type_info": "Float",
+        "origin": {
+          "Table": {
+            "table": "chat_settings",
+            "name": "latitude"
+          }
+        }
+      },
+      {
+        "name": "longitude",
+        "ordinal": 7,
+        "type_info": "Float",
+        "origin": {
+          "Table": {
+            "table": "chat_settings",
+            "name": "longitude"
+          }
+        }
+      },
+      {
+        "name": "prayer_method",
+        "ordinal": 8,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -82,7 +104,7 @@
       },
       {
         "name": "prayer_school",
-        "ordinal": 7,
+        "ordinal": 9,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -93,7 +115,7 @@
       },
       {
         "name": "prayer_ending_minutes",
-        "ordinal": 8,
+        "ordinal": 10,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -115,8 +137,10 @@
       true,
       true,
       true,
+      true,
+      true,
       true
     ]
   },
-  "hash": "ea72fd43bbccc14024bf7cfb11045fee49c6ff97fd42aac89b60c01efae66877"
+  "hash": "72e17f67aea27a18d98ab1cf7fe5afbc605d194d2829fd3ccd94d717e61b62ad"
 }

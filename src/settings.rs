@@ -7,6 +7,7 @@
 use chrono::{DateTime, NaiveDate, Utc};
 use chrono_tz::Tz;
 
+use crate::geo::Coordinates;
 use crate::prayer::Location;
 
 /// One chat's complete settings, after filling in defaults.
@@ -17,6 +18,10 @@ pub struct Settings {
     pub city: String,
     /// Country name or 2-letter code, e.g. "GB".
     pub country: String,
+    /// Where `city` is. `None` when only the name is known (the `.env`
+    /// default, or a city set before coordinates were stored): it's then
+    /// looked up from the name when needed (`Apis::prayer_location`).
+    pub coordinates: Option<Coordinates>,
     /// AlAdhan calculation method, e.g. 3 = Muslim World League.
     pub prayer_method: u8,
     /// Asr: `prayer::SHAFII` or `prayer::HANAFI`.
@@ -40,15 +45,32 @@ impl Settings {
             .to_string()
     }
 
-    /// What AlAdhan needs to calculate this chat's prayer times.
-    pub fn prayer_location(&self) -> Location {
-        Location {
-            city: self.city.clone(),
-            country: self.country.clone(),
-            method: self.prayer_method,
-            school: self.prayer_school,
-            timezone: self.timezone,
-        }
+    /// What AlAdhan needs to calculate this chat's prayer times, at `at`
+    /// (usually `self.coordinates`; see `Apis::prayer_location`).
+    pub fn prayer_location(&self, at: Coordinates) -> Location {
+        Location::new(
+            &self.city,
+            &self.country,
+            at,
+            self.prayer_method,
+            self.prayer_school,
+            self.timezone,
+        )
+    }
+
+    /// "Same place, same reminders": town, country, method, school,
+    /// timezone and reminder timing. Members of a group with equal keys
+    /// share one reminder, even if their exact coordinates differ a little.
+    pub fn place_key(&self) -> String {
+        format!(
+            "{}|{}|{}|{}|{}|{}",
+            self.city,
+            self.country,
+            self.prayer_method,
+            self.prayer_school,
+            self.timezone,
+            self.prayer_ending_minutes
+        )
     }
 }
 
@@ -60,6 +82,8 @@ pub struct Overrides {
     pub timezone: Option<String>,
     pub city: Option<String>,
     pub country: Option<String>,
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
     pub prayer_method: Option<i64>,
     pub prayer_school: Option<i64>,
     pub prayer_ending_minutes: Option<i64>,
@@ -69,11 +93,26 @@ impl Overrides {
     /// The settings this chat actually uses: its own where it has them,
     /// `defaults` everywhere else.
     pub fn apply(&self, defaults: &Settings) -> Settings {
-        // City and country only ever change together (a CHECK in the
-        // schema), so take both from the same place.
-        let (city, country) = match (&self.city, &self.country) {
-            (Some(city), Some(country)) => (city.clone(), country.clone()),
-            _ => (defaults.city.clone(), defaults.country.clone()),
+        // City, country and coordinates belong together, so all three come
+        // from the same place. A chat with its own city but no coordinates
+        // (set before they were stored) must not borrow the default's
+        // coordinates: that would be the wrong town's prayer times.
+        let (city, country, coordinates) = match (&self.city, &self.country) {
+            (Some(city), Some(country)) => {
+                let at = match (self.latitude, self.longitude) {
+                    (Some(latitude), Some(longitude)) => Some(Coordinates {
+                        latitude,
+                        longitude,
+                    }),
+                    _ => None,
+                };
+                (city.clone(), country.clone(), at)
+            }
+            _ => (
+                defaults.city.clone(),
+                defaults.country.clone(),
+                defaults.coordinates,
+            ),
         };
         Settings {
             // `.parse::<Tz>()` reads an IANA name like "Europe/London". The
@@ -86,6 +125,7 @@ impl Overrides {
                 .unwrap_or(defaults.timezone),
             city,
             country,
+            coordinates,
             // `u8::try_from` fails for values outside 0..=255; the schema's
             // CHECKs make that impossible, but a default beats a panic.
             prayer_method: self
@@ -114,6 +154,10 @@ pub(crate) mod tests {
             timezone: chrono_tz::Europe::London,
             city: "Milton Keynes".to_string(),
             country: "GB".to_string(),
+            coordinates: Some(Coordinates {
+                latitude: 52.0417,
+                longitude: -0.7558,
+            }),
             prayer_method: 3,
             prayer_school: SHAFII,
             prayer_ending_minutes: 20,
@@ -123,6 +167,27 @@ pub(crate) mod tests {
     #[test]
     fn no_overrides_means_the_defaults() {
         assert_eq!(Overrides::default().apply(&defaults()), defaults());
+    }
+
+    #[test]
+    fn own_city_brings_its_own_coordinates_never_the_defaults() {
+        let crawley = Overrides {
+            city: Some("Crawley".to_string()),
+            country: Some("GB".to_string()),
+            latitude: Some(51.1195),
+            longitude: Some(-0.1855),
+            ..Overrides::default()
+        };
+        let at = crawley.apply(&defaults()).coordinates.unwrap();
+        assert_eq!((at.latitude, at.longitude), (51.1195, -0.1855));
+
+        // Set before coordinates existed: look it up, don't borrow MK's.
+        let older = Overrides {
+            city: Some("Leicester".to_string()),
+            country: Some("GB".to_string()),
+            ..Overrides::default()
+        };
+        assert_eq!(older.apply(&defaults()).coordinates, None);
     }
 
     #[test]

@@ -34,6 +34,11 @@ pub enum BotCommand {
     },
     /// `/todo`
     ListTodos,
+    /// `+done 2`, `+done 1 3` (numbers from the latest `/todo` list) or
+    /// `+done gym` (by title): complete todos without replying
+    DoneTodo(Got),
+    /// `/todo clear` (everything) or `/todo clear done` (only completed)
+    ClearTodos { done_only: bool },
     /// `/prayers`: today's times, and which you've prayed
     Prayers,
     /// `/prayers on` (true) / `/prayers off` (false): reminders in this chat
@@ -118,6 +123,7 @@ pub fn parse(text: &str) -> Option<BotCommand> {
     match expand_shorthand(&first) {
         "+shop" | "+buy" => parse_shop_items(rest).map(BotCommand::AddShop),
         "+got" | "+bought" => parse_got(rest).map(BotCommand::GotShop),
+        "+done" => parse_got(rest).map(BotCommand::DoneTodo),
         "+todo" => parse_add_todo(rest),
         "+prayed" => parse_prayed(rest).map(BotCommand::Prayed),
 
@@ -129,7 +135,12 @@ pub fn parse(text: &str) -> Option<BotCommand> {
             "clear bought" => Some(BotCommand::ClearShop { bought_only: true }),
             _ => None,
         },
-        "/todo" if rest.is_empty() => Some(BotCommand::ListTodos),
+        "/todo" => match rest.to_lowercase().as_str() {
+            "" => Some(BotCommand::ListTodos),
+            "clear" => Some(BotCommand::ClearTodos { done_only: false }),
+            "clear done" => Some(BotCommand::ClearTodos { done_only: true }),
+            _ => None,
+        },
         "/prayers" | "/prayer" => match rest.to_lowercase().as_str() {
             "" => Some(BotCommand::Prayers),
             "on" => Some(BotCommand::PrayerReminders(true)),
@@ -163,6 +174,7 @@ fn expand_shorthand(word: &str) -> &str {
     match word {
         "+s" => "+shop",
         "+g" => "+got",
+        "+d" => "+done",
         "+t" => "+todo",
         "+p" => "+prayed",
         "/s" => "/shop",
@@ -754,6 +766,33 @@ mod tests {
         );
         assert_eq!(parse("+p 0"), None);
         assert_eq!(parse("+p 6"), None);
+    }
+
+    #[test]
+    fn done_and_clear_todos() {
+        let names = |n: &[&str]| n.iter().map(|s| s.to_string()).collect();
+        assert_eq!(
+            parse("+done 2"),
+            Some(BotCommand::DoneTodo(Got::Numbers(vec![2])))
+        );
+        assert_eq!(
+            parse("+d 3 1"),
+            Some(BotCommand::DoneTodo(Got::Numbers(vec![1, 3])))
+        );
+        assert_eq!(
+            parse("+done go gym"),
+            Some(BotCommand::DoneTodo(Got::Names(names(&["go gym"]))))
+        );
+        assert_eq!(parse("+done"), None);
+        assert_eq!(
+            parse("/todo clear"),
+            Some(BotCommand::ClearTodos { done_only: false })
+        );
+        assert_eq!(
+            parse("/t clear done"),
+            Some(BotCommand::ClearTodos { done_only: true })
+        );
+        assert_eq!(parse("/todo clear everything"), None);
     }
 
     #[test]

@@ -22,12 +22,12 @@ const OVERVIEW: &str = "🤖 *Family HQ help*
 I keep shared lists for each group I'm in, and private ones when you message me directly. Commands start with + (add) or / (show or change).
 
 🛒 *Shopping*: `+shop milk, eggs` · `/shop` · `+got milk`
-📝 *Todos*: `+todo fix the tap` · `/todo` · reply `done 2`
+📝 *Todos*: `+todo fix the tap` · `/todo` · `+done 2` or `+done gym`
 🕌 *Prayers*: `/prayers` · `/prayers on` · `+prayed asr`
 ⚙️ *Settings*: `/settings` · `/settings city Leicester, GB` · or share your location with me
 🌤️ *Weather*: `/weather` · `/weather tomorrow` · `/weather week`
 
-Short forms: `+s` shop · `+g` got · `+t` todo · `+p` prayed · `/s` · `/t` · `/p` · `/w` · `/h`
+Short forms: `+s` shop · `+g` got · `+t` todo · `+d` done · `+p` prayed · `/s` · `/t` · `/p` · `/w` · `/h`
 
 For the full page on a topic, with examples:
 `/help shop` · `/help todo` · `/help prayers` · `/help settings` · `/help weather`
@@ -63,11 +63,18 @@ Each group has its own todos; in a DM with me they're your private ones.
 `+todo @Khadija book dentist`: assigned to someone in this group. Names are what I show in `/settings everyone`; people appear once they've sent a message here.
 
 *See them*
-`/todo`: numbered list of open todos, with who each is for.
+`/todo`: a progress bar, then the list: ⬜ still to do (with who it's for), ✅ done (with who did it and when).
 
-*Finish or delete* (reply to a `/todo` list)
-`done 2`: marks todo 2 as done. `1 3` marks several.
-`remove 2`: deletes todo 2.
+*Finish one*
+• Reply to a `/todo` list: `done 2`, or `1 3` for several.
+• Or any time, without replying: `+done 2` (`+d 2`) using the numbers from the latest `/todo`, or `+done gym` using part of the title.
+The reply shows the updated progress bar.
+
+*Delete*
+Reply `remove 2` to a `/todo` list.
+`/todo clear done`: removes the ✅ completed todos.
+`/todo clear`: empties the whole list.
+
 The numbers always mean the list you replied to, even if it's old.";
 
 const PRAYERS: &str = "🕌 *Help: prayers*

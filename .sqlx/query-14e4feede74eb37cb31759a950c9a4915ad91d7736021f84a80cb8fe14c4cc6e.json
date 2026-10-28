@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT prayer_reminders AS \"prayer_reminders: bool\", timezone, city, country,\n                  prayer_method, prayer_school, prayer_ending_minutes\n           FROM chat_settings WHERE chat_id = ?",
+  "query": "SELECT prayer_reminders AS \"prayer_reminders: bool\", timezone, city, country,\n                  latitude, longitude, prayer_method, prayer_school, prayer_ending_minutes\n           FROM chat_settings WHERE chat_id = ?",
   "describe": {
     "columns": [
       {
@@ -48,8 +48,30 @@
         }
       },
       {
-        "name": "prayer_method",
+        "name": "latitude",
         "ordinal": 4,
+        "type_info": "Float",
+        "origin": {
+          "Table": {
+            "table": "chat_settings",
+            "name": "latitude"
+          }
+        }
+      },
+      {
+        "name": "longitude",
+        "ordinal": 5,
+        "type_info": "Float",
+        "origin": {
+          "Table": {
+            "table": "chat_settings",
+            "name": "longitude"
+          }
+        }
+      },
+      {
+        "name": "prayer_method",
+        "ordinal": 6,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -60,7 +82,7 @@
       },
       {
         "name": "prayer_school",
-        "ordinal": 5,
+        "ordinal": 7,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -71,7 +93,7 @@
       },
       {
         "name": "prayer_ending_minutes",
-        "ordinal": 6,
+        "ordinal": 8,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -91,8 +113,10 @@
       true,
       true,
       true,
+      true,
+      true,
       true
     ]
   },
-  "hash": "69e084f3eb9431feaeb552804cbf5ac42096b399a1a0704575d3fecf36cb42e0"
+  "hash": "14e4feede74eb37cb31759a950c9a4915ad91d7736021f84a80cb8fe14c4cc6e"
 }
