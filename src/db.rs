@@ -249,6 +249,7 @@ mod tests {
                 "prayer_reminders",
                 "processed_messages",
                 "shopping_items",
+                "todo_reminders",
                 "todos",
                 "users",
                 "wa_message_context",

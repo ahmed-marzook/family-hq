@@ -1,0 +1,21 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT EXISTS(SELECT 1 FROM todo_reminders WHERE chat_id = ? AND user_id = ?)\n           AS \"on: bool\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "on: bool",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "c005310a5eea4c57e9abff6f3a38abee291774eeb89157218de7d7e9064d8dee"
+}

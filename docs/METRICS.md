@@ -17,7 +17,7 @@ is what anyone wrote: a row says `todo.add`, not the todo's title.
 | `duration_ms` | `180` | Time to work out the answer, before sending it |
 
 Command names: `shop.add`, `shop.list`, `shop.got`, `shop.clear`,
-`todo.add`, `todo.list`, `todo.done`, `todo.clear`, `prayers.list`,
+`todo.add`, `todo.list`, `todo.done`, `todo.clear`, `todo.reminders`, `prayers.list`,
 `prayers.reminders`, `prayers.prayed`, `prayers.react`, `settings`,
 `settings.location`, `weather`, `moon`, `help`, and list replies like
 `todo.reply_done` or `shop.reply_tick`.

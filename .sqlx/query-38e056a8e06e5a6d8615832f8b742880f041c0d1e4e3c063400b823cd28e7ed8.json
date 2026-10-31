@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM todo_reminders WHERE chat_id = ? AND user_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "38e056a8e06e5a6d8615832f8b742880f041c0d1e4e3c063400b823cd28e7ed8"
+}

@@ -19,6 +19,7 @@ use crate::prayer::{self, ReminderKind};
 use crate::repo::prayers::{self, NewReminder, ReminderChat};
 use crate::repo::settings::{self as stored, MemberSettings};
 use crate::settings::Settings;
+use crate::todo_reminders;
 
 /// How often to check. Reminders go out at most this late.
 const CHECK_EVERY: StdDuration = StdDuration::from_secs(60);
@@ -50,6 +51,9 @@ pub async fn run(state: Arc<AppState>) {
         // The clock is read here, at the edge, and passed down.
         if let Err(err) = check(&state, Utc::now()).await {
             println!("reminders: check failed: {err}");
+        }
+        if let Err(err) = todo_reminders::check(&state, Utc::now()).await {
+            println!("todo reminders: check failed: {err}");
         }
     }
 }

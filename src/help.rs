@@ -71,6 +71,9 @@ Each group has its own todos; in a DM with me they're your private ones.
 `/todo Khadija` (or `/todo @Khadija`): just one person's, with their own progress. `/todo mine` for yours.
 Every view uses the same numbers, so `+done 5` is the same todo whichever you looked at.
 
+*Reminders*
+`/todo reminders on`: if you have open todos here, I'll remind you at 08:00, 13:00, 18:00 and 22:00 on your own clock. Off unless you turn it on, and each person chooses for themselves. `/todo reminders off` stops them.
+
 *Finish one*
 • Reply to a `/todo` list: `done 2`, or `1 3` for several.
 • Or any time, without replying: `+done 2` (`+d 2`) using the numbers from the latest `/todo`, or `+done gym` using part of the title.

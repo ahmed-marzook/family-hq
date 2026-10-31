@@ -38,6 +38,7 @@ Short forms: `+s` = `+shop`, `+g` = `+got`, `+t` = `+todo`, `+d` = `+done`, `+p`
 | `/todo` | Progress bar, then each person's open (⬜) and done (✅, when) todos under their name; reply `done 2` to complete one |
 | `/todo all` / `/todo Khadija` / `/todo mine` | All todos as one list in order / one person's / your own (same numbers in every view) |
 | `+done 2` or `+done gym` | Complete todos without replying (numbers from the latest `/todo`, or part of the title) |
+| `/todo reminders on` / `off` | Your own reminders of your open todos at 08:00, 13:00, 18:00 and 22:00 (off by default) |
 | `/todo clear` / `/todo clear done` | Empty the list / remove only completed todos |
 | `/prayers` | Today's prayer times, Islamic (Hijri) date and moon phase, ✅ for the ones you've prayed |
 | `/prayers on` / `off` | Reminders when each prayer starts and before it ends; react to one once you've prayed |

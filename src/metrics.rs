@@ -127,6 +127,14 @@ pub fn command(command: &BotCommand) -> Event {
         BotCommand::ClearTodos { done_only } => {
             event("todo.clear", Some(if *done_only { "done" } else { "all" }))
         }
+        BotCommand::TodoReminders(on) => event(
+            "todo.reminders",
+            Some(match on {
+                Some(true) => "on",
+                Some(false) => "off",
+                None => "status",
+            }),
+        ),
         BotCommand::Prayers => event("prayers.list", None),
         BotCommand::PrayerReminders(on) => {
             event("prayers.reminders", Some(if *on { "on" } else { "off" }))

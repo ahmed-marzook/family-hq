@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO todo_reminders (chat_id, user_id, last_slot_at)\n         VALUES (?, ?, ?)\n         ON CONFLICT (chat_id, user_id) DO UPDATE SET last_slot_at = excluded.last_slot_at",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "c8767beef8390d9186b9a76fa036a8862d6ec4c2b8bf701ed3ff84c7062aecd7"
+}

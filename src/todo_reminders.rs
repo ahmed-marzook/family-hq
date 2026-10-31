@@ -1,0 +1,256 @@
+//! Todo reminders: if someone has asked for them (`/todo reminders on`) and
+//! has open todos, a message four times a day on their own clock.
+//!
+//! `due_slot` and `format` are pure; `check` does the database and sending,
+//! called by the reminder loop in `reminders.rs` every minute.
+
+use chrono::{DateTime, Duration, NaiveTime, TimeZone, Utc};
+use chrono_tz::Tz;
+
+use crate::AppState;
+use crate::error::AppError;
+use crate::handlers::TODO_ITEM;
+use crate::repo::messages;
+use crate::repo::settings as stored;
+use crate::repo::todo_reminders::{self, Subscriber};
+use crate::repo::todos::{self, ListedTodo};
+use crate::settings::Settings;
+
+const REMINDER: &str = "⏰";
+const NOT_YET: &str = "⬜";
+
+/// The local hour and name of each reminder. Roughly six hours apart, kept
+/// to waking hours.
+const SLOTS: [(u32, &str); 4] = [
+    (8, "Morning"),
+    (13, "Afternoon"),
+    (18, "After work"),
+    (22, "Before bed"),
+];
+
+/// How long after its time a reminder can still go out. If the bot was down
+/// for longer, it's skipped: a "Morning" reminder at noon helps nobody.
+const LATE_BY_AT_MOST: i64 = 30;
+
+/// The reminder due at `now` in `timezone`, if any: its name and the moment
+/// it was for. A local time the clocks skip that day gives none.
+pub fn due_slot(now: DateTime<Utc>, timezone: Tz) -> Option<(&'static str, DateTime<Utc>)> {
+    let today = now.with_timezone(&timezone).date_naive();
+    SLOTS.iter().find_map(|&(hour, name)| {
+        let local = today.and_time(NaiveTime::from_hms_opt(hour, 0, 0)?);
+        let at = timezone
+            .from_local_datetime(&local)
+            .earliest()?
+            .with_timezone(&Utc);
+        let in_window = at <= now && now < at + Duration::minutes(LATE_BY_AT_MOST);
+        in_window.then_some((name, at))
+    })
+}
+
+/// This person's open todos with their numbers in the whole list, so the
+/// numbers match `/todo`. In a DM, unassigned ones count too: it's their
+/// private list.
+pub fn open_for<'a>(
+    items: &'a [ListedTodo],
+    name: &str,
+    is_dm: bool,
+) -> Vec<(usize, &'a ListedTodo)> {
+    (1..)
+        .zip(items)
+        .filter(|(_, todo)| todo.done.is_none())
+        .filter(|(_, todo)| match todo.assignee.as_deref() {
+            Some(assignee) => assignee.eq_ignore_ascii_case(name),
+            None => is_dm,
+        })
+        .collect()
+}
+
+/// The reminder's text. `mention` is a phone number to @mention in a group.
+pub fn format(slot: &str, todos: &[(usize, &ListedTodo)], mention: Option<&str>) -> String {
+    let who = mention.map_or(String::new(), |phone| format!("@{phone} "));
+    let count = match todos.len() {
+        1 => "1 todo".to_string(),
+        n => format!("{n} todos"),
+    };
+    let mut text = format!("{who}{REMINDER} *{slot}*: you have {count}\n");
+    for (number, todo) in todos {
+        text.push_str(&format!("{NOT_YET} {number}. {}\n", todo.title));
+    }
+    let first = todos.first().map_or(1, |(number, _)| *number);
+    text.push_str(&format!(
+        "\nReply `done {first}`, or send `+done {first}` any time. \
+         `/todo reminders off` stops these."
+    ));
+    text
+}
+
+/// Sends every todo reminder due at `now`. One person's problem is logged
+/// and doesn't stop the others'.
+pub async fn check(state: &AppState, now: DateTime<Utc>) -> Result<(), AppError> {
+    let subscribers = {
+        let mut conn = state.db.acquire().await?;
+        todo_reminders::subscribers(&mut conn).await?
+    };
+    for subscriber in &subscribers {
+        if let Err(err) = check_subscriber(state, subscriber, now).await {
+            println!("todo reminders: {} failed: {err}", subscriber.display_name);
+        }
+    }
+    Ok(())
+}
+
+/// Their settings as `/todo` sees them: the chat's, with their personal
+/// ones on top in a group. That decides whose clock the reminders follow.
+async fn settings_for(
+    state: &AppState,
+    conn: &mut sqlx::SqliteConnection,
+    subscriber: &Subscriber,
+) -> Result<Settings, AppError> {
+    let chat = stored::get(conn, subscriber.chat_id).await?;
+    let here = chat.overrides.apply(&state.apis.prayer_times.defaults);
+    if subscriber.dm_user_id.is_some() {
+        return Ok(here);
+    }
+    Ok(match stored::personal(conn, subscriber.user_id).await? {
+        Some(own) => own.overrides.apply(&here),
+        None => here,
+    })
+}
+
+async fn check_subscriber(
+    state: &AppState,
+    subscriber: &Subscriber,
+    now: DateTime<Utc>,
+) -> Result<(), AppError> {
+    let mut conn = state.db.acquire().await?;
+    let settings = settings_for(state, &mut conn, subscriber).await?;
+    let Some((slot, slot_at)) = due_slot(now, settings.timezone) else {
+        return Ok(());
+    };
+    // Claimed before sending, like prayer reminders: a failed send is
+    // logged, never sent twice.
+    let (chat_id, user_id) = (subscriber.chat_id, subscriber.user_id);
+    if !todo_reminders::claim(&mut conn, chat_id, user_id, slot_at).await? {
+        return Ok(());
+    }
+
+    let items = todos::list_all(&mut conn, chat_id).await?;
+    let is_dm = subscriber.dm_user_id.is_some();
+    let open = open_for(&items, &subscriber.display_name, is_dm);
+    // Nothing to do: no message at all.
+    if open.is_empty() {
+        return Ok(());
+    }
+
+    let phone = subscriber
+        .wa_jid
+        .split_once('@')
+        .map_or(subscriber.wa_jid.as_str(), |(number, _)| number);
+    let mention = (!is_dm).then_some(phone);
+    let text = format(slot, &open, mention);
+    let mentions: Vec<String> = mention.map(str::to_string).into_iter().collect();
+    let sent = state
+        .gowa
+        .send_text(&subscriber.wa_chat_id, &text, None, &mentions)
+        .await;
+    match sent {
+        // Saved like a `/todo` list, so `done 3` as a reply and `+done 3`
+        // both work. Every todo is saved, to keep `/todo`'s numbers.
+        Ok(message_id) => {
+            let ids: Vec<i64> = items.iter().map(|t| t.id).collect();
+            messages::save_list(&mut conn, &message_id, chat_id, TODO_ITEM, &ids, now).await?;
+        }
+        Err(err) => println!(
+            "todo reminders: couldn't send to {}: {err}",
+            subscriber.display_name
+        ),
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::repo::todos::Completion;
+
+    fn utc(s: &str) -> DateTime<Utc> {
+        s.parse().unwrap()
+    }
+
+    const LONDON: Tz = chrono_tz::Europe::London;
+
+    #[test]
+    fn slots_are_due_for_half_an_hour_on_the_persons_clock() {
+        // GMT, so London time is UTC.
+        let name = |s| due_slot(utc(s), LONDON).map(|(name, _)| name);
+        assert_eq!(name("2026-11-02T08:00:00Z"), Some("Morning"));
+        assert_eq!(name("2026-11-02T08:29:00Z"), Some("Morning"));
+        assert_eq!(name("2026-11-02T08:30:00Z"), None, "too late");
+        assert_eq!(name("2026-11-02T07:59:00Z"), None, "too early");
+        assert_eq!(name("2026-11-02T13:00:00Z"), Some("Afternoon"));
+        assert_eq!(name("2026-11-02T18:10:00Z"), Some("After work"));
+        assert_eq!(name("2026-11-02T22:10:00Z"), Some("Before bed"));
+        assert_eq!(
+            name("2026-11-02T03:00:00Z"),
+            None,
+            "the middle of the night"
+        );
+    }
+
+    #[test]
+    fn another_timezone_has_its_own_times() {
+        // 08:00 in Colombo (UTC+5:30) is 02:30 UTC.
+        let colombo = chrono_tz::Asia::Colombo;
+        let (name, at) = due_slot(utc("2026-11-02T02:35:00Z"), colombo).unwrap();
+        assert_eq!((name, at), ("Morning", utc("2026-11-02T02:30:00Z")));
+        assert_eq!(due_slot(utc("2026-11-02T02:35:00Z"), LONDON), None);
+    }
+
+    fn todo(title: &str, assignee: Option<&str>, done: bool) -> ListedTodo {
+        ListedTodo {
+            id: 1,
+            title: title.to_string(),
+            assignee: assignee.map(str::to_string),
+            done: done.then(|| Completion {
+                by: "Bilal".to_string(),
+                at: utc("2026-11-02T08:00:00Z"),
+            }),
+        }
+    }
+
+    fn sample() -> Vec<ListedTodo> {
+        vec![
+            todo("hoover", Some("Bilal"), false),
+            todo("call the school", Some("Khadija"), false),
+            todo("old one", None, false),
+            todo("bins", Some("bilal"), false),
+            todo("gym", Some("Bilal"), true),
+        ]
+    }
+
+    #[test]
+    fn only_their_own_open_todos_keeping_the_numbers() {
+        let items = sample();
+        let numbers = |open: Vec<(usize, &ListedTodo)>| -> Vec<usize> {
+            open.into_iter().map(|(number, _)| number).collect()
+        };
+        assert_eq!(numbers(open_for(&items, "Bilal", false)), [1, 4]);
+        assert_eq!(numbers(open_for(&items, "Khadija", false)), [2]);
+        assert_eq!(numbers(open_for(&items, "Yusuf", false)), [0_usize; 0]);
+        assert_eq!(numbers(open_for(&items, "Bilal", true)), [1, 3, 4], "a DM");
+    }
+
+    #[test]
+    fn the_message_lists_them_and_how_to_stop() {
+        let items = sample();
+        let open = open_for(&items, "Bilal", false);
+        assert_eq!(
+            format("After work", &open, Some("447700900001")),
+            "@447700900001 ⏰ *After work*: you have 2 todos\n\
+             ⬜ 1. hoover\n⬜ 4. bins\n\n\
+             Reply `done 1`, or send `+done 1` any time. `/todo reminders off` stops these."
+        );
+        let one = open_for(&items, "Khadija", false);
+        assert!(format("Morning", &one, None).starts_with("⏰ *Morning*: you have 1 todo\n"));
+    }
+}

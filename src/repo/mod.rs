@@ -16,5 +16,6 @@ pub mod metrics;
 pub mod prayers;
 pub mod settings;
 pub mod shop;
+pub mod todo_reminders;
 pub mod todos;
 pub mod users;

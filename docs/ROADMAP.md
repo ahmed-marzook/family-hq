@@ -225,6 +225,8 @@ All of these are released and tested:
 - **Short forms**: `+s +g +t +p`, `/s /t /p /w /m /h`.
 - **Todo views**: `/todo` grouped by person, `/todo all`, `/todo <name>`,
   `/todo mine`, all with the same numbers.
+- **Todo reminders**: `/todo reminders on`, per person per chat, four
+  times a day on their own clock, only when they have open todos.
 - **`/moon`** and the Islamic date and moon phase in `/prayers`.
 - **Usage metrics**: every command, list reply, reminder reaction and
   unrecognised `+`/`/` word goes in `command_log` (names only, never

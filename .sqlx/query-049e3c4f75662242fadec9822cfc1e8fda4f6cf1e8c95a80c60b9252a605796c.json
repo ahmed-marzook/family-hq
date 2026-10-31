@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE todo_reminders SET last_slot_at = ?\n         WHERE chat_id = ? AND user_id = ? AND datetime(last_slot_at) < datetime(?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "049e3c4f75662242fadec9822cfc1e8fda4f6cf1e8c95a80c60b9252a605796c"
+}

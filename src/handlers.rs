@@ -19,6 +19,7 @@ use crate::repo::messages::{self, ListItem};
 use crate::repo::prayers;
 use crate::repo::settings::{self as stored, MemberSettings};
 use crate::repo::shop::{self, ShopItem};
+use crate::repo::todo_reminders;
 use crate::repo::todos::{self, ListedTodo};
 use crate::repo::users::{self, User};
 use crate::settings::Settings;
@@ -151,6 +152,16 @@ pub async fn run_command(
                 1 => format!("{CLEARED} Cleared 1 completed todo."),
                 n => format!("{CLEARED} Cleared {n} completed todos."),
             }
+        }
+        BotCommand::TodoReminders(on) => {
+            let (chat_id, user_id) = (ctx.chat_id, ctx.sender.id);
+            match on {
+                Some(true) => todo_reminders::enable(conn, chat_id, user_id, ctx.now).await?,
+                Some(false) => todo_reminders::disable(conn, chat_id, user_id).await?,
+                None => {}
+            }
+            let is_on = todo_reminders::is_on(conn, chat_id, user_id).await?;
+            format_todo_reminders(is_on, ctx.is_group)
         }
         BotCommand::AddShop(names) => add_shop(conn, ctx, &names).await?,
         BotCommand::ListShop => {
@@ -927,6 +938,21 @@ fn format_methods() -> String {
     text
 }
 
+/// The reply to `/todo reminders`.
+fn format_todo_reminders(on: bool, is_group: bool) -> String {
+    let place = if is_group { "in this group" } else { "here" };
+    if on {
+        format!(
+            "{BELL} Todo reminders are on for you {place}: 08:00, 13:00, 18:00 and 22:00 on your \
+             own clock, only when you have todos. `/todo reminders off` stops them."
+        )
+    } else {
+        format!(
+            "{BELL_OFF} Todo reminders are off for you {place}. `/todo reminders on` starts them."
+        )
+    }
+}
+
 /// How `/todo` lays the list out (see `TodoView`).
 #[derive(Debug, Clone, PartialEq)]
 enum Layout {
@@ -1268,6 +1294,32 @@ mod tests {
             .into_text();
         let expected = format!("{} has no todos", ctx.sender.display_name);
         assert!(reply.contains(&expected), "{reply}");
+    }
+
+    #[tokio::test]
+    async fn todo_reminders_are_each_persons_own_choice() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let ctx = setup(&mut conn).await;
+        let apis = Apis::new(times());
+        let mut run = async |on| {
+            run_command(&mut conn, &ctx, &apis, BotCommand::TodoReminders(on))
+                .await
+                .unwrap()
+                .into_text()
+        };
+
+        assert!(
+            run(None).await.contains("are off for you"),
+            "off by default"
+        );
+        assert!(
+            run(Some(true))
+                .await
+                .contains("are on for you in this group")
+        );
+        assert!(run(None).await.contains("are on for you"));
+        assert!(run(Some(false)).await.contains("are off for you"));
     }
 
     #[test]

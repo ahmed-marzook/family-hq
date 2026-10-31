@@ -40,6 +40,9 @@ pub enum BotCommand {
     DoneTodo(Got),
     /// `/todo clear` (everything) or `/todo clear done` (only completed)
     ClearTodos { done_only: bool },
+    /// `/todo reminders on` (true), `off` (false), or just `/todo reminders`
+    /// (`None`, to see which it is): the sender's own, in this chat
+    TodoReminders(Option<bool>),
     /// `/prayers`: today's times, and which you've prayed
     Prayers,
     /// `/prayers on` (true) / `/prayers off` (false): reminders in this chat
@@ -158,6 +161,9 @@ pub fn parse(text: &str) -> Option<BotCommand> {
             "mine" | "me" => Some(BotCommand::ListTodos(TodoView::Mine)),
             "clear" => Some(BotCommand::ClearTodos { done_only: false }),
             "clear done" => Some(BotCommand::ClearTodos { done_only: true }),
+            "reminders" | "reminder" => Some(BotCommand::TodoReminders(None)),
+            "reminders on" | "reminder on" => Some(BotCommand::TodoReminders(Some(true))),
+            "reminders off" | "reminder off" => Some(BotCommand::TodoReminders(Some(false))),
             // Anything else is a name. Display names are one word (see
             // `users::base_display_name`), so `/todo fix the tap` isn't one.
             _ => {
@@ -735,6 +741,22 @@ mod tests {
         );
         assert_eq!(settings("/settings ending soon"), None);
         assert_eq!(settings("/settings colour blue"), None);
+    }
+
+    #[test]
+    fn todo_reminders() {
+        let on = Some(BotCommand::TodoReminders(Some(true)));
+        assert_eq!(parse("/todo reminders on"), on);
+        assert_eq!(parse("/t Reminder ON"), on);
+        assert_eq!(
+            parse("/todo reminders off"),
+            Some(BotCommand::TodoReminders(Some(false)))
+        );
+        assert_eq!(
+            parse("/todo reminders"),
+            Some(BotCommand::TodoReminders(None))
+        );
+        assert_eq!(parse("/todo reminders maybe"), None);
     }
 
     #[test]
