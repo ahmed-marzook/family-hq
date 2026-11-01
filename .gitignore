@@ -14,3 +14,7 @@ Thumbs.db
 # Added by cargo
 
 /target
+
+# The admin dashboard: installed packages and build output.
+web/node_modules/
+web/dist/

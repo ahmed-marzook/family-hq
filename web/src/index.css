@@ -1,0 +1,6 @@
+/* The order CSS layers win in, lowest first. `mui` sits below `utilities`,
+   so Tailwind classes can size and colour MUI icons. Without this, Emotion's
+   unlayered styles beat every Tailwind class. */
+@layer theme, base, mui, components, utilities;
+
+@import "tailwindcss";

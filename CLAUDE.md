@@ -14,7 +14,9 @@ in features from later phases (ntfy, React, AI, and the rest of the
 reminder/prayer work) while Phase 1 (todo and shop) is still in progress.
 Exception, at the owner's request: basic prayer times, reminders and
 tracking were brought forward and already exist (see the note at the top
-of Phase 2 in the roadmap).
+of Phase 2 in the roadmap). The admin dashboard (React, in `web/`) is also
+at the owner's request, and has its own section in the roadmap. It isn't the
+family-facing dashboard in Phase 3, which is still later.
 
 ## The owner is learning Rust
 
@@ -42,6 +44,8 @@ cargo clippy --all-targets     # lints, should be warning-free
 cargo fmt                      # format before every commit
 cargo sqlx prepare             # refresh .sqlx/ after changing a query (commit it)
 docker compose up --build      # run the full stack
+npm run dev                    # in web/: the dashboard, with /api proxied to :3000
+npm run build                  # in web/: type-check and build
 ```
 
 ## Conventions
@@ -65,6 +69,8 @@ docker compose up --build      # run the full stack
 - Deduplicate WhatsApp webhooks by message ID (`processed_messages`).
 - Register senders automatically on their first message (`repo::users::find_or_register`); ignore the bot's own messages (`is_from_me`).
 - Write emoji as exact constants in code (e.g. `const DONE: &str = "✅";`).
+- The admin API never sends a DM's list contents (counts only) or anyone's
+  exact coordinates. Enforce this in the API, not just the UI.
 
 ## Don't
 

@@ -1,11 +1,12 @@
 # Running Family HQ on the home server
 
-The server runs two containers from two images, started together by one
+The server runs three containers from three images, started together by one
 Compose file:
 
 | Container | Image | What it does |
 |---|---|---|
 | `family-hq` | [`kaizenflow/family-hq`](https://hub.docker.com/r/kaizenflow/family-hq) | Our Rust server: commands, database, replies |
+| `admin` | [`kaizenflow/family-hq-admin`](https://hub.docker.com/r/kaizenflow/family-hq-admin) | The admin dashboard: serves the web app, and passes `/api` to `family-hq` |
 | `gowa` | `aldinokemal2104/go-whatsapp-web-multidevice` | Logs in to WhatsApp as the bot's number |
 
 ```
@@ -21,6 +22,13 @@ on their own. Compose makes running both a single command anyway.
 
 Nothing needs to be opened to the internet: GOWA connects *out* to
 WhatsApp, and GOWA → family-hq traffic stays inside Docker.
+
+The admin dashboard listens on port 8080, on the server only until you set
+`ADMIN_BIND=0.0.0.0` in `.env`. That opens it to your home network and
+Tailscale. **Don't set it until the release that adds the password (Stage
+A2), and never port-forward 8080 on your router.** Docker's published ports
+also bypass `ufw`, so a firewall rule on the server won't limit who reaches
+it. Until then, use a tunnel: `ssh -L 8080:localhost:8080 you@homeserver`.
 
 ---
 
@@ -63,7 +71,7 @@ echo "GOWA_WEBHOOK_SECRET=$(openssl rand -hex 32)"
 ```
 
 Paste those two lines into `.env` (replacing the `change-me` ones) with
-`nano .env`. Leave `FAMILY_HQ_TAG=0.7.0`. Then lock it down, since it holds
+`nano .env`. Leave `FAMILY_HQ_TAG=0.8.0`. Then lock it down, since it holds
 the passwords:
 
 ```sh
@@ -177,6 +185,9 @@ One-time setup, in this repo's Settings → Secrets and variables → Actions:
 | Secret | `DOCKERHUB_TOKEN` | A Docker Hub access token (Account settings → Personal access tokens, Read & Write) |
 | Secret | `STACKS_TOKEN` | A fine-grained GitHub token for `my-homeserver-stacks` only, with Contents and Pull requests: Read and write |
 
+The workflow also pushes `kaizenflow/family-hq-admin`, so that Docker Hub
+repository must exist and the token must be allowed to push to it.
+
 The rest of this section is the same thing by hand.
 
 ### 1. In this repo: check, bump, commit
@@ -199,6 +210,7 @@ or a new migration. Commit as `Release 0.5.0: <what changed>` and push
 ```sh
 V=0.5.0
 docker build --platform linux/amd64 -t kaizenflow/family-hq:$V -t kaizenflow/family-hq:latest .
+docker build --platform linux/amd64 -t kaizenflow/family-hq-admin:$V -t kaizenflow/family-hq-admin:latest web
 ```
 
 Before pushing, check the image:
@@ -215,6 +227,8 @@ Then push (`docker login` first if asked):
 ```sh
 docker push kaizenflow/family-hq:$V
 docker push kaizenflow/family-hq:latest
+docker push kaizenflow/family-hq-admin:$V
+docker push kaizenflow/family-hq-admin:latest
 ```
 
 ### 3. In the stacks repo: a PR for the new version

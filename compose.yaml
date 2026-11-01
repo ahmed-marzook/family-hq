@@ -30,6 +30,17 @@ services:
       # A named volume survives `docker compose down` and rebuilds.
       - family_hq_data:/data
 
+  # The admin dashboard: serves the React app and passes /api to family-hq.
+  admin:
+    build: ./web
+    restart: unless-stopped
+    depends_on:
+      - family-hq
+    ports:
+      # Bound to localhost by default; set ADMIN_BIND=0.0.0.0 in .env to reach
+      # it from another machine.
+      - "${ADMIN_BIND:-127.0.0.1}:8080:8080"
+
   gowa:
     # Pinned so an upstream release can't change the webhook payload under us.
     image: aldinokemal2104/go-whatsapp-web-multidevice:v9.7.0

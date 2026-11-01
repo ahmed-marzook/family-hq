@@ -8,6 +8,7 @@ and habit tracking.
 - **Database:** SQLite (SQLx)
 - **WhatsApp:** [GOWA](https://github.com/aldinokemal/go-whatsapp-web-multidevice), on the bot's own number
 - **Push notifications:** ntfy (Phase 2)
+- **Admin dashboard:** React, Tailwind and MUI icons, served by Caddy (`web/`)
 - **Runs on:** Docker Compose on a homelab server
 
 ## Status

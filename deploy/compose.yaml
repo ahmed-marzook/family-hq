@@ -1,7 +1,8 @@
 # Family HQ on the home server. See docs/DEPLOY.md.
 #
-# Two containers, started together:
+# Three containers, started together:
 #   family-hq  our Rust server, pulled from Docker Hub (no building here)
+#   admin      the admin dashboard, which passes /api on to family-hq
 #   gowa       the WhatsApp bridge, logged in as the bot's number
 #
 # GOWA sends every WhatsApp message to family-hq over Compose's private
@@ -42,6 +43,17 @@ services:
     volumes:
       # The SQLite database. Back this up (see docs/DEPLOY.md).
       - family_hq_data:/data
+
+  admin:
+    # The same version as family-hq; they're released together.
+    image: kaizenflow/family-hq-admin:${FAMILY_HQ_TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      - family-hq
+    ports:
+      # The admin dashboard. Localhost only by default: set ADMIN_BIND=0.0.0.0
+      # in .env for your home network and Tailscale. Never port-forward it.
+      - "${ADMIN_BIND:-127.0.0.1}:8080:8080"
 
   gowa:
     # Pinned: an upstream release could change the webhook payload.

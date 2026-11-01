@@ -11,9 +11,12 @@ unticked ones aren't yet.
 | **2. Reminders & Prayer Coach** | `+remind`, ntfy pushes, prayer windows, escalation, reflections | Prayer reminders done early; `+remind` planned |
 | **3. Dashboard** | React web app served by the Rust binary | Later |
 | **4. AI & Extras** | Weekly coaching, natural language, weather, calendars, Home Assistant | `/weather` and per-person timezones done early |
+| **Admin dashboard** | The owner's view of users, settings and metrics, in its own container | In progress, at the owner's request: Stage A1 built |
 
 Rule: don't start a phase until the one before it has been **used by the
 family for at least two weeks**. Real use finds the problems that matter.
+The admin dashboard is outside this rule: it adds nothing for the family, and
+its metrics help judge that testing.
 
 ---
 
@@ -340,6 +343,7 @@ family-hq/
 ├── migrations/             # 0001 init, 0002 reminders per place, 0003 coordinates
 ├── .sqlx/                  # SQLx offline query data (committed)
 ├── docs/                   # ROADMAP.md, GOWA.md, DEPLOY.md
+├── web/                    # the admin dashboard: React app, Dockerfile, Caddyfile
 └── src/
     ├── main.rs             # starts Tokio, builds AppState, runs the server
     ├── lib.rs              # AppState, Apis, the router
@@ -357,7 +361,7 @@ family-hq/
     ├── geo.rs              # location → nearest town, town → coordinates
     ├── weather.rs          # Open-Meteo forecasts
     ├── whatsapp.rs         # GOWA REST client
-    ├── routes/             # health.rs, webhook.rs
+    ├── routes/             # api.rs, health.rs, webhook.rs
     └── repo/               # chats, messages, prayers, settings, shop, todos, users
 ```
 
@@ -471,6 +475,109 @@ Done when:
   editing.
 - Login: a magic link sent over WhatsApp.
 - Installable as a PWA (an app on the phone's home screen).
+
+## Admin dashboard
+
+An owner-only tool, separate from the family-facing dashboard in Phase 3: see
+who uses the bot and what they have, read the metrics, and add or update an
+individual user's settings.
+
+Decisions:
+- **Its own container** (`web/`): React, Vite, TypeScript, Tailwind and MUI
+  icons, built into plain files that Caddy serves. Caddy passes `/api` to
+  family-hq, so the browser sees one address and no CORS is needed. Port 3000
+  and the webhook stay private.
+- **Reached over the home network or Tailscale**, never port-forwarded.
+- **One admin password** (`ADMIN_BASIC_AUTH`), because being on the Wi-Fi
+  shouldn't be enough to read everything. Checked in Rust, on `/api` only. If
+  it isn't set, `/api` refuses everything.
+- **DM lists show counts only**, because `/help` promises they're private. The
+  API enforces it: a DM's list endpoints answer 404, so titles never reach the
+  browser. Group lists show in full.
+- **Exact coordinates are never sent to the browser**: a shared location can be
+  someone's home. The town and timezone are enough.
+- Settings changes don't message the user. Each one goes in the server log.
+
+Not planned for now: editing lists, editing group settings, deleting users, an
+audit history, several admins.
+
+### Stage A1: Skeleton and release ✅ (first deploy to do)
+
+Build:
+- The `web/` shell (Users and Metrics pages are placeholders), `web/Dockerfile`
+  and `web/Caddyfile`.
+- `src/routes/api.rs`: `/api/health`, and a JSON 404 for anything else there.
+- An `admin` service in both compose files, and the second image
+  (`kaizenflow/family-hq-admin`) in the release workflow.
+
+New concepts: nested routers, fallback routes.
+
+Done when:
+- [x] Refreshing a deep link works
+- [x] `/api/nope` returns a JSON 404
+- [x] The webhook can't be reached through the dashboard
+- [ ] Deployed, and port 3000 still isn't reachable from another machine
+
+### Stage A2: Users and what they have (read-only)
+
+Build:
+- The password middleware, and `AppError` variants for 400, 401 and 404.
+- Non-`GET` requests must be `application/json`. Browsers send Basic Auth by
+  themselves, and this stops another website triggering changes.
+- Users page: name, last seen, chats and counts. User page: their settings,
+  marked as their own or the default, plus each chat's lists (group) or counts
+  (DM).
+- `GET /api/users`, `/api/users/{id}`, `/api/chats/{id}/todos`,
+  `/api/chats/{id}/shop`.
+- Group names: nothing fills in `chats.name` yet. Check what GOWA's
+  `/user/my/groups` returns, and save the names from there.
+- `chat_members` never removes anyone, so show it as "seen in", not "member of".
+
+New concepts: `axum::middleware`, `Serialize`, API types separate from database
+types.
+
+Done when:
+- [ ] A wrong or missing password gets 401 on every `/api` route
+- [ ] A DM's list answers 404, and no DM title or item is in any API response
+- [ ] No API response contains coordinates
+- [ ] Group lists match `/todo` and `/shop`
+
+### Stage A3: Metrics (read-only)
+
+Build:
+- The queries from [METRICS.md](METRICS.md), moved into `src/repo/metrics.rs`.
+- For 7 days, 30 days or all time: uses per day, top commands, per person
+  (including inactive people), busiest hours, unknown commands, failures,
+  slowest commands.
+- Plain Tailwind bars and small SVGs, no chart library.
+- Hours are bucketed in UTC and converted in Rust to the default timezone.
+
+New concepts: query parameters, aggregate SQL with SQLx macros.
+
+Done when:
+- [ ] Totals match the same SQL run directly
+- [ ] Busiest hours are correct in both BST and GMT
+
+### Stage A4: Edit a user's settings
+
+Build:
+- City and country, timezone, prayer method, Asr school, "ending soon" minutes,
+  prayer reminders on/off, todo reminders on/off per chat, reset to defaults.
+- `PATCH /api/users/{id}/settings`, and small `POST`s for reset and reminders.
+- First move the validation out of `settings_command`, and make `save_city`
+  independent of the WhatsApp context, so the bot and the API share one set of
+  rules.
+- Settings live on the DM chat row, which only exists once someone has messaged
+  the bot privately. The API creates it using their `wa_jid`.
+
+New concepts: partial updates with `Option`, sharing validation between two
+callers, friendly API errors.
+
+Done when:
+- [ ] A bad timezone or a 121-minute value gets a clear error and saves nothing
+- [ ] `/settings` in WhatsApp shows the change, and reminders follow it
+- [ ] A person's first real DM after their row was created uses that same row
+      (`dm_user_id` is unique, so a mismatched ID would break all their DMs)
 
 ## Phase 4: AI & Extras
 
