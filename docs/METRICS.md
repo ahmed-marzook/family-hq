@@ -9,8 +9,10 @@ see `src/cleanup.rs`), their rows here are deleted too, and so are a
 group's when the bot leaves it: past totals drop.
 
 The admin dashboard's **Metrics** page shows the main ones (for 7 days, 30
-days or all time, with days and hours on the UK clock). The queries below
-are for anything it doesn't show.
+days or all time, with days and hours on the UK clock), including which
+chats the bot is used in. Each person's page and each group's page has the
+same report for just them (`/api/metrics?user=3` or `?chat=5`). The queries
+below are for anything it doesn't show.
 
 | Column | Example | Meaning |
 |---|---|---|

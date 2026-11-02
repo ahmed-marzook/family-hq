@@ -27,7 +27,7 @@ use crate::repo::{admin, chats, shop, todos};
 use crate::settings::Settings;
 
 /// How far back the users page counts uses.
-const RECENT_DAYS: i64 = 30;
+pub(crate) const RECENT_DAYS: i64 = 30;
 
 // ---- JSON shapes ----
 //
@@ -139,7 +139,7 @@ struct Setting<T> {
 
 /// A person's settings (from their DM with the bot), defaults filled in.
 #[derive(Debug, PartialEq, Serialize)]
-struct SettingsView {
+pub(crate) struct SettingsView {
     /// "Crawley, GB". The town only: never its coordinates.
     place: Setting<String>,
     timezone: Setting<String>,
@@ -191,16 +191,8 @@ struct ChatView {
 /// A chat as the user page shows it, with when the bot would leave a quiet
 /// group worked out by the same rules the cleanup follows.
 fn chat_view(c: admin::UserChat, state: &AppState, now: DateTime<Utc>) -> ChatView {
-    let leaves_on = (c.kind == "group" && c.left_at.is_none())
-        .then(|| {
-            let activity = cleanup::Activity {
-                last_active: c.last_active,
-                warned_at: c.warned_at,
-                cleared_at: None,
-                can_warn: true,
-            };
-            cleanup::clears_on(&activity, state.config.inactive_days, now)
-        })
+    let leaves_on = (c.kind == "group")
+        .then(|| leaves_on(c.last_active, c.warned_at, c.left_at, state, now))
         .flatten();
     ChatView {
         id: c.id,
@@ -383,9 +375,30 @@ async fn group_view(
     })
 }
 
+/// When the bot will leave a quiet group, by the rules the cleanup
+/// follows: `None` if it won't (clearing is off) or it's already gone.
+pub(crate) fn leaves_on(
+    last_active: DateTime<Utc>,
+    warned_at: Option<DateTime<Utc>>,
+    left_at: Option<DateTime<Utc>>,
+    state: &AppState,
+    now: DateTime<Utc>,
+) -> Option<DateTime<Utc>> {
+    if left_at.is_some() {
+        return None;
+    }
+    let activity = cleanup::Activity {
+        last_active,
+        warned_at,
+        cleared_at: None,
+        can_warn: true,
+    };
+    cleanup::clears_on(&activity, state.config.inactive_days, now)
+}
+
 /// Saves the groups' names from GOWA, so the dashboard can show them.
 /// Best effort: if GOWA can't be reached, the names stay as they were.
-async fn refresh_group_names(state: &AppState) {
+pub(crate) async fn refresh_group_names(state: &AppState) {
     let groups = match state.gowa.groups().await {
         Ok(groups) => groups,
         Err(err) => {
@@ -405,7 +418,7 @@ async fn refresh_group_names(state: &AppState) {
 
 /// A person's settings as the dashboard shows them: what's in use, and
 /// which are their own. `personal` is `None` if they never set anything.
-fn settings_view(personal: Option<ChatSettings>, defaults: &Settings) -> SettingsView {
+pub(crate) fn settings_view(personal: Option<ChatSettings>, defaults: &Settings) -> SettingsView {
     // `unwrap_or_default` turns "no settings" into all-defaults, so the
     // rest of the code handles one case, not two.
     let personal = personal.unwrap_or_default();

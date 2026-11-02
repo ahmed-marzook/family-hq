@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useState, type FormEvent, type ReactNode } from "react";
 
 import { ApiError, getJson, type PrayerMethod, type Setting, type Settings } from "../api";
-import { useUserChange } from "../useUserChange";
+import { useChange, type Owner } from "../useChange";
 import Switch from "./Switch";
 
 const input =
@@ -13,21 +13,27 @@ const primary =
 const secondary =
   "rounded-md px-3 py-1 text-sm font-medium text-stone-600 hover:bg-stone-100 dark:text-stone-400 dark:hover:bg-stone-800";
 
-/** A person's settings, each one editable. Changes are saved at once. */
+/**
+ * A person's or a group's settings, each one editable. Changes are saved
+ * at once. `where` names the chat prayer reminders go to; `note` explains
+ * what a change does.
+ */
 export default function SettingsEditor({
-  userId,
+  owner,
   name,
   settings,
-  hasDm,
+  where,
+  note,
 }: {
-  userId: number;
+  owner: Owner;
   name: string;
   settings: Settings;
-  hasDm: boolean;
+  where: string;
+  note: ReactNode;
 }) {
   const { values } = settings;
-  const reset = useUserChange(userId);
-  const reminders = useUserChange(userId);
+  const reset = useChange(owner);
+  const reminders = useChange(owner);
   const anyOwn = [
     settings.place,
     settings.timezone,
@@ -41,32 +47,32 @@ export default function SettingsEditor({
       <dl className="divide-y divide-stone-200 dark:divide-stone-800">
         <EditRow
           label="Town"
-          userId={userId}
+          owner={owner}
           setting={settings.place}
           hint="Looked up by name; its timezone comes with it."
           form={(save) => <TownForm city={values.city} country={values.country} save={save} />}
         />
         <EditRow
           label="Timezone"
-          userId={userId}
+          owner={owner}
           setting={settings.timezone}
           form={(save) => <TimezoneForm timezone={values.timezone} save={save} />}
         />
         <EditRow
           label="Prayer method"
-          userId={userId}
+          owner={owner}
           setting={settings.prayer_method}
           form={(save) => <MethodForm method={values.prayer_method} save={save} />}
         />
         <EditRow
           label="Asr"
-          userId={userId}
+          owner={owner}
           setting={settings.asr_school}
           form={(save) => <AsrForm school={values.asr_school} save={save} />}
         />
         <EditRow
           label="“Ending soon” reminder"
-          userId={userId}
+          owner={owner}
           setting={{
             value: `${settings.ending_minutes.value} minutes before`,
             own: settings.ending_minutes.own,
@@ -75,7 +81,7 @@ export default function SettingsEditor({
         />
         <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 py-2">
           <dt className="text-sm text-stone-600 dark:text-stone-400">
-            Prayer reminders (private chat)
+            Prayer reminders ({where})
           </dt>
           <dd className="flex items-center gap-2">
             {settings.prayer_reminders ? "On" : "Off"}
@@ -107,11 +113,7 @@ export default function SettingsEditor({
         </button>
         <Problem error={reset.error} />
       </div>
-      <p className="mt-3 text-sm text-stone-600 dark:text-stone-400">
-        {hasDm
-          ? "Changes apply straight away. The bot doesn't tell them."
-          : `${name} hasn't messaged the bot privately, so these are the defaults. A change starts their private chat's settings; the bot doesn't message them about it, but prayer reminders, if turned on, are sent there.`}
-      </p>
+      <p className="mt-3 text-sm text-stone-600 dark:text-stone-400">{note}</p>
     </>
   );
 }
@@ -121,19 +123,19 @@ type Save = (body: Record<string, unknown>) => void;
 /** One setting: its value and "Own"/"Default", or its edit form. */
 function EditRow({
   label,
-  userId,
+  owner,
   setting,
   hint,
   form,
 }: {
   label: string;
-  userId: number;
+  owner: Owner;
   setting: Setting<string>;
   hint?: string;
   form: (save: Save) => ReactNode;
 }) {
   const [editing, setEditing] = useState(false);
-  const change = useUserChange(userId);
+  const change = useChange(owner);
   const save: Save = (body) =>
     change.mutate(
       { method: "PATCH", path: "/settings", body },

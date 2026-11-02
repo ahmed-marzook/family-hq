@@ -1,5 +1,7 @@
 //! The admin dashboard's usage metrics: `GET /api/metrics`, read-only and
 //! behind the password. The questions are the ones in docs/METRICS.md.
+//! `?user=` or `?chat=` narrows them to one person or one chat, for the
+//! user and group pages.
 //!
 //! Days and hours are on the server's default clock (`DEFAULT_TIMEZONE`),
 //! not UTC: the times are grouped here, in Rust, so a UK summer evening
@@ -16,18 +18,25 @@ use serde::{Deserialize, Serialize};
 use crate::AppState;
 use crate::error::AppError;
 use crate::metrics::{by_hour, per_day};
-use crate::repo::metrics as log;
+use crate::repo::admin;
+use crate::repo::metrics::{self as log, Filter};
+use crate::routes::admin::refresh_group_names;
 
 /// How many failures and slow commands to list.
 const LIST_LIMIT: i64 = 20;
 
-/// The query string: `?days=7`. Leave it out for all time.
+/// The query string: `?days=7`, optionally with `&user=3` or `&chat=5`.
+/// Leave `days` out for all time.
 ///
 /// `Query<Period>` parses the part of the URL after `?` into this struct,
 /// with serde. Axum answers 400 by itself if it doesn't fit (`?days=abc`).
 #[derive(Debug, Deserialize)]
 pub struct Period {
     days: Option<u16>,
+    /// Only this person's uses.
+    user: Option<i64>,
+    /// Only uses in this chat.
+    chat: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -42,8 +51,11 @@ pub struct Metrics {
     /// Uses in each hour of the day, 0 to 23.
     hours: [i64; 24],
     commands: Vec<CommandView>,
-    /// Everyone, including people with no uses in the period.
+    /// Everyone, including people with no uses in the period. For one
+    /// chat, the people who ever used the bot there.
     people: Vec<PersonView>,
+    /// Where the bot was used, most uses first.
+    chats: Vec<ChatView>,
     unknown: Vec<UnknownView>,
     /// The latest failures, newest first (`totals.failures` counts them all).
     failures: Vec<FailureView>,
@@ -74,12 +86,23 @@ struct CommandView {
 
 #[derive(Debug, Serialize)]
 struct PersonView {
+    id: i64,
     name: String,
     uses: i64,
     /// Days with at least one use, in the period.
     active_days: i64,
     /// Their latest use ever, not just in the period.
     last_seen: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Serialize)]
+struct ChatView {
+    id: i64,
+    /// `"group"` or `"dm"`.
+    kind: String,
+    /// The group's name, or for a DM, its owner's name.
+    name: Option<String>,
+    uses: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -105,7 +128,8 @@ struct SpeedView {
     max_ms: i64,
 }
 
-/// `GET /api/metrics?days=7`.
+/// `GET /api/metrics?days=7`, `...&user=3` or `...&chat=5`. 404 for a
+/// person or chat that doesn't exist.
 pub async fn metrics(
     State(state): State<Arc<AppState>>,
     Query(period): Query<Period>,
@@ -115,14 +139,32 @@ pub async fn metrics(
     // `?days=0` would be an empty period; treat it like no period at all.
     let days = period.days.filter(|days| *days > 0);
     let since = days.map(|days| now - Duration::days(i64::from(days)));
+    let filter = Filter {
+        since,
+        user: period.user,
+        chat: period.chat,
+    };
 
+    // The "where" table names groups.
+    refresh_group_names(&state).await;
     let mut conn = state.db.acquire().await?;
-    let uses = log::use_times(&mut conn, since).await?;
-    let commands = log::top_commands(&mut conn, since).await?;
-    let people = log::people(&mut conn).await?;
-    let unknown = log::unknown_words(&mut conn, since).await?;
-    let (failure_count, failures) = log::failures(&mut conn, since, LIST_LIMIT).await?;
-    let slowest = log::slowest(&mut conn, since, LIST_LIMIT).await?;
+    if let Some(user) = filter.user
+        && admin::user_jid(&mut conn, user).await?.is_none()
+    {
+        return Err(AppError::NotFound);
+    }
+    if let Some(chat) = filter.chat
+        && !admin::chat_exists(&mut conn, chat).await?
+    {
+        return Err(AppError::NotFound);
+    }
+    let uses = log::use_times(&mut conn, filter).await?;
+    let commands = log::top_commands(&mut conn, filter).await?;
+    let people = log::people(&mut conn, filter).await?;
+    let chats = log::chats(&mut conn, filter).await?;
+    let unknown = log::unknown_words(&mut conn, filter).await?;
+    let (failure_count, failures) = log::failures(&mut conn, filter, LIST_LIMIT).await?;
+    let slowest = log::slowest(&mut conn, filter, LIST_LIMIT).await?;
 
     // The chart runs from the start of the period (or the first use ever)
     // to today, on the dashboard's clock.
@@ -148,6 +190,7 @@ pub async fn metrics(
         .map(|p| {
             let (uses, days) = per_person.remove(&p.id).unwrap_or_default();
             PersonView {
+                id: p.id,
                 name: p.name,
                 uses,
                 active_days: days.len() as i64,
@@ -189,6 +232,15 @@ pub async fn metrics(
             })
             .collect(),
         people,
+        chats: chats
+            .into_iter()
+            .map(|c| ChatView {
+                id: c.id,
+                kind: c.kind,
+                name: c.name,
+                uses: c.uses,
+            })
+            .collect(),
         unknown: unknown
             .into_iter()
             .map(|u| UnknownView {
@@ -272,8 +324,9 @@ mod tests {
     }
 
     /// Bilal and Khadija use the bot; Zara never has. Some uses are older
-    /// than 7 days, one failed, one was a word the bot didn't know.
-    async fn seed(pool: &sqlx::SqlitePool) {
+    /// than 7 days, one failed, one was a word the bot didn't know. Returns
+    /// (Bilal, Khadija, the group).
+    async fn seed(pool: &sqlx::SqlitePool) -> (i64, i64, i64) {
         let mut conn = pool.acquire().await.unwrap();
         let now = Utc::now();
         let mut ids = Vec::new();
@@ -328,6 +381,86 @@ mod tests {
             ago(40),
         )
         .await;
+        (bilal, khadija, chat)
+    }
+
+    #[tokio::test]
+    async fn one_person_or_one_chat() {
+        let pool = test_pool().await;
+        let (bilal, khadija, group) = seed(&pool).await;
+        // Bilal also uses the bot privately, twice this week.
+        let mut conn = pool.acquire().await.unwrap();
+        let dm = chats::find_or_create(
+            &mut conn,
+            "447700900001@s.whatsapp.net",
+            Some(bilal),
+            Utc::now(),
+        )
+        .await
+        .unwrap();
+        let yesterday = Utc::now() - Duration::days(1);
+        for _ in 0..2 {
+            log_row(
+                &mut conn,
+                dm,
+                bilal,
+                Kind::Command,
+                "shop.list",
+                true,
+                4,
+                yesterday,
+            )
+            .await;
+        }
+        drop(conn);
+        let server = start_server_with(pool).await;
+        let metrics = async |query: String| -> Value {
+            let (status, body) = get(format!("{server}/api/metrics?days=7&{query}")).await;
+            assert_eq!(status, StatusCode::OK, "{query}: {body}");
+            serde_json::from_str(&body).unwrap()
+        };
+
+        let m = metrics(format!("user={bilal}")).await;
+        assert_eq!(
+            m["totals"],
+            serde_json::json!({ "uses": 5, "people": 1, "unknown": 0, "failures": 1 })
+        );
+        assert_eq!(m["commands"][0]["name"], "shop.list");
+        let people: Vec<&str> = m["people"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(people, ["Bilal"]);
+        // Where he used it, most first: the group, and his DM (named after him).
+        assert_eq!(
+            m["chats"],
+            serde_json::json!([
+                { "id": group, "kind": "group", "name": null, "uses": 3 },
+                { "id": dm, "kind": "dm", "name": "Bilal", "uses": 2 },
+            ])
+        );
+
+        let m = metrics(format!("chat={group}")).await;
+        assert_eq!(m["totals"]["uses"], 4, "the DM's uses aren't the group's");
+        assert_eq!(m["totals"]["unknown"], 1);
+        let people: Vec<(&str, i64)> = m["people"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| (p["name"].as_str().unwrap(), p["uses"].as_i64().unwrap()))
+            .collect();
+        // Zara never used it here, so she isn't listed.
+        assert_eq!(people, [("Bilal", 3), ("Khadija", 1)]);
+
+        let m = metrics(format!("user={khadija}&chat={dm}")).await;
+        assert_eq!(m["totals"]["uses"], 0);
+
+        for query in ["user=999", "chat=999"] {
+            let (status, _) = get(format!("{server}/api/metrics?{query}")).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{query}");
+        }
     }
 
     #[tokio::test]

@@ -9,11 +9,12 @@ import { ApiError, getJson, type Chat, type Cleanup, type UserDetail } from "../
 import { GroupStatus, PersonData } from "../components/Clearing";
 import GroupLists from "../components/GroupLists";
 import LoadError from "../components/LoadError";
+import { ScopedMetrics } from "../components/MetricsReport";
 import Page from "../components/Page";
 import SettingsEditor from "../components/SettingsEditor";
 import Switch from "../components/Switch";
 import { count, date, timeAgo } from "../format";
-import { useUserChange } from "../useUserChange";
+import { useUserChange, userOwner } from "../useChange";
 
 export default function User() {
   const { id } = useParams();
@@ -52,11 +53,25 @@ function Detail({ data }: { data: UserDetail }) {
       </p>
 
       <Section title="Settings">
-        <SettingsEditor userId={user.id} name={user.name} settings={settings} hasDm={dm !== undefined} />
+        <SettingsEditor
+          owner={userOwner(user.id)}
+          name={user.name}
+          settings={settings}
+          where="private chat"
+          note={
+            dm
+              ? "Changes apply straight away. The bot doesn't tell them."
+              : `${user.name} hasn't messaged the bot privately, so these are the defaults. A change starts their private chat's settings; the bot doesn't message them about it, but prayer reminders, if turned on, are sent there.`
+          }
+        />
       </Section>
 
       <Section title="Data">
         <PersonData user={user} cleanup={data.cleanup} />
+      </Section>
+
+      <Section title="Usage">
+        <ScopedMetrics scope="user" id={user.id} />
       </Section>
 
       <Section title="Chats">
@@ -145,12 +160,14 @@ function GroupCard({ chat, userId, cleanup }: { chat: Chat; userId: number; clea
     <div className={card}>
       <h3 className="mb-1 flex items-center gap-2 font-medium">
         <GroupsIcon className="size-5 text-teal-700 dark:text-teal-400" />
-        {chat.name ?? "Unnamed group"}
+        <Link to={`/groups/${chat.id}`} className="hover:underline">
+          {chat.name ?? "Unnamed group"}
+        </Link>
       </h3>
       <Counts chat={chat} />
       <TodoReminders chat={chat} userId={userId} />
       <GroupLists groupId={chat.id} />
-      <GroupStatus chat={chat} userId={userId} cleanup={cleanup} />
+      <GroupStatus chat={chat} cleanup={cleanup} />
     </div>
   );
 }

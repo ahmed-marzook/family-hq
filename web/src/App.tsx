@@ -1,6 +1,8 @@
 import { Navigate, Route, Routes } from "react-router";
 
 import Layout from "./components/Layout";
+import Group from "./pages/Group";
+import Groups from "./pages/Groups";
 import Metrics from "./pages/Metrics";
 import NotFound from "./pages/NotFound";
 import User from "./pages/User";
@@ -13,6 +15,8 @@ export default function App() {
         <Route index element={<Navigate to="/users" replace />} />
         <Route path="users" element={<Users />} />
         <Route path="users/:id" element={<User />} />
+        <Route path="groups" element={<Groups />} />
+        <Route path="groups/:id" element={<Group />} />
         <Route path="metrics" element={<Metrics />} />
         <Route path="*" element={<NotFound />} />
       </Route>

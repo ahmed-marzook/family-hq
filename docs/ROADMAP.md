@@ -633,6 +633,30 @@ Done when:
 - [x] A person's first real DM after their row was created uses that same row
       (`dm_user_id` is unique, so a mismatched ID would break all their DMs)
 
+### Stage A5: Groups and per-chat metrics ✅ (0.13.0)
+
+Build (all done):
+- `src/routes/admin_groups.rs`: `GET /api/groups` (most recently active
+  first) and `GET /api/groups/{id}` (settings, members, counts), plus
+  `PATCH .../settings`, `POST .../settings/reset` and
+  `.../prayer-reminders` for the group's own settings. A DM's ID is a 404
+  on all of them.
+- `admin_settings::apply_patch`: one set of rules for a person's and a
+  group's settings.
+- Web: a Groups page and a page per group (settings, lists, members linking
+  to their pages, and the bot leaving it); group names on a user's page
+  link there.
+
+- Metrics per person and per group: `/api/metrics` takes `?user=` or
+  `?chat=` (same `command_log`, no new tracking), and says which chats the
+  bot was used in. The user and group pages show a "Usage" report.
+
+Done when:
+- [x] A group's settings can be changed and reset, and a refused change
+      saves nothing
+- [x] No member's number or anyone's coordinates are sent
+- [x] One person's or one group's totals add up to theirs in the full report
+
 ## Phase 4: AI & Extras
 
 In rough priority order. Each is optional and independent.

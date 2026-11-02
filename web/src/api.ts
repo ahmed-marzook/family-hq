@@ -124,6 +124,40 @@ export type UserDetail = {
   chats: Chat[];
 };
 
+/** A group, as the groups pages show it. */
+export type GroupRow = {
+  id: number;
+  name: string | null;
+  members: number;
+  open_todos: number;
+  done_todos: number;
+  to_buy: number;
+  bought: number;
+  recent_uses: number;
+  /** When someone last used the bot in the group. */
+  last_active: string;
+  warned_at: string | null;
+  /** The bot isn't in it any more (noticed then). */
+  left_at: string | null;
+  /** When the bot will leave it if nobody uses it. */
+  leaves_on: string | null;
+};
+
+export type GroupList = {
+  recent_days: number;
+  cleanup: Cleanup;
+  groups: GroupRow[];
+};
+
+export type GroupDetail = {
+  recent_days: number;
+  cleanup: Cleanup;
+  group: GroupRow;
+  /** The group's own settings, shared by everyone in it. */
+  settings: Settings;
+  members: { id: number; name: string }[];
+};
+
 export type Group = { id: number; name: string | null; timezone: string };
 
 export type Todo = {
@@ -150,7 +184,9 @@ export type Metrics = {
   /** Uses in each hour of the day, 0 to 23. */
   hours: number[];
   commands: { name: string; uses: number }[];
-  people: { name: string; uses: number; active_days: number; last_seen: string | null }[];
+  people: { id: number; name: string; uses: number; active_days: number; last_seen: string | null }[];
+  /** Where the bot was used; a DM is named after its owner. */
+  chats: { id: number; kind: "group" | "dm"; name: string | null; uses: number }[];
   unknown: { typed: string; times: number; people: number }[];
   failures: { at: string; person: string; name: string; detail: string | null }[];
   slowest: { name: string; uses: number; avg_ms: number; max_ms: number }[];

@@ -50,7 +50,7 @@ pub struct SettingsPatch {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Switch {
-    on: bool,
+    pub(crate) on: bool,
 }
 
 /// `PATCH /api/users/{id}/settings`: change one or more settings. All or
@@ -65,24 +65,7 @@ pub async fn change_settings(
     // rolls everything back, including a DM created for this.
     let mut tx = state.db.begin().await?;
     let dm = dm_for(&mut tx, id).await?;
-    let current = stored::get(&mut tx, dm)
-        .await?
-        .overrides
-        .apply(&state.apis.prayer_times.defaults);
-
-    let changes = changes(patch, &current.country)?;
-    for change in &changes {
-        // Each change sees the ones before it (a new town's timezone, say).
-        let current = stored::get(&mut tx, dm)
-            .await?
-            .overrides
-            .apply(&state.apis.prayer_times.defaults);
-        if let Err(refused) =
-            settings_edit::apply(&mut tx, &state.apis, dm, &current, change).await?
-        {
-            return Err(AppError::BadRequest(explain(&refused)));
-        }
-    }
+    let changes = apply_patch(&mut tx, &state, dm, patch).await?;
     tx.commit().await?;
     println!("admin: changed user {id}'s settings: {changes:?}");
 
@@ -167,6 +150,30 @@ pub async fn prayer_methods() -> Json<Vec<Method>> {
 
 // ---- helpers ----
 
+/// Saves the patch's changes to chat `chat_id`'s settings (a DM's or a
+/// group's), and returns them for the log. Stops at the first refusal, with
+/// a 400 saying why: run it in a transaction, so that undoes the rest.
+pub(crate) async fn apply_patch(
+    conn: &mut SqliteConnection,
+    state: &AppState,
+    chat_id: i64,
+    patch: SettingsPatch,
+) -> Result<Vec<Change>, AppError> {
+    let defaults = &state.apis.prayer_times.defaults;
+    let current = stored::get(conn, chat_id).await?.overrides.apply(defaults);
+    let changes = changes(patch, &current.country)?;
+    for change in &changes {
+        // Each change sees the ones before it (a new town's timezone, say).
+        let current = stored::get(conn, chat_id).await?.overrides.apply(defaults);
+        if let Err(refused) =
+            settings_edit::apply(conn, &state.apis, chat_id, &current, change).await?
+        {
+            return Err(AppError::BadRequest(explain(&refused)));
+        }
+    }
+    Ok(changes)
+}
+
 /// The person's DM, created if they don't have one. 404 if there's no such
 /// person.
 async fn dm_for(conn: &mut SqliteConnection, id: i64) -> Result<i64, AppError> {
@@ -246,7 +253,7 @@ fn explain(refused: &Refused) -> String {
     }
 }
 
-fn on_off(on: bool) -> &'static str {
+pub(crate) fn on_off(on: bool) -> &'static str {
     if on { "on" } else { "off" }
 }
 

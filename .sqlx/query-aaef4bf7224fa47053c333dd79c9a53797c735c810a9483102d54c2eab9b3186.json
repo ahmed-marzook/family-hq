@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT u.id AS \"id!\", u.display_name AS name,\n                  (SELECT max(l.at) FROM command_log l\n                   WHERE l.user_id = u.id AND l.kind != 'unknown') AS \"last_seen?: DateTime<Utc>\"\n           FROM users u\n           ORDER BY u.display_name",
+  "query": "SELECT u.id AS \"id!\", u.display_name AS name,\n                  (SELECT max(l.at) FROM command_log l\n                   WHERE l.user_id = u.id AND l.kind != 'unknown'\n                     AND (?2 IS NULL OR l.chat_id = ?2)) AS \"last_seen?: DateTime<Utc>\"\n           FROM users u\n           WHERE (?1 IS NULL OR u.id = ?1)\n             AND (?2 IS NULL OR EXISTS(SELECT 1 FROM command_log l\n                                       WHERE l.user_id = u.id AND l.chat_id = ?2))\n           ORDER BY u.display_name",
   "describe": {
     "columns": [
       {
@@ -33,7 +33,7 @@
       }
     ],
     "parameters": {
-      "Right": 0
+      "Right": 2
     },
     "nullable": [
       false,
@@ -41,5 +41,5 @@
       true
     ]
   },
-  "hash": "b826af0fcaa0a3608fa8c4ac2d11125bc38d0211188c7e37cd7b9455c07c3c99"
+  "hash": "aaef4bf7224fa47053c333dd79c9a53797c735c810a9483102d54c2eab9b3186"
 }

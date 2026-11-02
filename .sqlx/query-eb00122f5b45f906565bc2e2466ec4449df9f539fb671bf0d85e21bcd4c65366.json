@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT name AS typed, count(*) AS \"times!: i64\",\n                  count(DISTINCT user_id) AS \"people!: i64\"\n           FROM command_log\n           WHERE kind = 'unknown' AND (?1 IS NULL OR datetime(at) >= datetime(?1))\n           GROUP BY name\n           ORDER BY count(*) DESC, name",
+  "query": "SELECT name AS typed, count(*) AS \"times!: i64\",\n                  count(DISTINCT user_id) AS \"people!: i64\"\n           FROM command_log\n           WHERE kind = 'unknown' AND (?1 IS NULL OR datetime(at) >= datetime(?1))\n             AND (?2 IS NULL OR user_id = ?2) AND (?3 IS NULL OR chat_id = ?3)\n           GROUP BY name\n           ORDER BY count(*) DESC, name",
   "describe": {
     "columns": [
       {
@@ -28,7 +28,7 @@
       }
     ],
     "parameters": {
-      "Right": 1
+      "Right": 3
     },
     "nullable": [
       false,
@@ -36,5 +36,5 @@
       false
     ]
   },
-  "hash": "6261911e0be2a18f9da89b80fb1c6ca5402b8a011b3fb278c0d874df9df3f9ad"
+  "hash": "eb00122f5b45f906565bc2e2466ec4449df9f539fb671bf0d85e21bcd4c65366"
 }

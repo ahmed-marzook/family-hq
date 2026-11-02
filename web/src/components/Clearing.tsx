@@ -3,7 +3,7 @@ import LogoutIcon from "@mui/icons-material/Logout";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router";
 
-import { ApiError, sendJson, type Chat, type Cleanup, type UserRow } from "../api";
+import { ApiError, sendJson, type Cleanup, type GroupRow, type UserRow } from "../api";
 import { date, timeAgo } from "../format";
 
 const danger =
@@ -98,25 +98,32 @@ export function PersonData({ user, cleanup }: { user: UserRow; cleanup: Cleanup 
   );
 }
 
+/** What `GroupStatus` needs of a group, from a user's page or its own. */
+type GroupState = Pick<GroupRow, "id" | "name" | "last_active" | "warned_at" | "left_at" | "leaves_on">;
+
 /**
  * A group's state: whether the bot is still in it, when it would leave a
- * quiet one, and a button to leave now.
+ * quiet one, and a button to leave now. `onLeft` runs once it has.
  */
 export function GroupStatus({
   chat,
-  userId,
   cleanup,
+  onLeft,
 }: {
-  chat: Chat;
-  userId: number;
+  chat: GroupState;
   cleanup: Cleanup;
+  onLeft?: () => void;
 }) {
   const queryClient = useQueryClient();
   const leave = useMutation({
     mutationFn: () => sendJson<{ left: boolean }>("POST", `/chats/${chat.id}/leave`, {}),
     onSuccess: () => {
+      // The group is gone: from the groups pages and every user's page.
+      queryClient.removeQueries({ queryKey: ["group", String(chat.id)] });
+      queryClient.invalidateQueries({ queryKey: ["groups"] });
       queryClient.invalidateQueries({ queryKey: ["users"] });
-      queryClient.invalidateQueries({ queryKey: ["user", String(userId)] });
+      queryClient.invalidateQueries({ queryKey: ["user"] });
+      onLeft?.();
     },
   });
   const name = chat.name ?? "this group";

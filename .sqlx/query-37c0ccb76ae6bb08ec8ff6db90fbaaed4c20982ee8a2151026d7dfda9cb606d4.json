@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT u.id AS \"id!\", u.display_name AS name\n           FROM chat_members m JOIN users u ON u.id = m.user_id\n           WHERE m.chat_id = ?\n           ORDER BY u.display_name",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "name",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "display_name"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "37c0ccb76ae6bb08ec8ff6db90fbaaed4c20982ee8a2151026d7dfda9cb606d4"
+}

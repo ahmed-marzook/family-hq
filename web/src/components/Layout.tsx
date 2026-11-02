@@ -1,4 +1,5 @@
 import BarChartIcon from "@mui/icons-material/BarChart";
+import GroupsIcon from "@mui/icons-material/Groups";
 import HomeIcon from "@mui/icons-material/Home";
 import PeopleIcon from "@mui/icons-material/People";
 import { NavLink, Outlet } from "react-router";
@@ -7,6 +8,7 @@ import ApiStatus from "./ApiStatus";
 
 const links = [
   { to: "/users", label: "Users", Icon: PeopleIcon },
+  { to: "/groups", label: "Groups", Icon: GroupsIcon },
   { to: "/metrics", label: "Metrics", Icon: BarChartIcon },
 ];
 

@@ -1,0 +1,52 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT c.id AS \"id!\", c.kind,\n                  CASE WHEN c.kind = 'dm' THEN u.display_name ELSE c.name END AS \"name?: String\",\n                  count(*) AS \"uses!: i64\"\n           FROM command_log l\n           JOIN chats c ON c.id = l.chat_id\n           LEFT JOIN users u ON u.id = c.dm_user_id\n           WHERE l.kind != 'unknown' AND (?1 IS NULL OR datetime(l.at) >= datetime(?1))\n             AND (?2 IS NULL OR l.user_id = ?2) AND (?3 IS NULL OR l.chat_id = ?3)\n           GROUP BY c.id\n           ORDER BY count(*) DESC, c.id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "chats",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "kind",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chats",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "name": "name?: String",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "name": "uses!: i64",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "7d2e2cf900501bd8816a29161ff95102171fab88a69c404f6f3a67d4e1e92785"
+}

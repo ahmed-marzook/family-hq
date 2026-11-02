@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT l.at AS \"at: DateTime<Utc>\", u.display_name AS person, l.name, l.detail\n           FROM command_log l JOIN users u ON u.id = l.user_id\n           WHERE l.ok = 0 AND l.kind != 'unknown'\n             AND (?1 IS NULL OR datetime(l.at) >= datetime(?1))\n           ORDER BY l.at DESC\n           LIMIT ?2",
+  "query": "SELECT l.at AS \"at: DateTime<Utc>\", u.display_name AS person, l.name, l.detail\n           FROM command_log l JOIN users u ON u.id = l.user_id\n           WHERE l.ok = 0 AND l.kind != 'unknown'\n             AND (?1 IS NULL OR datetime(l.at) >= datetime(?1))\n             AND (?2 IS NULL OR l.user_id = ?2) AND (?3 IS NULL OR l.chat_id = ?3)\n           ORDER BY l.at DESC\n           LIMIT ?4",
   "describe": {
     "columns": [
       {
@@ -49,7 +49,7 @@
       }
     ],
     "parameters": {
-      "Right": 2
+      "Right": 4
     },
     "nullable": [
       false,
@@ -58,5 +58,5 @@
       true
     ]
   },
-  "hash": "3d74ca8cb25536f0d184d6980000930f2e3953ba3fac73916fc405804c4488cb"
+  "hash": "095aed60ff98a7056588aa7a5e018af60db756d792c5ca48b560a3cdc7f60664"
 }

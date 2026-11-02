@@ -153,6 +153,90 @@ pub async fn group(
     .await
 }
 
+/// A group, with how much is on its lists and how much the bot is used
+/// there.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GroupSummary {
+    pub id: i64,
+    /// `None` if GOWA hasn't told us the group's name yet.
+    pub name: Option<String>,
+    /// People the bot has seen in the group.
+    pub members: i64,
+    pub open_todos: i64,
+    pub done_todos: i64,
+    pub to_buy: i64,
+    pub bought: i64,
+    /// Uses of the bot in the group since the `since` passed in.
+    pub uses_since: i64,
+    /// When someone last used the bot in the group.
+    pub last_active: DateTime<Utc>,
+    /// When the bot warned the group it would leave.
+    pub warned_at: Option<DateTime<Utc>>,
+    /// When the bot was found to be no longer in the group.
+    pub left_at: Option<DateTime<Utc>>,
+}
+
+/// Every group (or just group `only`), most recently active first. Never a
+/// DM: `kind = 'group'`.
+pub async fn groups(
+    conn: &mut SqliteConnection,
+    only: Option<i64>,
+    since: DateTime<Utc>,
+) -> Result<Vec<GroupSummary>, sqlx::Error> {
+    let mut rows = sqlx::query_as!(
+        GroupSummary,
+        r#"SELECT c.id AS "id!", c.name,
+                  (SELECT count(*) FROM chat_members m WHERE m.chat_id = c.id) AS "members!: i64",
+                  (SELECT count(*) FROM todos t
+                   WHERE t.chat_id = c.id AND t.status = 'pending') AS "open_todos!: i64",
+                  (SELECT count(*) FROM todos t
+                   WHERE t.chat_id = c.id AND t.status = 'completed') AS "done_todos!: i64",
+                  (SELECT count(*) FROM shopping_items s
+                   WHERE s.chat_id = c.id AND s.bought_at IS NULL) AS "to_buy!: i64",
+                  (SELECT count(*) FROM shopping_items s
+                   WHERE s.chat_id = c.id AND s.bought_at IS NOT NULL) AS "bought!: i64",
+                  (SELECT count(*) FROM command_log l
+                   WHERE l.chat_id = c.id AND datetime(l.at) >= datetime(?2)) AS "uses_since!: i64",
+                  coalesce(c.last_active_at, c.created_at) AS "last_active!: DateTime<Utc>",
+                  c.warned_at AS "warned_at?: DateTime<Utc>",
+                  c.left_at AS "left_at?: DateTime<Utc>"
+           FROM chats c
+           WHERE c.kind = 'group' AND (?1 IS NULL OR c.id = ?1)
+           ORDER BY c.name, c.id"#,
+        only,
+        since
+    )
+    .fetch_all(conn)
+    .await?;
+
+    rows.sort_by_key(|g| Reverse(g.last_active));
+    Ok(rows)
+}
+
+/// Someone in a group.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Member {
+    pub id: i64,
+    pub name: String,
+}
+
+/// The people the bot has seen in a chat, A to Z.
+pub async fn members_of(
+    conn: &mut SqliteConnection,
+    chat_id: i64,
+) -> Result<Vec<Member>, sqlx::Error> {
+    sqlx::query_as!(
+        Member,
+        r#"SELECT u.id AS "id!", u.display_name AS name
+           FROM chat_members m JOIN users u ON u.id = m.user_id
+           WHERE m.chat_id = ?
+           ORDER BY u.display_name"#,
+        chat_id
+    )
+    .fetch_all(conn)
+    .await
+}
+
 /// A person's phone-number ID (`wa_jid`), which is also their DM's chat
 /// ID. `None` if there's no such user.
 pub async fn user_jid(
@@ -162,6 +246,16 @@ pub async fn user_jid(
     sqlx::query_scalar!("SELECT wa_jid FROM users WHERE id = ?", user_id)
         .fetch_optional(conn)
         .await
+}
+
+/// Whether there's a chat (a group or a DM) with this id.
+pub async fn chat_exists(conn: &mut SqliteConnection, chat_id: i64) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar!(
+        r#"SELECT EXISTS(SELECT 1 FROM chats WHERE id = ?) AS "exists!: bool""#,
+        chat_id
+    )
+    .fetch_one(conn)
+    .await
 }
 
 /// The id of the person's DM with the bot, if they have one.
@@ -396,6 +490,75 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn groups_with_counts_and_members() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let now = Utc::now();
+        let bilal = users::find_or_register(&mut conn, &person("Bilal", "447700900001"), now)
+            .await
+            .unwrap()
+            .unwrap();
+        let khadija = users::find_or_register(&mut conn, &person("Khadija", "447700900002"), now)
+            .await
+            .unwrap()
+            .unwrap();
+        let family = chats::find_or_create(&mut conn, GROUP, None, now)
+            .await
+            .unwrap();
+        chats::set_group_name(&mut conn, GROUP, "Family")
+            .await
+            .unwrap();
+        let quiet = chats::find_or_create(
+            &mut conn,
+            "120363000000000002@g.us",
+            None,
+            now - Duration::days(5),
+        )
+        .await
+        .unwrap();
+        for user in [khadija.id, bilal.id] {
+            chats::add_member(&mut conn, family, user, now)
+                .await
+                .unwrap();
+        }
+        let dm = chats::find_or_create(&mut conn, &bilal.wa_jid, Some(bilal.id), now)
+            .await
+            .unwrap();
+        todos::add(&mut conn, family, "bins", bilal.id, None, now)
+            .await
+            .unwrap();
+        shop::add(&mut conn, family, "milk", bilal.id, now)
+            .await
+            .unwrap();
+        log_use(&mut conn, family, bilal.id, now - Duration::days(40)).await;
+        log_use(&mut conn, family, bilal.id, now - Duration::hours(1)).await;
+        chats::touch(&mut conn, family, now).await.unwrap();
+
+        let all = groups(&mut conn, None, now - Duration::days(30))
+            .await
+            .unwrap();
+        // Most recently active first; the DM isn't a group.
+        let ids: Vec<i64> = all.iter().map(|g| g.id).collect();
+        assert_eq!(ids, [family, quiet]);
+        let f = &all[0];
+        assert_eq!(f.name.as_deref(), Some("Family"));
+        assert_eq!(f.members, 2);
+        assert_eq!((f.open_todos, f.to_buy), (1, 1));
+        assert_eq!(f.uses_since, 1, "the use 40 days ago is too old");
+        assert_eq!(all[1].members, 0);
+
+        assert_eq!(
+            groups(&mut conn, Some(quiet), now).await.unwrap()[0].id,
+            quiet
+        );
+        assert!(groups(&mut conn, Some(dm), now).await.unwrap().is_empty());
+
+        let members = members_of(&mut conn, family).await.unwrap();
+        let names: Vec<&str> = members.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, ["Bilal", "Khadija"]);
     }
 
     #[tokio::test]

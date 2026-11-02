@@ -41,24 +41,39 @@ pub async fn record(conn: &mut SqliteConnection, row: &Logged<'_>) -> Result<(),
 
 // ---- Reading the log, for the admin dashboard ----
 //
-// Every query takes `since`: only rows from then on, or `None` for all
-// time. `?1 IS NULL OR ...` makes that one query instead of two.
+// Every query takes a `Filter`: only rows from `since` on (`None` for all
+// time), and only one person's or one chat's if asked. `?1 IS NULL OR ...`
+// makes each of those one query instead of two.
 // `datetime(...)` puts both times in one text form before comparing, as
 // docs/METRICS.md does. A "use" is a command, a list reply or a reaction:
 // `unknown` rows (a `+word` the bot didn't understand) are counted apart.
+
+/// Which rows of the log to read. `Copy`: it's a few small values, so it
+/// can be passed to every query without `.clone()`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Filter {
+    pub since: Option<DateTime<Utc>>,
+    /// Only this person's uses.
+    pub user: Option<i64>,
+    /// Only uses in this chat.
+    pub chat: Option<i64>,
+}
 
 /// When each use happened and who by, oldest first, for grouping by day
 /// and hour on the dashboard's clock (`metrics::per_day`, `by_hour`).
 pub async fn use_times(
     conn: &mut SqliteConnection,
-    since: Option<DateTime<Utc>>,
+    filter: Filter,
 ) -> Result<Vec<(DateTime<Utc>, i64)>, sqlx::Error> {
     let rows = sqlx::query!(
         r#"SELECT at AS "at: DateTime<Utc>", user_id
            FROM command_log
            WHERE kind != 'unknown' AND (?1 IS NULL OR datetime(at) >= datetime(?1))
+             AND (?2 IS NULL OR user_id = ?2) AND (?3 IS NULL OR chat_id = ?3)
            ORDER BY at"#,
-        since
+        filter.since,
+        filter.user,
+        filter.chat
     )
     .fetch_all(conn)
     .await?;
@@ -75,16 +90,19 @@ pub struct CommandUses {
 /// Most used commands first.
 pub async fn top_commands(
     conn: &mut SqliteConnection,
-    since: Option<DateTime<Utc>>,
+    filter: Filter,
 ) -> Result<Vec<CommandUses>, sqlx::Error> {
     sqlx::query_as!(
         CommandUses,
         r#"SELECT name, count(*) AS "uses!: i64"
            FROM command_log
            WHERE kind != 'unknown' AND (?1 IS NULL OR datetime(at) >= datetime(?1))
+             AND (?2 IS NULL OR user_id = ?2) AND (?3 IS NULL OR chat_id = ?3)
            GROUP BY name
            ORDER BY count(*) DESC, name"#,
-        since
+        filter.since,
+        filter.user,
+        filter.chat
     )
     .fetch_all(conn)
     .await
@@ -98,15 +116,63 @@ pub struct Person {
     pub last_seen: Option<DateTime<Utc>>,
 }
 
-/// Everyone, including people who never used a command, A to Z.
-pub async fn people(conn: &mut SqliteConnection) -> Result<Vec<Person>, sqlx::Error> {
+/// The people the filter covers, A to Z: everyone (even people who never
+/// used a command) with no filter; with a chat, the people who ever used the
+/// bot there, and `last_seen` is their latest use there. `since` is ignored.
+pub async fn people(
+    conn: &mut SqliteConnection,
+    filter: Filter,
+) -> Result<Vec<Person>, sqlx::Error> {
     sqlx::query_as!(
         Person,
         r#"SELECT u.id AS "id!", u.display_name AS name,
                   (SELECT max(l.at) FROM command_log l
-                   WHERE l.user_id = u.id AND l.kind != 'unknown') AS "last_seen?: DateTime<Utc>"
+                   WHERE l.user_id = u.id AND l.kind != 'unknown'
+                     AND (?2 IS NULL OR l.chat_id = ?2)) AS "last_seen?: DateTime<Utc>"
            FROM users u
-           ORDER BY u.display_name"#
+           WHERE (?1 IS NULL OR u.id = ?1)
+             AND (?2 IS NULL OR EXISTS(SELECT 1 FROM command_log l
+                                       WHERE l.user_id = u.id AND l.chat_id = ?2))
+           ORDER BY u.display_name"#,
+        filter.user,
+        filter.chat
+    )
+    .fetch_all(conn)
+    .await
+}
+
+/// A chat, with how often the bot was used in it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChatUses {
+    pub id: i64,
+    /// `"group"` or `"dm"`.
+    pub kind: String,
+    /// The group's name, or for a DM, its owner's name.
+    pub name: Option<String>,
+    pub uses: i64,
+}
+
+/// Where the bot was used, most uses first. Uses only: never what was
+/// said, so a DM appears here as a count, like on the users pages.
+pub async fn chats(
+    conn: &mut SqliteConnection,
+    filter: Filter,
+) -> Result<Vec<ChatUses>, sqlx::Error> {
+    sqlx::query_as!(
+        ChatUses,
+        r#"SELECT c.id AS "id!", c.kind,
+                  CASE WHEN c.kind = 'dm' THEN u.display_name ELSE c.name END AS "name?: String",
+                  count(*) AS "uses!: i64"
+           FROM command_log l
+           JOIN chats c ON c.id = l.chat_id
+           LEFT JOIN users u ON u.id = c.dm_user_id
+           WHERE l.kind != 'unknown' AND (?1 IS NULL OR datetime(l.at) >= datetime(?1))
+             AND (?2 IS NULL OR l.user_id = ?2) AND (?3 IS NULL OR l.chat_id = ?3)
+           GROUP BY c.id
+           ORDER BY count(*) DESC, c.id"#,
+        filter.since,
+        filter.user,
+        filter.chat
     )
     .fetch_all(conn)
     .await
@@ -124,7 +190,7 @@ pub struct Unknown {
 /// Unknown words, most typed first: the best ideas for new commands.
 pub async fn unknown_words(
     conn: &mut SqliteConnection,
-    since: Option<DateTime<Utc>>,
+    filter: Filter,
 ) -> Result<Vec<Unknown>, sqlx::Error> {
     sqlx::query_as!(
         Unknown,
@@ -132,9 +198,12 @@ pub async fn unknown_words(
                   count(DISTINCT user_id) AS "people!: i64"
            FROM command_log
            WHERE kind = 'unknown' AND (?1 IS NULL OR datetime(at) >= datetime(?1))
+             AND (?2 IS NULL OR user_id = ?2) AND (?3 IS NULL OR chat_id = ?3)
            GROUP BY name
            ORDER BY count(*) DESC, name"#,
-        since
+        filter.since,
+        filter.user,
+        filter.chat
     )
     .fetch_all(conn)
     .await
@@ -152,13 +221,16 @@ pub struct Failure {
 /// How many uses failed, and the latest `limit` of them, newest first.
 pub async fn failures(
     conn: &mut SqliteConnection,
-    since: Option<DateTime<Utc>>,
+    filter: Filter,
     limit: i64,
 ) -> Result<(i64, Vec<Failure>), sqlx::Error> {
     let total = sqlx::query_scalar!(
         r#"SELECT count(*) AS "total!: i64" FROM command_log
-           WHERE ok = 0 AND kind != 'unknown' AND (?1 IS NULL OR datetime(at) >= datetime(?1))"#,
-        since
+           WHERE ok = 0 AND kind != 'unknown' AND (?1 IS NULL OR datetime(at) >= datetime(?1))
+             AND (?2 IS NULL OR user_id = ?2) AND (?3 IS NULL OR chat_id = ?3)"#,
+        filter.since,
+        filter.user,
+        filter.chat
     )
     .fetch_one(&mut *conn)
     .await?;
@@ -168,9 +240,12 @@ pub async fn failures(
            FROM command_log l JOIN users u ON u.id = l.user_id
            WHERE l.ok = 0 AND l.kind != 'unknown'
              AND (?1 IS NULL OR datetime(l.at) >= datetime(?1))
+             AND (?2 IS NULL OR l.user_id = ?2) AND (?3 IS NULL OR l.chat_id = ?3)
            ORDER BY l.at DESC
-           LIMIT ?2"#,
-        since,
+           LIMIT ?4"#,
+        filter.since,
+        filter.user,
+        filter.chat,
         limit
     )
     .fetch_all(conn)
@@ -191,7 +266,7 @@ pub struct Speed {
 /// an outside API: AlAdhan, Open-Meteo).
 pub async fn slowest(
     conn: &mut SqliteConnection,
-    since: Option<DateTime<Utc>>,
+    filter: Filter,
     limit: i64,
 ) -> Result<Vec<Speed>, sqlx::Error> {
     // `CAST(round(...) AS INTEGER)`: `avg` gives a decimal; whole
@@ -204,10 +279,13 @@ pub async fn slowest(
                   max(duration_ms) AS "max_ms!: i64"
            FROM command_log
            WHERE kind IN ('command', 'list_reply') AND (?1 IS NULL OR datetime(at) >= datetime(?1))
+             AND (?2 IS NULL OR user_id = ?2) AND (?3 IS NULL OR chat_id = ?3)
            GROUP BY name
            ORDER BY avg(duration_ms) DESC, name
-           LIMIT ?2"#,
-        since,
+           LIMIT ?4"#,
+        filter.since,
+        filter.user,
+        filter.chat,
         limit
     )
     .fetch_all(conn)

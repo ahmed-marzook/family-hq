@@ -1,0 +1,111 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT c.id AS \"id!\", c.name,\n                  (SELECT count(*) FROM chat_members m WHERE m.chat_id = c.id) AS \"members!: i64\",\n                  (SELECT count(*) FROM todos t\n                   WHERE t.chat_id = c.id AND t.status = 'pending') AS \"open_todos!: i64\",\n                  (SELECT count(*) FROM todos t\n                   WHERE t.chat_id = c.id AND t.status = 'completed') AS \"done_todos!: i64\",\n                  (SELECT count(*) FROM shopping_items s\n                   WHERE s.chat_id = c.id AND s.bought_at IS NULL) AS \"to_buy!: i64\",\n                  (SELECT count(*) FROM shopping_items s\n                   WHERE s.chat_id = c.id AND s.bought_at IS NOT NULL) AS \"bought!: i64\",\n                  (SELECT count(*) FROM command_log l\n                   WHERE l.chat_id = c.id AND datetime(l.at) >= datetime(?2)) AS \"uses_since!: i64\",\n                  coalesce(c.last_active_at, c.created_at) AS \"last_active!: DateTime<Utc>\",\n                  c.warned_at AS \"warned_at?: DateTime<Utc>\",\n                  c.left_at AS \"left_at?: DateTime<Utc>\"\n           FROM chats c\n           WHERE c.kind = 'group' AND (?1 IS NULL OR c.id = ?1)\n           ORDER BY c.name, c.id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "chats",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "name",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chats",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "members!: i64",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "open_todos!: i64",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "done_todos!: i64",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "to_buy!: i64",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "bought!: i64",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "uses_since!: i64",
+        "ordinal": 7,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "last_active!: DateTime<Utc>",
+        "ordinal": 8,
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "name": "warned_at?: DateTime<Utc>",
+        "ordinal": 9,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chats",
+            "name": "warned_at"
+          }
+        }
+      },
+      {
+        "name": "left_at?: DateTime<Utc>",
+        "ordinal": 10,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chats",
+            "name": "left_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "6fc5c7ba44b1feeb25865c348b3db3d137f52dcb749ba961d2b3d69647d250b6"
+}
