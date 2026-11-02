@@ -201,8 +201,11 @@ jobs:
       - name: No secrets in the images
         run: |
           for image in "$IMAGE:$VERSION" "$ADMIN_IMAGE:$VERSION"; do
+            # `|| true`: find exits 1 when it meets a folder user 1000 can't
+            # read (the dashboard image has some), even with nothing found.
+            # Without it, `bash -e` stops here with no error message.
             found=$(docker run --rm --entrypoint sh "$image" -c \
-              'find / -xdev \( -name .env -o -name "*.db" -o -name "*.db-wal" \) 2>/dev/null')
+              'find / -xdev \( -name .env -o -name "*.db" -o -name "*.db-wal" \) 2>/dev/null || true')
             if [ -n "$found" ]; then
               echo "::error::found in $image: $found"
               exit 1
