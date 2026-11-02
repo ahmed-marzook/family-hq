@@ -4,11 +4,12 @@
 use std::sync::Arc;
 
 use axum::http::StatusCode;
-use axum::{Json, Router, routing::get};
+use axum::routing::{get, patch, post};
+use axum::{Json, Router};
 use serde_json::{Value, json};
 
 use crate::AppState;
-use crate::routes::{admin, admin_auth, admin_metrics, health};
+use crate::routes::{admin, admin_auth, admin_metrics, admin_settings, health};
 
 /// The routes under `/api`, all behind the admin password.
 ///
@@ -24,6 +25,23 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/chats/{id}/todos", get(admin::group_todos))
         .route("/chats/{id}/shop", get(admin::group_shop))
         .route("/metrics", get(admin_metrics::metrics))
+        .route("/prayer-methods", get(admin_settings::prayer_methods))
+        .route(
+            "/users/{id}/settings",
+            patch(admin_settings::change_settings),
+        )
+        .route(
+            "/users/{id}/settings/reset",
+            post(admin_settings::reset_settings),
+        )
+        .route(
+            "/users/{id}/prayer-reminders",
+            post(admin_settings::prayer_reminders),
+        )
+        .route(
+            "/users/{id}/chats/{chat}/todo-reminders",
+            post(admin_settings::todo_reminders),
+        )
         .fallback(not_found);
     admin_auth::protect(routes, state)
 }
@@ -41,6 +59,20 @@ async fn not_found() -> (StatusCode, Json<Value>) {
 /// `test:test`, and GOWA can't be reached.
 #[cfg(test)]
 pub(crate) async fn start_server_with(pool: sqlx::SqlitePool) -> String {
+    serve_for_test(pool, None).await
+}
+
+/// The same, with town lookups going to a fake geocoder at `geocoding_url`.
+#[cfg(test)]
+pub(crate) async fn start_server_with_geocoder(
+    pool: sqlx::SqlitePool,
+    geocoding_url: &str,
+) -> String {
+    serve_for_test(pool, Some(geocoding_url)).await
+}
+
+#[cfg(test)]
+async fn serve_for_test(pool: sqlx::SqlitePool, geocoding_url: Option<&str>) -> String {
     use crate::config::Config;
     use crate::settings::Settings;
 
@@ -60,7 +92,14 @@ pub(crate) async fn start_server_with(pool: sqlx::SqlitePool) -> String {
             prayer_ending_minutes: 20,
         },
     };
-    let app = crate::app(AppState::new(config, pool));
+    let mut state = AppState::new(config, pool);
+    if let Some(url) = geocoding_url {
+        // `Arc::get_mut` gives a `&mut` only while nothing else shares the
+        // `Arc`, which is still true here, before the server starts.
+        Arc::get_mut(&mut state).expect("not shared yet").apis.geo =
+            crate::geo::Geo::with_geocoding_url(url);
+    }
+    let app = crate::app(state);
     // Port 0 asks the operating system for any free port.
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await

@@ -1,10 +1,23 @@
 /** A response from the API that wasn't a success. */
 export class ApiError extends Error {
   status: number;
+  /** The API's own explanation (`{"error": "..."}`), if it gave one. */
+  reason: string | null;
 
-  constructor(status: number, path: string) {
-    super(`${path} answered ${status}`);
+  constructor(status: number, path: string, reason: string | null = null) {
+    super(reason ?? `${path} answered ${status}`);
     this.status = status;
+    this.reason = reason;
+  }
+}
+
+/** The `error` text from a failed response's JSON, if there is one. */
+async function reasonOf(response: Response): Promise<string | null> {
+  try {
+    const body = await response.json();
+    return typeof body?.error === "string" ? body.error : null;
+  } catch {
+    return null;
   }
 }
 
@@ -12,7 +25,24 @@ export class ApiError extends Error {
 export async function getJson<T>(path: string): Promise<T> {
   const response = await fetch(`/api${path}`);
   if (!response.ok) {
-    throw new ApiError(response.status, path);
+    throw new ApiError(response.status, path, await reasonOf(response));
+  }
+  return response.json() as Promise<T>;
+}
+
+/** Sends `body` as JSON to a path under `/api` and returns the answer. */
+export async function sendJson<T>(
+  method: "PATCH" | "POST",
+  path: string,
+  body: unknown,
+): Promise<T> {
+  const response = await fetch(`/api${path}`, {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    throw new ApiError(response.status, path, await reasonOf(response));
   }
   return response.json() as Promise<T>;
 }
@@ -44,7 +74,18 @@ export type Settings = {
   asr_school: Setting<string>;
   ending_minutes: Setting<number>;
   prayer_reminders: boolean;
+  /** The same settings as plain values, for the edit forms. */
+  values: {
+    city: string;
+    country: string;
+    timezone: string;
+    prayer_method: number;
+    asr_school: number;
+    ending_minutes: number;
+  };
 };
+
+export type PrayerMethod = { id: number; name: string };
 
 export type Chat = {
   id: number;

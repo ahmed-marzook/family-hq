@@ -1,0 +1,21 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT EXISTS(\n               SELECT 1 FROM chats c\n               WHERE c.id = ?2\n                 AND (c.dm_user_id = ?1\n                      OR (c.kind = 'group' AND EXISTS(\n                          SELECT 1 FROM chat_members m\n                          WHERE m.chat_id = c.id AND m.user_id = ?1)))\n           ) AS \"in_chat!: bool\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "in_chat!: bool",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "62387814423a13580d82bfae9c6fb74bbeb115c5afc65b6174c593e6d93f304a"
+}

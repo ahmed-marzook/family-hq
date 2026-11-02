@@ -5,11 +5,14 @@ import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { Link, useParams } from "react-router";
 
-import { getJson, type Chat, type Setting, type UserDetail } from "../api";
+import { ApiError, getJson, type Chat, type UserDetail } from "../api";
 import GroupLists from "../components/GroupLists";
 import LoadError from "../components/LoadError";
 import Page from "../components/Page";
+import SettingsEditor from "../components/SettingsEditor";
+import Switch from "../components/Switch";
 import { count, date, timeAgo } from "../format";
+import { useUserChange } from "../useUserChange";
 
 export default function User() {
   const { id } = useParams();
@@ -48,35 +51,14 @@ function Detail({ data }: { data: UserDetail }) {
       </p>
 
       <Section title="Settings">
-        <dl className="divide-y divide-stone-200 dark:divide-stone-800">
-          <SettingRow label="Town" setting={settings.place} />
-          <SettingRow label="Timezone" setting={settings.timezone} />
-          <SettingRow label="Prayer method" setting={settings.prayer_method} />
-          <SettingRow label="Asr" setting={settings.asr_school} />
-          <SettingRow
-            label="“Ending soon” reminder"
-            setting={{
-              value: `${settings.ending_minutes.value} minutes before`,
-              own: settings.ending_minutes.own,
-            }}
-          />
-          <Row label="Prayer reminders (private chat)">
-            {settings.prayer_reminders ? "On" : "Off"}
-          </Row>
-        </dl>
-        {!dm && (
-          <p className="mt-3 text-sm text-stone-600 dark:text-stone-400">
-            They haven't messaged the bot privately, so these are all the
-            defaults.
-          </p>
-        )}
+        <SettingsEditor userId={user.id} name={user.name} settings={settings} hasDm={dm !== undefined} />
       </Section>
 
       <Section title="Chats">
         <div className="flex flex-col gap-3">
-          {dm && <DmCard chat={dm} />}
+          {dm && <DmCard chat={dm} userId={user.id} />}
           {groups.map((group) => (
-            <GroupCard key={group.id} chat={group} />
+            <GroupCard key={group.id} chat={group} userId={user.id} />
           ))}
           {!dm && groups.length === 0 && (
             <p className="text-sm text-stone-600 dark:text-stone-400">
@@ -98,46 +80,46 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
   );
 }
 
-function Row({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 py-2">
-      <dt className="text-sm text-stone-600 dark:text-stone-400">{label}</dt>
-      <dd className="flex items-center gap-2">{children}</dd>
-    </div>
-  );
-}
-
-function SettingRow({ label, setting }: { label: string; setting: Setting<string> }) {
-  return (
-    <Row label={label}>
-      {setting.value}
-      <span
-        className={`rounded px-1.5 py-0.5 text-xs font-medium ${
-          setting.own
-            ? "bg-teal-50 text-teal-800 dark:bg-teal-950 dark:text-teal-300"
-            : "bg-stone-100 text-stone-600 dark:bg-stone-800 dark:text-stone-400"
-        }`}
-      >
-        {setting.own ? "Own" : "Default"}
-      </span>
-    </Row>
-  );
-}
-
 function Counts({ chat }: { chat: Chat }) {
   return (
     <p className="text-sm text-stone-600 dark:text-stone-400">
       Todos: {chat.open_todos} open, {chat.done_todos} done · Shopping:{" "}
       {chat.to_buy} to buy, {chat.bought} bought
-      {chat.todo_reminders && " · Todo reminders on"}
     </p>
+  );
+}
+
+/** Their todo reminders in this chat (`/todo reminders on`). */
+function TodoReminders({ chat, userId }: { chat: Chat; userId: number }) {
+  const change = useUserChange(userId);
+  return (
+    <div className="mt-2">
+      <div className="flex items-center gap-2 text-sm">
+        <Switch
+          on={chat.todo_reminders}
+          label="Todo reminders"
+          disabled={change.isPending}
+          onChange={(on) =>
+            change.mutate({ method: "POST", path: `/chats/${chat.id}/todo-reminders`, body: { on } })
+          }
+        />
+        Todo reminders {chat.todo_reminders ? "on" : "off"}
+      </div>
+      {change.error && (
+        <p role="alert" className="mt-1 text-sm text-red-700 dark:text-red-400">
+          {change.error instanceof ApiError && change.error.reason
+            ? change.error.reason
+            : "Couldn't save that."}
+        </p>
+      )}
+    </div>
   );
 }
 
 const card =
   "rounded-lg border border-stone-200 bg-white p-4 dark:border-stone-800 dark:bg-stone-900";
 
-function DmCard({ chat }: { chat: Chat }) {
+function DmCard({ chat, userId }: { chat: Chat; userId: number }) {
   return (
     <div className={card}>
       <h3 className="mb-1 flex items-center gap-2 font-medium">
@@ -148,11 +130,12 @@ function DmCard({ chat }: { chat: Chat }) {
       <p className="mt-1 text-xs text-stone-500">
         Private, so only the counts are shown.
       </p>
+      <TodoReminders chat={chat} userId={userId} />
     </div>
   );
 }
 
-function GroupCard({ chat }: { chat: Chat }) {
+function GroupCard({ chat, userId }: { chat: Chat; userId: number }) {
   return (
     <div className={card}>
       <h3 className="mb-1 flex items-center gap-2 font-medium">
@@ -160,6 +143,7 @@ function GroupCard({ chat }: { chat: Chat }) {
         {chat.name ?? "Unnamed group"}
       </h3>
       <Counts chat={chat} />
+      <TodoReminders chat={chat} userId={userId} />
       <GroupLists groupId={chat.id} />
     </div>
   );

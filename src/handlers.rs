@@ -23,6 +23,7 @@ use crate::repo::todo_reminders;
 use crate::repo::todos::{self, ListedTodo};
 use crate::repo::users::{self, User};
 use crate::settings::Settings;
+use crate::settings_edit::{self, Change, Refused, Saved};
 use crate::weather::{self, When};
 
 const ADDED: &str = "📝";
@@ -343,32 +344,28 @@ async fn chat_settings(
     ))
 }
 
-/// `/settings city …`: looks the town up (Open-Meteo's geocoder, which also
-/// gives its coordinates and timezone) and saves all of it for this chat.
-/// `None` if no such town was found; nothing is saved then.
-async fn save_city(
-    conn: &mut SqliteConnection,
-    ctx: &Context,
-    apis: &Apis,
-    current: &Settings,
-    city: &str,
-    country: &str,
-) -> Result<Option<(String, chrono_tz::Tz)>, AppError> {
-    let Ok(town) = apis.geo.find_town(city, country).await else {
-        return Ok(None);
-    };
-    // A town whose timezone name we don't recognise keeps the current one.
-    let timezone = town.timezone.unwrap_or(current.timezone);
-    stored::set_location(
-        conn,
-        ctx.chat_id,
-        &town.name,
-        &town.country,
-        town.coordinates,
-        timezone.name(),
-    )
-    .await?;
-    Ok(Some((town.name, timezone)))
+/// Why a `/settings` change wasn't made, as the bot says it.
+fn format_refused(refused: Refused) -> String {
+    match refused {
+        Refused::UnknownTown { city, country } => format!(
+            "{PROBLEM} I couldn't find {city}, {country}. \
+             Try e.g. `/settings city Leicester, GB`."
+        ),
+        Refused::UnknownTimezone(name) => format!(
+            "{PROBLEM} I don't know the timezone {name}. Use a name like \
+             Europe/London or Asia/Karachi."
+        ),
+        Refused::UnknownMethod(method) => {
+            format!("{PROBLEM} There's no method {method}. /settings methods lists them.")
+        }
+        // The parser only ever gives Shafi'i or Hanafi, but just in case.
+        Refused::UnknownSchool(_) => format!("{PROBLEM} Use `/settings asr hanafi` or `shafi`."),
+        Refused::EndingOutOfRange(_) => format!(
+            "{PROBLEM} Pick between {} and {} minutes.",
+            settings_edit::ENDING_MINUTES.start(),
+            settings_edit::ENDING_MINUTES.end()
+        ),
+    }
 }
 
 /// A location shared in a DM: saves the exact point, named after the
@@ -518,8 +515,9 @@ async fn settings_command(
     let (current, _) = chat_settings(conn, ctx, prayer_times).await?;
     let id = ctx.chat_id;
 
-    // `note` is an extra first line for the reply; most changes have none.
-    let note = match command {
+    // The changes are checked and saved by `settings_edit`, under the same
+    // rules the admin dashboard uses; only the wording here is the bot's.
+    let change = match command {
         SettingsCommand::Show => None,
         SettingsCommand::Everyone => {
             if !ctx.is_group {
@@ -529,56 +527,33 @@ async fn settings_command(
             return Ok(format_everyone(&members, &prayer_times.defaults));
         }
         SettingsCommand::Methods => return Ok(format_methods()),
-        SettingsCommand::Reset => {
-            stored::reset(conn, id).await?;
-            Some("Back to the defaults.".to_string())
-        }
+        SettingsCommand::Reset => Some(Change::Reset),
         SettingsCommand::City { city, country } => {
             // No country typed: keep the one already in use.
             let country = country.unwrap_or_else(|| current.country.clone());
-            match save_city(conn, ctx, apis, &current, &city, &country).await? {
-                Some((name, timezone)) => Some(format!(
+            Some(Change::City { city, country })
+        }
+        SettingsCommand::Timezone(name) => Some(Change::Timezone(name)),
+        SettingsCommand::PrayerMethod(method) => Some(Change::PrayerMethod(method)),
+        SettingsCommand::PrayerSchool(school) => Some(Change::PrayerSchool(school)),
+        SettingsCommand::PrayerEnding(minutes) => Some(Change::PrayerEnding(minutes)),
+    };
+
+    // `note` is an extra first line for the reply; most changes have none.
+    let note = match change {
+        None => None,
+        Some(change) => {
+            match settings_edit::apply(conn, apis, id, &current, &change).await? {
+                Ok(Saved::Town { name, timezone }) => Some(format!(
                     "Found {name}. Timezone set to {timezone} to match."
                 )),
-                None => {
-                    return Ok(format!(
-                        "{PROBLEM} I couldn't find {city}, {country}. \
-                         Try e.g. `/settings city Leicester, GB`."
-                    ));
+                Ok(Saved::Done) if change == Change::Reset => {
+                    Some("Back to the defaults.".to_string())
                 }
+                Ok(Saved::Done) => None,
+                // Refused: the explanation is the whole reply.
+                Err(refused) => return Ok(format_refused(refused)),
             }
-        }
-        SettingsCommand::Timezone(name) => match name.parse::<chrono_tz::Tz>() {
-            Ok(timezone) => {
-                stored::set_timezone(conn, id, timezone.name()).await?;
-                None
-            }
-            Err(_) => {
-                return Ok(format!(
-                    "{PROBLEM} I don't know the timezone {name}. Use a name like \
-                     Europe/London or Asia/Karachi."
-                ));
-            }
-        },
-        SettingsCommand::PrayerMethod(method) => {
-            if prayer::method_name(method).is_none() {
-                return Ok(format!(
-                    "{PROBLEM} There's no method {method}. /settings methods lists them."
-                ));
-            }
-            stored::set_prayer_method(conn, id, method).await?;
-            None
-        }
-        SettingsCommand::PrayerSchool(school) => {
-            stored::set_prayer_school(conn, id, school).await?;
-            None
-        }
-        SettingsCommand::PrayerEnding(minutes) => {
-            if !(1..=120).contains(&minutes) {
-                return Ok(format!("{PROBLEM} Pick between 1 and 120 minutes."));
-            }
-            stored::set_prayer_ending_minutes(conn, id, minutes).await?;
-            None
         }
     };
 

@@ -133,6 +133,50 @@ pub async fn group(
     .await
 }
 
+/// A person's phone-number ID (`wa_jid`), which is also their DM's chat
+/// ID. `None` if there's no such user.
+pub async fn user_jid(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar!("SELECT wa_jid FROM users WHERE id = ?", user_id)
+        .fetch_optional(conn)
+        .await
+}
+
+/// The id of the person's DM with the bot, if they have one.
+pub async fn dm_of(conn: &mut SqliteConnection, user_id: i64) -> Result<Option<i64>, sqlx::Error> {
+    sqlx::query_scalar!(
+        r#"SELECT id AS "id!" FROM chats WHERE dm_user_id = ?"#,
+        user_id
+    )
+    .fetch_optional(conn)
+    .await
+}
+
+/// Whether the chat is the person's DM or a group they've been seen in:
+/// the chats whose todo reminders the dashboard may change for them.
+pub async fn is_in_chat(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    chat_id: i64,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar!(
+        r#"SELECT EXISTS(
+               SELECT 1 FROM chats c
+               WHERE c.id = ?2
+                 AND (c.dm_user_id = ?1
+                      OR (c.kind = 'group' AND EXISTS(
+                          SELECT 1 FROM chat_members m
+                          WHERE m.chat_id = c.id AND m.user_id = ?1)))
+           ) AS "in_chat!: bool""#,
+        user_id,
+        chat_id
+    )
+    .fetch_one(conn)
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::Duration;
@@ -343,5 +387,44 @@ mod tests {
         );
         assert_eq!(group(&mut conn, dm).await.unwrap(), None);
         assert_eq!(group(&mut conn, 999).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn who_is_in_which_chat() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let now = Utc::now();
+        let bilal = users::find_or_register(&mut conn, &person("Bilal", "447700900001"), now)
+            .await
+            .unwrap()
+            .unwrap();
+        let khadija = users::find_or_register(&mut conn, &person("Khadija", "447700900002"), now)
+            .await
+            .unwrap()
+            .unwrap();
+        let group = chats::find_or_create(&mut conn, GROUP, None, now)
+            .await
+            .unwrap();
+        chats::add_member(&mut conn, group, bilal.id, now)
+            .await
+            .unwrap();
+        let dm = chats::find_or_create(&mut conn, &bilal.wa_jid, Some(bilal.id), now)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            user_jid(&mut conn, bilal.id).await.unwrap().as_deref(),
+            Some("447700900001@s.whatsapp.net")
+        );
+        assert_eq!(user_jid(&mut conn, 999).await.unwrap(), None);
+        assert_eq!(dm_of(&mut conn, bilal.id).await.unwrap(), Some(dm));
+        assert_eq!(dm_of(&mut conn, khadija.id).await.unwrap(), None);
+
+        assert!(is_in_chat(&mut conn, bilal.id, group).await.unwrap());
+        assert!(is_in_chat(&mut conn, bilal.id, dm).await.unwrap());
+        // Not her group, and certainly not his DM.
+        assert!(!is_in_chat(&mut conn, khadija.id, group).await.unwrap());
+        assert!(!is_in_chat(&mut conn, khadija.id, dm).await.unwrap());
+        assert!(!is_in_chat(&mut conn, bilal.id, 999).await.unwrap());
     }
 }

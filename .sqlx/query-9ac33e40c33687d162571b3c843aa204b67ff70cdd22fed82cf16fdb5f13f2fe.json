@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT wa_jid FROM users WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "wa_jid",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "wa_jid"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "9ac33e40c33687d162571b3c843aa204b67ff70cdd22fed82cf16fdb5f13f2fe"
+}

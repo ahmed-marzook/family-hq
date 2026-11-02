@@ -60,6 +60,16 @@ impl Geo {
         }
     }
 
+    /// The same, but asking a fake geocoder at `geocoding_url`, so tests
+    /// never reach the real one.
+    #[cfg(test)]
+    pub(crate) fn with_geocoding_url(geocoding_url: &str) -> Self {
+        Geo {
+            geocoding_url: geocoding_url.to_string(),
+            ..Geo::new()
+        }
+    }
+
     /// The town (and the bigger places around it) nearest to a point.
     pub async fn nearest_place(&self, at: Coordinates) -> Result<NearestPlace, AppError> {
         let reply: ReverseReply = self

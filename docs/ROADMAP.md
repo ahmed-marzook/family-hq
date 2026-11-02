@@ -11,7 +11,7 @@ unticked ones aren't yet.
 | **2. Reminders & Prayer Coach** | `+remind`, ntfy pushes, prayer windows, escalation, reflections | Prayer reminders done early; `+remind` planned |
 | **3. Dashboard** | React web app served by the Rust binary | Later |
 | **4. AI & Extras** | Weekly coaching, natural language, weather, calendars, Home Assistant | `/weather` and per-person timezones done early |
-| **Admin dashboard** | The owner's view of users, settings and metrics, in its own container | In progress, at the owner's request: A1 (0.8.0), A2 (0.8.1, 0.9.0) and A3 (0.10.0) released |
+| **Admin dashboard** | The owner's view of users, settings and metrics, in its own container | In progress, at the owner's request: Done: A1 (0.8.0), A2 (0.8.1, 0.9.0), A3 (0.10.0), A4 (0.11.0) |
 
 Rule: don't start a phase until the one before it has been **used by the
 family for at least two weeks**. Real use finds the problems that matter.
@@ -570,9 +570,19 @@ Done when:
 - [x] Busiest hours are correct in both BST and GMT (including the night the
       clocks go back)
 
-### Stage A4: Edit a user's settings
+### Stage A4: Edit a user's settings ✅
 
-Build:
+Build (all done):
+- `src/settings_edit.rs`: the checks and saving for every change, used by
+  both `/settings` and the dashboard; each words its own replies.
+- `src/routes/admin_settings.rs`: `PATCH /api/users/{id}/settings` (all or
+  nothing, in one transaction), `POST .../settings/reset`,
+  `.../prayer-reminders`, `.../chats/{chat}/todo-reminders`, and
+  `GET /api/prayer-methods`.
+- `chats::find_or_create` falls back to a person's existing DM, so a row the
+  dashboard created can't break their messages under another chat ID.
+
+As planned:
 - City and country, timezone, prayer method, Asr school, "ending soon" minutes,
   prayer reminders on/off, todo reminders on/off per chat, reset to defaults.
 - `PATCH /api/users/{id}/settings`, and small `POST`s for reset and reminders.
@@ -586,9 +596,9 @@ New concepts: partial updates with `Option`, sharing validation between two
 callers, friendly API errors.
 
 Done when:
-- [ ] A bad timezone or a 121-minute value gets a clear error and saves nothing
-- [ ] `/settings` in WhatsApp shows the change, and reminders follow it
-- [ ] A person's first real DM after their row was created uses that same row
+- [x] A bad timezone or a 121-minute value gets a clear error and saves nothing
+- [x] `/settings` in WhatsApp shows the change, and reminders follow it
+- [x] A person's first real DM after their row was created uses that same row
       (`dm_user_id` is unique, so a mismatched ID would break all their DMs)
 
 ## Phase 4: AI & Extras

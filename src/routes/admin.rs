@@ -100,6 +100,19 @@ struct SettingsView {
     ending_minutes: Setting<i64>,
     /// `/prayers on` in their DM.
     prayer_reminders: bool,
+    /// The same settings as plain values, for the dashboard's forms.
+    values: Values,
+}
+
+/// The settings in use, as the edit endpoints take them.
+#[derive(Debug, PartialEq, Serialize)]
+struct Values {
+    city: String,
+    country: String,
+    timezone: String,
+    prayer_method: u8,
+    asr_school: u8,
+    ending_minutes: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -193,22 +206,32 @@ pub async fn user(
     Path(id): Path<i64>,
 ) -> Result<Json<UserDetail>, AppError> {
     let mut conn = state.db.acquire().await?;
+    Ok(Json(detail(&mut conn, &state, id).await?))
+}
+
+/// Everything the user page shows about one person. Also what the edit
+/// endpoints answer with, so the page shows the result straight away.
+pub(crate) async fn detail(
+    conn: &mut SqliteConnection,
+    state: &AppState,
+    id: i64,
+) -> Result<UserDetail, AppError> {
     let since = Utc::now() - Duration::days(RECENT_DAYS);
     // `.pop()` takes the one row out of the `Vec`; `ok_or` turns "none"
     // into our 404.
-    let summary = admin::users(&mut conn, Some(id), since)
+    let summary = admin::users(conn, Some(id), since)
         .await?
         .pop()
         .ok_or(AppError::NotFound)?;
-    let personal = stored::personal(&mut conn, id).await?;
-    let chats = admin::chats_of(&mut conn, id).await?;
+    let personal = stored::personal(conn, id).await?;
+    let chats = admin::chats_of(conn, id).await?;
 
-    Ok(Json(UserDetail {
+    Ok(UserDetail {
         recent_days: RECENT_DAYS,
         user: summary.into(),
         settings: settings_view(personal, &state.apis.prayer_times.defaults),
         chats: chats.into_iter().map(ChatView::from).collect(),
-    }))
+    })
 }
 
 /// `GET /api/chats/{id}/todos`: a group's todos. 404 for a DM.
@@ -332,6 +355,15 @@ fn settings_view(personal: Option<ChatSettings>, defaults: &Settings) -> Setting
             own: own.prayer_ending_minutes.is_some(),
         },
         prayer_reminders: personal.prayer_reminders,
+        values: Values {
+            timezone: used.timezone.name().to_string(),
+            prayer_method: used.prayer_method,
+            asr_school: used.prayer_school,
+            ending_minutes: used.prayer_ending_minutes,
+            // Moved last: `used` gives these two up here.
+            city: used.city,
+            country: used.country,
+        },
     }
 }
 
@@ -375,6 +407,14 @@ mod tests {
                     own: false
                 },
                 prayer_reminders: false,
+                values: Values {
+                    city: "Milton Keynes".to_string(),
+                    country: "GB".to_string(),
+                    timezone: "Europe/London".to_string(),
+                    prayer_method: 3,
+                    asr_school: prayer::SHAFII,
+                    ending_minutes: 20,
+                },
             }
         );
 

@@ -20,6 +20,7 @@ pub mod reminders;
 pub mod repo;
 pub mod routes;
 pub mod settings;
+pub mod settings_edit;
 pub mod todo_reminders;
 pub mod weather;
 pub mod whatsapp;

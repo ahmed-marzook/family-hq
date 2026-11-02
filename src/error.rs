@@ -34,6 +34,11 @@ pub enum AppError {
     /// won't show (a DM's lists).
     #[error("not found")]
     NotFound,
+
+    /// The admin API was asked for a change that isn't allowed. The text
+    /// says why, in words the dashboard shows as they are.
+    #[error("{0}")]
+    BadRequest(String),
 }
 
 /// Lets a handler return `Result<_, AppError>`: on `Err`, Axum calls this
@@ -45,6 +50,11 @@ impl IntoResponse for AppError {
             AppError::NotFound => (
                 StatusCode::NOT_FOUND,
                 axum::Json(serde_json::json!({ "error": "not found" })),
+            )
+                .into_response(),
+            AppError::BadRequest(reason) => (
+                StatusCode::BAD_REQUEST,
+                axum::Json(serde_json::json!({ "error": reason })),
             )
                 .into_response(),
             _ => {
