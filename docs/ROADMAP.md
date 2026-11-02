@@ -11,7 +11,7 @@ unticked ones aren't yet.
 | **2. Reminders & Prayer Coach** | `+remind`, ntfy pushes, prayer windows, escalation, reflections | Prayer reminders done early; `+remind` planned |
 | **3. Dashboard** | React web app served by the Rust binary | Later |
 | **4. AI & Extras** | Weekly coaching, natural language, weather, calendars, Home Assistant | `/weather` and per-person timezones done early |
-| **Admin dashboard** | The owner's view of users, settings and metrics, in its own container | In progress, at the owner's request: A1 released (0.8.0); A2's password released (0.8.1) |
+| **Admin dashboard** | The owner's view of users, settings and metrics, in its own container | In progress, at the owner's request: A1 released (0.8.0), A2 released (0.8.1, 0.9.0) |
 
 Rule: don't start a phase until the one before it has been **used by the
 family for at least two weeks**. Real use finds the problems that matter.
@@ -521,30 +521,33 @@ Done when:
 - [x] The webhook can't be reached through the dashboard
 - [ ] Deployed, and port 3000 still isn't reachable from another machine
 
-### Stage A2: Users and what they have (read-only)
+### Stage A2: Users and what they have (read-only) ✅
 
 Build:
 - ✅ The password middleware (GOWA's login).
 - ✅ Non-`GET` requests must be `application/json`. Browsers send Basic Auth
   by themselves, and this stops another website triggering changes.
-- `AppError` variants for 400 and 404.
-- Users page: name, last seen, chats and counts. User page: their settings,
-  marked as their own or the default, plus each chat's lists (group) or counts
-  (DM).
-- `GET /api/users`, `/api/users/{id}`, `/api/chats/{id}/todos`,
-  `/api/chats/{id}/shop`.
-- Group names: nothing fills in `chats.name` yet. Check what GOWA's
-  `/user/my/groups` returns, and save the names from there.
-- `chat_members` never removes anyone, so show it as "seen in", not "member of".
+- ✅ `AppError::NotFound` (404, JSON). A bad id in the path is already a 400
+  from Axum's `Path` extractor, so no 400 variant was needed yet.
+- ✅ Users page: name, last seen, uses in 30 days, groups, private chat. User
+  page: their settings, marked as their own or the default, plus each chat's
+  lists (group) or counts (DM).
+- ✅ `GET /api/users`, `/api/users/{id}`, `/api/chats/{id}/todos`,
+  `/api/chats/{id}/shop` (`src/routes/admin.rs`, queries in
+  `src/repo/admin.rs`).
+- ✅ Group names: `GET /api/users` saves them from GOWA's `/user/my/groups`
+  (best effort, 5-second limit), into `chats.name`.
+- `chat_members` never removes anyone, so a group someone left still shows.
 
 New concepts: `axum::middleware`, `Serialize`, API types separate from database
 types.
 
 Done when:
 - [x] A wrong or missing password gets 401 on every `/api` route
-- [ ] A DM's list answers 404, and no DM title or item is in any API response
-- [ ] No API response contains coordinates
-- [ ] Group lists match `/todo` and `/shop`
+- [x] A DM's list answers 404, and no DM title or item is in any API response
+- [x] No API response contains coordinates
+- [x] Group lists match `/todo` and `/shop` (the same queries, in the same
+      order)
 
 ### Stage A3: Metrics (read-only)
 

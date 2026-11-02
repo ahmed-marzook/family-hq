@@ -29,13 +29,28 @@ pub enum AppError {
     /// Open-Meteo answered, but with something we couldn't use.
     #[error("weather: {0}")]
     Weather(String),
+
+    /// The admin API was asked for something that isn't there, or that it
+    /// won't show (a DM's lists).
+    #[error("not found")]
+    NotFound,
 }
 
 /// Lets a handler return `Result<_, AppError>`: on `Err`, Axum calls this
 /// to build the response. The details go to the log, not to the caller.
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        println!("error: {self}");
-        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        match self {
+            // Not a fault, so nothing to log. JSON, like the rest of the API.
+            AppError::NotFound => (
+                StatusCode::NOT_FOUND,
+                axum::Json(serde_json::json!({ "error": "not found" })),
+            )
+                .into_response(),
+            _ => {
+                println!("error: {self}");
+                StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            }
+        }
     }
 }

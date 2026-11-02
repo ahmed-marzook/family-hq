@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE chats SET name = ? WHERE wa_chat_id = ? AND kind = 'group'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "23036afdff0d59dcb1c5c3434b6351b4e14d71a443976edcee4d347a54f17d41"
+}

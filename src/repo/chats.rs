@@ -58,12 +58,52 @@ pub async fn add_member(
     Ok(())
 }
 
+/// Saves a group's name, as WhatsApp has it. Does nothing for a group the
+/// bot hasn't been used in yet (no `chats` row), and never touches a DM.
+pub async fn set_group_name(
+    conn: &mut SqliteConnection,
+    wa_chat_id: &str,
+    name: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        "UPDATE chats SET name = ? WHERE wa_chat_id = ? AND kind = 'group'",
+        name,
+        wa_chat_id
+    )
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::db::test_pool;
     use crate::person::Person;
     use crate::repo::users;
+
+    #[tokio::test]
+    async fn group_names_are_saved_for_groups_only() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let now = Utc::now();
+        let group_id = "120363000000000001@g.us";
+        let group = find_or_create(&mut conn, group_id, None, now)
+            .await
+            .unwrap();
+
+        set_group_name(&mut conn, group_id, "Family").await.unwrap();
+        // A group the bot hasn't been used in: nothing to update, no error.
+        set_group_name(&mut conn, "120363000000000009@g.us", "Other")
+            .await
+            .unwrap();
+
+        let names: Vec<(i64, Option<String>)> = sqlx::query_as("SELECT id, name FROM chats")
+            .fetch_all(&mut *conn)
+            .await
+            .unwrap();
+        assert_eq!(names, [(group, Some("Family".to_string()))]);
+    }
 
     #[tokio::test]
     async fn same_chat_id_gives_the_same_chat() {

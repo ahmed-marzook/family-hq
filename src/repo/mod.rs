@@ -10,6 +10,7 @@
 //! `.sqlx/` data when `SQLX_OFFLINE=true`), so a typo in a column name or a
 //! wrong Rust type is a compile error, not a runtime surprise.
 
+pub mod admin;
 pub mod chats;
 pub mod messages;
 pub mod metrics;

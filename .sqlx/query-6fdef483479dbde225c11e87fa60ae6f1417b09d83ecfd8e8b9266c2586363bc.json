@@ -1,0 +1,85 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT c.id AS \"id!\", c.kind, c.name,\n                  (SELECT count(*) FROM todos t\n                   WHERE t.chat_id = c.id AND t.status = 'pending') AS \"open_todos!: i64\",\n                  (SELECT count(*) FROM todos t\n                   WHERE t.chat_id = c.id AND t.status = 'completed') AS \"done_todos!: i64\",\n                  (SELECT count(*) FROM shopping_items s\n                   WHERE s.chat_id = c.id AND s.bought_at IS NULL) AS \"to_buy!: i64\",\n                  (SELECT count(*) FROM shopping_items s\n                   WHERE s.chat_id = c.id AND s.bought_at IS NOT NULL) AS \"bought!: i64\",\n                  EXISTS(SELECT 1 FROM todo_reminders r\n                         WHERE r.chat_id = c.id AND r.user_id = ?1) AS \"todo_reminders!: bool\"\n           FROM chats c\n           WHERE c.dm_user_id = ?1\n              OR (c.kind = 'group'\n                  AND c.id IN (SELECT chat_id FROM chat_members WHERE user_id = ?1))\n           ORDER BY c.kind = 'group', c.name, c.id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "chats",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "kind",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chats",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "name": "name",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chats",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "open_todos!: i64",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "done_todos!: i64",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "to_buy!: i64",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "bought!: i64",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "todo_reminders!: bool",
+        "ordinal": 7,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "6fdef483479dbde225c11e87fa60ae6f1417b09d83ecfd8e8b9266c2586363bc"
+}

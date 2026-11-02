@@ -93,6 +93,47 @@ impl Gowa {
             .await?;
         Ok(response.results.message_id)
     }
+
+    /// The groups the bot is in, with their names (`/user/my/groups`).
+    ///
+    /// Gives up after a few seconds, because the admin dashboard waits on
+    /// it and the names are only nice to have.
+    pub async fn groups(&self) -> Result<Vec<Group>, reqwest::Error> {
+        let response: GroupsResponse = self
+            .http
+            .get(format!("{}/user/my/groups", self.base_url))
+            .basic_auth(&self.user, Some(&self.password))
+            .timeout(std::time::Duration::from_secs(5))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        Ok(response.results.data)
+    }
+}
+
+/// One group from `/user/my/groups`. GOWA sends many more fields.
+///
+/// `rename` maps GOWA's capitalised JSON names onto Rust's snake_case.
+#[derive(Debug, PartialEq, serde::Deserialize)]
+pub struct Group {
+    /// The group's chat ID, e.g. `120363000000000001@g.us`.
+    #[serde(rename = "JID")]
+    pub jid: String,
+    #[serde(rename = "Name")]
+    pub name: String,
+}
+
+/// `{"code":"SUCCESS","results":{"data":[{"JID":"...","Name":"..."}]}}`.
+#[derive(serde::Deserialize)]
+struct GroupsResponse {
+    results: GroupsResults,
+}
+
+#[derive(serde::Deserialize)]
+struct GroupsResults {
+    data: Vec<Group>,
 }
 
 /// GOWA's reply to `/send/message`:
@@ -106,4 +147,26 @@ struct SendResponse {
 #[derive(serde::Deserialize)]
 struct SendResults {
     message_id: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_group_names_from_gowa() {
+        // Trimmed from a real v9.7.0 reply, with a fake ID; the extra
+        // fields are there to show serde skips what it wasn't asked for.
+        let body = r#"{"code":"SUCCESS","message":"Success get list groups","results":{"data":[
+            {"JID":"120363000000000001@g.us","Name":"Family","Topic":"","Participants":[],"IsLocked":false}
+        ]}}"#;
+        let response: GroupsResponse = serde_json::from_str(body).unwrap();
+        assert_eq!(
+            response.results.data,
+            [Group {
+                jid: "120363000000000001@g.us".to_string(),
+                name: "Family".to_string(),
+            }]
+        );
+    }
 }

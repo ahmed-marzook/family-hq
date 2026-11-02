@@ -8,7 +8,7 @@ use axum::{Json, Router, routing::get};
 use serde_json::{Value, json};
 
 use crate::AppState;
-use crate::routes::{admin_auth, health};
+use crate::routes::{admin, admin_auth, health};
 
 /// The routes under `/api`, all behind the admin password.
 ///
@@ -19,6 +19,10 @@ use crate::routes::{admin_auth, health};
 pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
     let routes = Router::new()
         .route("/health", get(health::health))
+        .route("/users", get(admin::list_users))
+        .route("/users/{id}", get(admin::user))
+        .route("/chats/{id}/todos", get(admin::group_todos))
+        .route("/chats/{id}/shop", get(admin::group_shop))
         .fallback(not_found);
     admin_auth::protect(routes, state)
 }
@@ -31,39 +35,47 @@ async fn not_found() -> (StatusCode, Json<Value>) {
     (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" })))
 }
 
+/// Runs the real router, on a free port with `pool` as its database, and
+/// returns its address. For tests of anything under `/api`. The login is
+/// `test:test`, and GOWA can't be reached.
+#[cfg(test)]
+pub(crate) async fn start_server_with(pool: sqlx::SqlitePool) -> String {
+    use crate::config::Config;
+    use crate::settings::Settings;
+
+    let config = Config {
+        port: 0,
+        webhook_secret: "test".to_string(),
+        gowa_url: "http://localhost:1".to_string(),
+        gowa_basic_auth: "test:test".to_string(),
+        database_url: "sqlite::memory:".to_string(),
+        defaults: Settings {
+            timezone: chrono_tz::Europe::London,
+            city: "Milton Keynes".to_string(),
+            country: "GB".to_string(),
+            coordinates: None,
+            prayer_method: 3,
+            prayer_school: 0,
+            prayer_ending_minutes: 20,
+        },
+    };
+    let app = crate::app(AppState::new(config, pool));
+    // Port 0 asks the operating system for any free port.
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    format!("http://{address}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
     use crate::db::test_pool;
-    use crate::settings::Settings;
 
-    /// Runs the real router on a free port, and returns its address.
     async fn start_server() -> String {
-        let config = Config {
-            port: 0,
-            webhook_secret: "test".to_string(),
-            gowa_url: "http://localhost:1".to_string(),
-            gowa_basic_auth: "test:test".to_string(),
-            database_url: "sqlite::memory:".to_string(),
-            defaults: Settings {
-                timezone: chrono_tz::Europe::London,
-                city: "Milton Keynes".to_string(),
-                country: "GB".to_string(),
-                coordinates: None,
-                prayer_method: 3,
-                prayer_school: 0,
-                prayer_ending_minutes: 20,
-            },
-        };
-        let app = crate::app(AppState::new(config, test_pool().await));
-        // Port 0 asks the operating system for any free port.
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-            .await
-            .unwrap();
-        let address = listener.local_addr().unwrap();
-        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        format!("http://{address}")
+        start_server_with(test_pool().await).await
     }
 
     /// The login `start_server` gives the server (its `GOWA_BASIC_AUTH`).
