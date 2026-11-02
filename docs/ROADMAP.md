@@ -11,7 +11,7 @@ unticked ones aren't yet.
 | **2. Reminders & Prayer Coach** | `+remind`, ntfy pushes, prayer windows, escalation, reflections | Prayer reminders done early; `+remind` planned |
 | **3. Dashboard** | React web app served by the Rust binary | Later |
 | **4. AI & Extras** | Weekly coaching, natural language, weather, calendars, Home Assistant | `/weather` and per-person timezones done early |
-| **Admin dashboard** | The owner's view of users, settings and metrics, in its own container | In progress, at the owner's request: Stage A1 built |
+| **Admin dashboard** | The owner's view of users, settings and metrics, in its own container | In progress, at the owner's request: A1 released (0.8.0); A2's password released (0.8.1) |
 
 Rule: don't start a phase until the one before it has been **used by the
 family for at least two weeks**. Real use finds the problems that matter.
@@ -488,9 +488,12 @@ Decisions:
   family-hq, so the browser sees one address and no CORS is needed. Port 3000
   and the webhook stay private.
 - **Reached over the home network or Tailscale**, never port-forwarded.
-- **One admin password** (`ADMIN_BASIC_AUTH`), because being on the Wi-Fi
-  shouldn't be enough to read everything. Checked in Rust, on `/api` only. If
-  it isn't set, `/api` refuses everything.
+- **A password, the same login as GOWA's** (`GOWA_BASIC_AUTH`), because
+  being on the Wi-Fi shouldn't be enough to read everything. Sharing it means
+  one login to set up rather than two; anyone who has it can already use
+  GOWA as the bot, so a second password wouldn't protect much more. The
+  browser asks for it (HTTP Basic auth), and Rust checks it on everything
+  under `/api` (`src/routes/admin_auth.rs`).
 - **DM lists show counts only**, because `/help` promises they're private. The
   API enforces it: a DM's list endpoints answer 404, so titles never reach the
   browser. Group lists show in full.
@@ -521,9 +524,10 @@ Done when:
 ### Stage A2: Users and what they have (read-only)
 
 Build:
-- The password middleware, and `AppError` variants for 400, 401 and 404.
-- Non-`GET` requests must be `application/json`. Browsers send Basic Auth by
-  themselves, and this stops another website triggering changes.
+- ✅ The password middleware (GOWA's login).
+- ✅ Non-`GET` requests must be `application/json`. Browsers send Basic Auth
+  by themselves, and this stops another website triggering changes.
+- `AppError` variants for 400 and 404.
 - Users page: name, last seen, chats and counts. User page: their settings,
   marked as their own or the default, plus each chat's lists (group) or counts
   (DM).
@@ -537,7 +541,7 @@ New concepts: `axum::middleware`, `Serialize`, API types separate from database
 types.
 
 Done when:
-- [ ] A wrong or missing password gets 401 on every `/api` route
+- [x] A wrong or missing password gets 401 on every `/api` route
 - [ ] A DM's list answers 404, and no DM title or item is in any API response
 - [ ] No API response contains coordinates
 - [ ] Group lists match `/todo` and `/shop`

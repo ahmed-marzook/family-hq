@@ -441,9 +441,10 @@ dependencies = [
 
 [[package]]
 name = "family-hq"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "chrono",
  "chrono-tz",
  "hex",

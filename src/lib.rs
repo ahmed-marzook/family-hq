@@ -123,6 +123,6 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/", get(routes::health::hello))
         .route("/health", get(routes::health::health))
         .route("/webhook/whatsapp", post(routes::webhook::whatsapp))
-        .nest("/api", routes::api::router())
+        .nest("/api", routes::api::router(state.clone()))
         .with_state(state)
 }

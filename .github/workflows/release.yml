@@ -172,7 +172,7 @@ jobs:
 
           for _ in $(seq 30); do
             status=$(docker inspect -f '{{.State.Health.Status}}' admin)
-            api=$(curl -s -o /dev/null -w '%{http_code}' localhost:8080/api/health || true)
+            api=$(curl -s -u ci:ci -o /dev/null -w '%{http_code}' localhost:8080/api/health || true)
             [ "$status" = healthy ] && [ "$api" = 200 ] && break
             sleep 2
           done
@@ -186,7 +186,9 @@ jobs:
           # A page's own address must load the app, so refreshing works.
           curl -sf localhost:8080/users | grep -q 'id="root"'
           # An unknown API path must be the API's 404, not the app's HTML.
-          curl -s localhost:8080/api/nope | grep -q '"not found"'
+          curl -s -u ci:ci localhost:8080/api/nope | grep -q '"not found"'
+          # Without GOWA's login (ci:ci above), the API refuses.
+          [ "$(curl -s -o /dev/null -w '%{http_code}' localhost:8080/api/health)" = 401 ]
 
           uid=$(docker exec admin awk '/^Uid:/ { print $2 }' /proc/1/status)
           if [ "$uid" != 1000 ]; then

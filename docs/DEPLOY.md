@@ -25,10 +25,12 @@ WhatsApp, and GOWA → family-hq traffic stays inside Docker.
 
 The admin dashboard listens on port 8080, on the server only until you set
 `ADMIN_BIND=0.0.0.0` in `.env`. That opens it to your home network and
-Tailscale. **Don't set it until the release that adds the password (Stage
-A2), and never port-forward 8080 on your router.** Docker's published ports
-also bypass `ufw`, so a firewall rule on the server won't limit who reaches
-it. Until then, use a tunnel: `ssh -L 8080:localhost:8080 you@homeserver`.
+Tailscale. It asks for the same login as GOWA (`GOWA_BASIC_AUTH`), from
+version 0.8.1 on; 0.8.0 has no password, so keep it on the server only with
+that version. **Never port-forward 8080 on your router.** Docker's published
+ports also bypass `ufw`, so a firewall rule on the server won't limit who
+reaches it. Plain HTTP on the home network shows the password to anyone able
+to watch that network's traffic; Tailscale encrypts it.
 
 ---
 
@@ -71,7 +73,7 @@ echo "GOWA_WEBHOOK_SECRET=$(openssl rand -hex 32)"
 ```
 
 Paste those two lines into `.env` (replacing the `change-me` ones) with
-`nano .env`. Leave `FAMILY_HQ_TAG=0.8.0`. Then lock it down, since it holds
+`nano .env`. Leave `FAMILY_HQ_TAG=0.8.1`. Then lock it down, since it holds
 the passwords:
 
 ```sh

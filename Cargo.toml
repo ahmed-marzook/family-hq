@@ -1,10 +1,11 @@
 [package]
 name = "family-hq"
-version = "0.8.0"
+version = "0.8.1"
 edition = "2024"
 
 [dependencies]
 axum = "0.8.9"
+base64 = "0.22.1"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 chrono-tz = "0.10.4"
 hex = "0.4.3"
