@@ -1,0 +1,21 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT EXISTS(SELECT 1 FROM todos\n                         WHERE created_by = ?1 OR assignee_id = ?1 OR completed_by = ?1)\n               OR EXISTS(SELECT 1 FROM shopping_items\n                         WHERE added_by = ?1 OR bought_by = ?1) AS \"named!: bool\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "named!: bool",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "79120901b451d7d2ce6a46274f5b5752a855343039fc4d6ffb864ed758a39b9b"
+}

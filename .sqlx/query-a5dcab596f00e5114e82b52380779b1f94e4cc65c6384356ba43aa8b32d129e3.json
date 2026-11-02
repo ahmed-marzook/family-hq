@@ -1,0 +1,81 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT u.id AS \"id!\", u.display_name AS name,\n                  coalesce(u.last_active_at, u.created_at) AS \"last_active!: DateTime<Utc>\",\n                  u.warned_at AS \"warned_at?: DateTime<Utc>\",\n                  u.cleared_at AS \"cleared_at?: DateTime<Utc>\",\n                  (SELECT c.wa_chat_id FROM chats c WHERE c.dm_user_id = u.id) AS \"dm_chat?\"\n           FROM users u\n           ORDER BY u.id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "name",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "display_name"
+          }
+        }
+      },
+      {
+        "name": "last_active!: DateTime<Utc>",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "name": "warned_at?: DateTime<Utc>",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "warned_at"
+          }
+        }
+      },
+      {
+        "name": "cleared_at?: DateTime<Utc>",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "cleared_at"
+          }
+        }
+      },
+      {
+        "name": "dm_chat?",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chats",
+            "name": "wa_chat_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "a5dcab596f00e5114e82b52380779b1f94e4cc65c6384356ba43aa8b32d129e3"
+}

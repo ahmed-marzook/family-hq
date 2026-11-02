@@ -1,0 +1,81 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\", wa_chat_id, name, left_at AS \"left_at?: DateTime<Utc>\",\n                  coalesce(last_active_at, created_at) AS \"last_active!: DateTime<Utc>\",\n                  warned_at AS \"warned_at?: DateTime<Utc>\"\n           FROM chats WHERE kind = 'group' ORDER BY id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "chats",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "wa_chat_id",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chats",
+            "name": "wa_chat_id"
+          }
+        }
+      },
+      {
+        "name": "name",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chats",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "left_at?: DateTime<Utc>",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chats",
+            "name": "left_at"
+          }
+        }
+      },
+      {
+        "name": "last_active!: DateTime<Utc>",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "name": "warned_at?: DateTime<Utc>",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chats",
+            "name": "warned_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "fd338108a64c9ca0a0b65733d292458ae77fa5e4a9838e6d07b063a93328a8db"
+}

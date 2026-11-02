@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM command_log WHERE user_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "6c81d7f502a62d1a6b2300cd07f097cc040900c7d9cd4508e5e4535dc5ee3bf5"
+}

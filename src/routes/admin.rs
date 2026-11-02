@@ -19,6 +19,7 @@ use serde::Serialize;
 use sqlx::SqliteConnection;
 
 use crate::AppState;
+use crate::cleanup;
 use crate::error::AppError;
 use crate::prayer;
 use crate::repo::settings::{self as stored, ChatSettings};
@@ -38,7 +39,26 @@ const RECENT_DAYS: i64 = 30;
 pub struct UserList {
     /// The period `recent_uses` covers.
     recent_days: i64,
+    cleanup: CleanupView,
     users: Vec<UserRow>,
+}
+
+/// How clearing inactive people's data is set up (`INACTIVE_DAYS`).
+#[derive(Debug, Serialize)]
+pub(crate) struct CleanupView {
+    /// Days without using the bot before their data is cleared; 0 = never.
+    inactive_days: i64,
+    /// How many days before clearing the warning goes.
+    warn_days: i64,
+}
+
+impl CleanupView {
+    pub(crate) fn of(state: &AppState) -> Self {
+        CleanupView {
+            inactive_days: state.config.inactive_days,
+            warn_days: cleanup::WARN_DAYS,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -50,6 +70,14 @@ struct UserRow {
     recent_uses: i64,
     groups: i64,
     has_dm: bool,
+    /// When they last used the bot (any message in their DM counts too).
+    last_active: DateTime<Utc>,
+    warned_at: Option<DateTime<Utc>>,
+    /// Their data was cleared then; only their name is left.
+    cleared_at: Option<DateTime<Utc>>,
+    /// When their data will be cleared if they don't use the bot before
+    /// then; `null` if it won't be (clearing is off, or already done).
+    clears_on: Option<DateTime<Utc>>,
 }
 
 /// `From` is the standard way to say "this type can be made from that
@@ -64,13 +92,35 @@ impl From<admin::UserSummary> for UserRow {
             recent_uses: u.uses_since,
             groups: u.groups,
             has_dm: u.has_dm,
+            last_active: u.last_active,
+            warned_at: u.warned_at,
+            cleared_at: u.cleared_at,
+            clears_on: None,
         }
+    }
+}
+
+/// A person's row, with when their data will be cleared filled in, by the
+/// same rules the cleanup itself follows.
+fn user_row(u: admin::UserSummary, state: &AppState, now: DateTime<Utc>) -> UserRow {
+    let activity = cleanup::Activity {
+        last_active: u.last_active,
+        warned_at: u.warned_at,
+        cleared_at: u.cleared_at,
+        can_warn: u.has_dm,
+    };
+    let clears_on = cleanup::clears_on(&activity, state.config.inactive_days, now);
+    UserRow {
+        clears_on,
+        // `..` fills in every other field from the plain conversion.
+        ..UserRow::from(u)
     }
 }
 
 #[derive(Debug, Serialize)]
 pub struct UserDetail {
     recent_days: i64,
+    cleanup: CleanupView,
     user: UserRow,
     settings: SettingsView,
     chats: Vec<ChatView>,
@@ -126,20 +176,45 @@ struct ChatView {
     to_buy: i64,
     bought: i64,
     todo_reminders: bool,
+    /// For a group: when someone last used the bot there.
+    last_active: DateTime<Utc>,
+    /// For a group: when the bot posted that it would leave.
+    warned_at: Option<DateTime<Utc>>,
+    /// For a group: the bot isn't in it any more (seen then); it's deleted
+    /// a day after.
+    left_at: Option<DateTime<Utc>>,
+    /// For a group: when the bot will leave and delete it if nobody uses it
+    /// before then; `null` if it won't (clearing is off, or it's a DM).
+    leaves_on: Option<DateTime<Utc>>,
 }
 
-impl From<admin::UserChat> for ChatView {
-    fn from(c: admin::UserChat) -> Self {
-        ChatView {
-            id: c.id,
-            kind: c.kind,
-            name: c.name,
-            open_todos: c.open_todos,
-            done_todos: c.done_todos,
-            to_buy: c.to_buy,
-            bought: c.bought,
-            todo_reminders: c.todo_reminders,
-        }
+/// A chat as the user page shows it, with when the bot would leave a quiet
+/// group worked out by the same rules the cleanup follows.
+fn chat_view(c: admin::UserChat, state: &AppState, now: DateTime<Utc>) -> ChatView {
+    let leaves_on = (c.kind == "group" && c.left_at.is_none())
+        .then(|| {
+            let activity = cleanup::Activity {
+                last_active: c.last_active,
+                warned_at: c.warned_at,
+                cleared_at: None,
+                can_warn: true,
+            };
+            cleanup::clears_on(&activity, state.config.inactive_days, now)
+        })
+        .flatten();
+    ChatView {
+        id: c.id,
+        kind: c.kind,
+        name: c.name,
+        open_todos: c.open_todos,
+        done_todos: c.done_todos,
+        to_buy: c.to_buy,
+        bought: c.bought,
+        todo_reminders: c.todo_reminders,
+        last_active: c.last_active,
+        warned_at: c.warned_at,
+        left_at: c.left_at,
+        leaves_on,
     }
 }
 
@@ -187,13 +262,17 @@ struct ItemView {
 pub async fn list_users(State(state): State<Arc<AppState>>) -> Result<Json<UserList>, AppError> {
     refresh_group_names(&state).await;
     let mut conn = state.db.acquire().await?;
-    let since = Utc::now() - Duration::days(RECENT_DAYS);
+    let now = Utc::now();
+    let since = now - Duration::days(RECENT_DAYS);
     let users = admin::users(&mut conn, None, since).await?;
     Ok(Json(UserList {
         recent_days: RECENT_DAYS,
-        // `map(UserRow::from)` converts each one; `collect` gathers them
-        // back into a `Vec`.
-        users: users.into_iter().map(UserRow::from).collect(),
+        cleanup: CleanupView::of(&state),
+        // `map` converts each one; `collect` gathers them back into a `Vec`.
+        users: users
+            .into_iter()
+            .map(|u| user_row(u, &state, now))
+            .collect(),
     }))
 }
 
@@ -216,7 +295,8 @@ pub(crate) async fn detail(
     state: &AppState,
     id: i64,
 ) -> Result<UserDetail, AppError> {
-    let since = Utc::now() - Duration::days(RECENT_DAYS);
+    let now = Utc::now();
+    let since = now - Duration::days(RECENT_DAYS);
     // `.pop()` takes the one row out of the `Vec`; `ok_or` turns "none"
     // into our 404.
     let summary = admin::users(conn, Some(id), since)
@@ -228,9 +308,13 @@ pub(crate) async fn detail(
 
     Ok(UserDetail {
         recent_days: RECENT_DAYS,
-        user: summary.into(),
+        cleanup: CleanupView::of(state),
+        user: user_row(summary, state, now),
         settings: settings_view(personal, &state.apis.prayer_times.defaults),
-        chats: chats.into_iter().map(ChatView::from).collect(),
+        chats: chats
+            .into_iter()
+            .map(|c| chat_view(c, state, now))
+            .collect(),
     })
 }
 

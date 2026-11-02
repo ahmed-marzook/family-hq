@@ -57,10 +57,21 @@ export type UserRow = {
   recent_uses: number;
   groups: number;
   has_dm: boolean;
+  /** When they last used the bot (any message in their DM counts). */
+  last_active: string;
+  warned_at: string | null;
+  /** Their data was cleared then; only their name is left. */
+  cleared_at: string | null;
+  /** When their data will be cleared if they don't use the bot. */
+  clears_on: string | null;
 };
+
+/** How clearing data nobody uses is set up (INACTIVE_DAYS). */
+export type Cleanup = { inactive_days: number; warn_days: number };
 
 export type UserList = {
   recent_days: number;
+  cleanup: Cleanup;
   users: UserRow[];
 };
 
@@ -96,10 +107,18 @@ export type Chat = {
   to_buy: number;
   bought: number;
   todo_reminders: boolean;
+  /** For a group: when someone last used the bot there. */
+  last_active: string;
+  warned_at: string | null;
+  /** For a group: the bot isn't in it any more (noticed then). */
+  left_at: string | null;
+  /** For a group: when the bot will leave it if nobody uses it. */
+  leaves_on: string | null;
 };
 
 export type UserDetail = {
   recent_days: number;
+  cleanup: Cleanup;
   user: UserRow;
   settings: Settings;
   chats: Chat[];

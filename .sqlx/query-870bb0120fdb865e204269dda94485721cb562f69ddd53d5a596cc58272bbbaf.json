@@ -1,0 +1,109 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT u.id AS \"id!\", u.display_name AS name,\n                  u.created_at AS \"first_seen: DateTime<Utc>\",\n                  (SELECT max(l.at) FROM command_log l WHERE l.user_id = u.id)\n                      AS \"last_seen?: DateTime<Utc>\",\n                  (SELECT count(*) FROM command_log l\n                   WHERE l.user_id = u.id AND datetime(l.at) >= datetime(?2)) AS \"uses_since!: i64\",\n                  (SELECT count(*) FROM chat_members m JOIN chats c ON c.id = m.chat_id\n                   WHERE m.user_id = u.id AND c.kind = 'group') AS \"groups!: i64\",\n                  EXISTS(SELECT 1 FROM chats c WHERE c.dm_user_id = u.id) AS \"has_dm!: bool\",\n                  coalesce(u.last_active_at, u.created_at) AS \"last_active!: DateTime<Utc>\",\n                  u.warned_at AS \"warned_at?: DateTime<Utc>\",\n                  u.cleared_at AS \"cleared_at?: DateTime<Utc>\"\n           FROM users u\n           WHERE ?1 IS NULL OR u.id = ?1\n           ORDER BY u.display_name",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "name",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "display_name"
+          }
+        }
+      },
+      {
+        "name": "first_seen: DateTime<Utc>",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "name": "last_seen?: DateTime<Utc>",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "name": "uses_since!: i64",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "groups!: i64",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "has_dm!: bool",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "last_active!: DateTime<Utc>",
+        "ordinal": 7,
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "name": "warned_at?: DateTime<Utc>",
+        "ordinal": 8,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "warned_at"
+          }
+        }
+      },
+      {
+        "name": "cleared_at?: DateTime<Utc>",
+        "ordinal": 9,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "cleared_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "870bb0120fdb865e204269dda94485721cb562f69ddd53d5a596cc58272bbbaf"
+}

@@ -36,6 +36,9 @@ services:
       DEFAULT_PRAYER_METHOD: ${DEFAULT_PRAYER_METHOD:-3}    # 3 = Muslim World League
       DEFAULT_PRAYER_SCHOOL: ${DEFAULT_PRAYER_SCHOOL:-0}    # Asr: 0 = Shafi'i, 1 = Hanafi
       DEFAULT_PRAYER_ENDING_MINUTES: ${DEFAULT_PRAYER_ENDING_MINUTES:-20}
+      # Days without using the bot before a person's (or group's) data is
+      # cleared, after a warning. 0 = never. See src/cleanup.rs.
+      INACTIVE_DAYS: ${INACTIVE_DAYS:-14}
     ports:
       # Only for checking it from the server itself (curl localhost:3000/health).
       # GOWA reaches it over the Compose network, not through this port.

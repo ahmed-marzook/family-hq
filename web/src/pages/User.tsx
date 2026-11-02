@@ -5,7 +5,8 @@ import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { Link, useParams } from "react-router";
 
-import { ApiError, getJson, type Chat, type UserDetail } from "../api";
+import { ApiError, getJson, type Chat, type Cleanup, type UserDetail } from "../api";
+import { GroupStatus, PersonData } from "../components/Clearing";
 import GroupLists from "../components/GroupLists";
 import LoadError from "../components/LoadError";
 import Page from "../components/Page";
@@ -54,11 +55,15 @@ function Detail({ data }: { data: UserDetail }) {
         <SettingsEditor userId={user.id} name={user.name} settings={settings} hasDm={dm !== undefined} />
       </Section>
 
+      <Section title="Data">
+        <PersonData user={user} cleanup={data.cleanup} />
+      </Section>
+
       <Section title="Chats">
         <div className="flex flex-col gap-3">
           {dm && <DmCard chat={dm} userId={user.id} />}
           {groups.map((group) => (
-            <GroupCard key={group.id} chat={group} userId={user.id} />
+            <GroupCard key={group.id} chat={group} userId={user.id} cleanup={data.cleanup} />
           ))}
           {!dm && groups.length === 0 && (
             <p className="text-sm text-stone-600 dark:text-stone-400">
@@ -135,7 +140,7 @@ function DmCard({ chat, userId }: { chat: Chat; userId: number }) {
   );
 }
 
-function GroupCard({ chat, userId }: { chat: Chat; userId: number }) {
+function GroupCard({ chat, userId, cleanup }: { chat: Chat; userId: number; cleanup: Cleanup }) {
   return (
     <div className={card}>
       <h3 className="mb-1 flex items-center gap-2 font-medium">
@@ -145,6 +150,7 @@ function GroupCard({ chat, userId }: { chat: Chat; userId: number }) {
       <Counts chat={chat} />
       <TodoReminders chat={chat} userId={userId} />
       <GroupLists groupId={chat.id} />
+      <GroupStatus chat={chat} userId={userId} cleanup={cleanup} />
     </div>
   );
 }

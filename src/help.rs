@@ -34,7 +34,9 @@ Short forms: `+s` shop · `+g` got · `+t` todo · `+d` done · `+p` prayed · `
 For the full page on a topic, with examples:
 `/help shop` · `/help todo` · `/help prayers` · `/help settings` · `/help weather` · `/help moon`
 
-I react 👍 to every command I understand. No reaction means I didn't recognise it.";
+I react 👍 to every command I understand. No reaction means I didn't recognise it.
+
+🧹 If you stop using me for a while, your private lists and settings may be cleared: I'll message you a few days before, and anything you send keeps them. A group nobody uses me in gets a warning too, then I leave it.";
 
 const SHOP: &str = "🛒 *Help: shopping list*
 Each group has its own list; in a DM with me it's your private list.

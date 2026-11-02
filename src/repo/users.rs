@@ -53,12 +53,13 @@ pub async fn find_or_register(
 
     // `RETURNING id` hands back the new row's id from the same statement.
     let id = sqlx::query_scalar!(
-        "INSERT INTO users (display_name, wa_jid, wa_lid, created_at)
-         VALUES (?, ?, ?, ?)
+        "INSERT INTO users (display_name, wa_jid, wa_lid, created_at, last_active_at)
+         VALUES (?, ?, ?, ?, ?)
          RETURNING id",
         display_name,
         sender.jid,
         sender.lid,
+        now,
         now
     )
     .fetch_one(&mut *conn)
@@ -69,6 +70,23 @@ pub async fn find_or_register(
         display_name,
         wa_jid: sender.jid.clone(),
     }))
+}
+
+/// Records that the person used the bot at `now` (see `crate::cleanup`).
+/// Any warning or clearing is over: they start a fresh inactive period.
+pub async fn touch(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    now: DateTime<Utc>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        "UPDATE users SET last_active_at = ?, warned_at = NULL, cleared_at = NULL WHERE id = ?",
+        now,
+        user_id
+    )
+    .execute(conn)
+    .await?;
+    Ok(())
 }
 
 /// Looks a sender up by phone-number ID or LID. In a group, `from` may be

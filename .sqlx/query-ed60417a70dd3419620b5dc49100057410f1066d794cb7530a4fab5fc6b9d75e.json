@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE chats SET last_active_at = ?, warned_at = NULL WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "ed60417a70dd3419620b5dc49100057410f1066d794cb7530a4fab5fc6b9d75e"
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE users SET warned_at = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "f4b0bd606f5b8cbb3b1e2ff70999d0cfaad1ad79e8dc26e941a7029d5b2bad2b"
+}

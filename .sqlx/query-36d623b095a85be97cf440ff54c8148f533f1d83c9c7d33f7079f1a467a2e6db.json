@@ -1,0 +1,21 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT coalesce(last_active_at, created_at) AS \"at!: DateTime<Utc>\"\n           FROM chats WHERE id = ? AND kind = 'group'",
+  "describe": {
+    "columns": [
+      {
+        "name": "at!: DateTime<Utc>",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "36d623b095a85be97cf440ff54c8148f533f1d83c9c7d33f7079f1a467a2e6db"
+}

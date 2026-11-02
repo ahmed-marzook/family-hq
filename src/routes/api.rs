@@ -9,7 +9,7 @@ use axum::{Json, Router};
 use serde_json::{Value, json};
 
 use crate::AppState;
-use crate::routes::{admin, admin_auth, admin_metrics, admin_settings, health};
+use crate::routes::{admin, admin_auth, admin_cleanup, admin_metrics, admin_settings, health};
 
 /// The routes under `/api`, all behind the admin password.
 ///
@@ -42,6 +42,8 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             "/users/{id}/chats/{chat}/todo-reminders",
             post(admin_settings::todo_reminders),
         )
+        .route("/users/{id}/clear", post(admin_cleanup::clear))
+        .route("/chats/{id}/leave", post(admin_cleanup::leave))
         .fallback(not_found);
     admin_auth::protect(routes, state)
 }
@@ -71,17 +73,21 @@ pub(crate) async fn start_server_with_geocoder(
     serve_for_test(pool, Some(geocoding_url)).await
 }
 
+/// The app's state for tests: `pool` as its database, GOWA at `gowa_url`
+/// (`http://localhost:1` can't be reached), login `test:test`, webhook
+/// secret `test`, Milton Keynes defaults, clearing after 14 days.
 #[cfg(test)]
-async fn serve_for_test(pool: sqlx::SqlitePool, geocoding_url: Option<&str>) -> String {
+pub(crate) fn test_state(pool: sqlx::SqlitePool, gowa_url: &str) -> Arc<AppState> {
     use crate::config::Config;
     use crate::settings::Settings;
 
     let config = Config {
         port: 0,
         webhook_secret: "test".to_string(),
-        gowa_url: "http://localhost:1".to_string(),
+        gowa_url: gowa_url.to_string(),
         gowa_basic_auth: "test:test".to_string(),
         database_url: "sqlite::memory:".to_string(),
+        inactive_days: 14,
         defaults: Settings {
             timezone: chrono_tz::Europe::London,
             city: "Milton Keynes".to_string(),
@@ -92,13 +98,12 @@ async fn serve_for_test(pool: sqlx::SqlitePool, geocoding_url: Option<&str>) -> 
             prayer_ending_minutes: 20,
         },
     };
-    let mut state = AppState::new(config, pool);
-    if let Some(url) = geocoding_url {
-        // `Arc::get_mut` gives a `&mut` only while nothing else shares the
-        // `Arc`, which is still true here, before the server starts.
-        Arc::get_mut(&mut state).expect("not shared yet").apis.geo =
-            crate::geo::Geo::with_geocoding_url(url);
-    }
+    AppState::new(config, pool)
+}
+
+/// Serves the real app for `state` on a free port; returns its address.
+#[cfg(test)]
+pub(crate) async fn serve_state(state: Arc<AppState>) -> String {
     let app = crate::app(state);
     // Port 0 asks the operating system for any free port.
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
@@ -107,6 +112,18 @@ async fn serve_for_test(pool: sqlx::SqlitePool, geocoding_url: Option<&str>) -> 
     let address = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     format!("http://{address}")
+}
+
+#[cfg(test)]
+async fn serve_for_test(pool: sqlx::SqlitePool, geocoding_url: Option<&str>) -> String {
+    let mut state = test_state(pool, "http://localhost:1");
+    if let Some(url) = geocoding_url {
+        // `Arc::get_mut` gives a `&mut` only while nothing else shares the
+        // `Arc`, which is still true here, before the server starts.
+        Arc::get_mut(&mut state).expect("not shared yet").apis.geo =
+            crate::geo::Geo::with_geocoding_url(url);
+    }
+    serve_state(state).await
 }
 
 #[cfg(test)]

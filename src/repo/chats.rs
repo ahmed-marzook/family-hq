@@ -39,12 +39,13 @@ pub async fn find_or_create(
 
     let kind = if dm_owner.is_some() { "dm" } else { "group" };
     sqlx::query_scalar!(
-        r#"INSERT INTO chats (wa_chat_id, kind, dm_user_id, created_at)
-           VALUES (?, ?, ?, ?)
+        r#"INSERT INTO chats (wa_chat_id, kind, dm_user_id, created_at, last_active_at)
+           VALUES (?, ?, ?, ?, ?)
            RETURNING id AS "id!""#,
         wa_chat_id,
         kind,
         dm_owner,
+        now,
         now
     )
     .fetch_one(conn)
@@ -65,6 +66,23 @@ pub async fn add_member(
         chat_id,
         user_id,
         now
+    )
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
+/// Records that someone used the bot in this chat at `now` (see
+/// `crate::cleanup`). Any warning that the bot will leave is over.
+pub async fn touch(
+    conn: &mut SqliteConnection,
+    chat_id: i64,
+    now: DateTime<Utc>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        "UPDATE chats SET last_active_at = ?, warned_at = NULL WHERE id = ?",
+        now,
+        chat_id
     )
     .execute(conn)
     .await?;

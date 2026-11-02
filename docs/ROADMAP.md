@@ -303,6 +303,38 @@ Done when:
 - [ ] A DM's notes never show up in a group's `/notes`, or the other way round
 - [ ] `/help notes` explains what not to store
 
+### Stage 1.9: Clearing data nobody uses ✅ (0.12.0; on by default: `INACTIVE_DAYS=14`)
+
+After `INACTIVE_DAYS` without using the bot, a person's or group's data is
+deleted, after a warning `WARN_DAYS` (3) before. See `src/cleanup.rs`.
+
+Build:
+- Migration `0006`: `users.last_active_at`, `warned_at`, `cleared_at`;
+  `chats.last_active_at`, `warned_at`, `left_at`.
+- "Using the bot": a command (even one it didn't know), a list reply, a
+  reaction to a reminder, or any message in a DM. Ordinary group chat isn't.
+- A person: warned in their DM (if they have one), then their DM and
+  everything in it, group memberships, todo reminders, prayer log and usage
+  log are deleted. Their `users` row goes too, unless a group's list still
+  names them (group lists are never touched); then it's deleted once nothing
+  does.
+- A group nobody uses the bot in: warned in the group, then the bot leaves
+  it (GOWA `/group/leave`) and the group is deleted with everything in it.
+- A group the bot was removed from: deleted once GOWA hasn't listed it for a
+  day. An empty list from GOWA is never trusted.
+- The rules are pure functions (`cleanup::due`, `clears_on`, `group_step`);
+  clearing re-checks activity inside its transaction, so a message that
+  arrives meanwhile keeps the data.
+- Admin dashboard: when each person and group will be cleared, and "Clear
+  their data now" / "Leave and delete now".
+
+Done when:
+- [x] Clearing deletes everything in the plan and leaves group lists intact
+- [x] The `users` row goes once nothing names them
+- [x] A message, list reply or reaction counts as activity; group chat doesn't
+- [x] A reply to the warning keeps everything
+- [x] With `INACTIVE_DAYS=0` nothing is ever deleted
+
 ### Schema
 
 The real schema is the files in [`migrations/`](../migrations), with

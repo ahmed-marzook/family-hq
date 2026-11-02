@@ -12,6 +12,7 @@
 
 pub mod admin;
 pub mod chats;
+pub mod cleanup;
 pub mod messages;
 pub mod metrics;
 pub mod prayers;

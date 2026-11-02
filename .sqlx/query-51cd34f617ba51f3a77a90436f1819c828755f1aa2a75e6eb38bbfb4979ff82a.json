@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "INSERT INTO chats (wa_chat_id, kind, dm_user_id, created_at)\n           VALUES (?, ?, ?, ?)\n           RETURNING id AS \"id!\"",
+  "query": "INSERT INTO chats (wa_chat_id, kind, dm_user_id, created_at, last_active_at)\n           VALUES (?, ?, ?, ?, ?)\n           RETURNING id AS \"id!\"",
   "describe": {
     "columns": [
       {
@@ -16,11 +16,11 @@
       }
     ],
     "parameters": {
-      "Right": 4
+      "Right": 5
     },
     "nullable": [
       false
     ]
   },
-  "hash": "8a8165e5db5a1358b0c12aa6843ce58b58c6b78a6b61b2f995363ba7c866892e"
+  "hash": "51cd34f617ba51f3a77a90436f1819c828755f1aa2a75e6eb38bbfb4979ff82a"
 }

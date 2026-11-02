@@ -4,6 +4,7 @@
 pub mod aladhan;
 pub mod cache;
 pub mod calendar;
+pub mod cleanup;
 pub mod config;
 pub mod db;
 pub mod error;

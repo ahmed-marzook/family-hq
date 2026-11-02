@@ -94,6 +94,19 @@ impl Gowa {
         Ok(response.results.message_id)
     }
 
+    /// Makes the bot leave a group. It can only come back if someone in the
+    /// group adds its number again.
+    pub async fn leave_group(&self, group_id: &str) -> Result<(), reqwest::Error> {
+        self.http
+            .post(format!("{}/group/leave", self.base_url))
+            .basic_auth(&self.user, Some(&self.password))
+            .json(&json!({ "group_id": group_id }))
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+
     /// The groups the bot is in, with their names (`/user/my/groups`).
     ///
     /// Gives up after a few seconds, because the admin dashboard waits on

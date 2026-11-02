@@ -25,6 +25,13 @@ pub struct UserSummary {
     pub groups: i64,
     /// Whether they've messaged the bot privately.
     pub has_dm: bool,
+    /// When they last used the bot (`crate::cleanup`'s idea of activity,
+    /// which also counts any message in their DM).
+    pub last_active: DateTime<Utc>,
+    /// When they were warned their data will be cleared; `None` if not.
+    pub warned_at: Option<DateTime<Utc>>,
+    /// When their data was cleared (only their name is left); `None` if not.
+    pub cleared_at: Option<DateTime<Utc>>,
 }
 
 /// Everyone (or just user `only`), most recently active first.
@@ -47,7 +54,10 @@ pub async fn users(
                    WHERE l.user_id = u.id AND datetime(l.at) >= datetime(?2)) AS "uses_since!: i64",
                   (SELECT count(*) FROM chat_members m JOIN chats c ON c.id = m.chat_id
                    WHERE m.user_id = u.id AND c.kind = 'group') AS "groups!: i64",
-                  EXISTS(SELECT 1 FROM chats c WHERE c.dm_user_id = u.id) AS "has_dm!: bool"
+                  EXISTS(SELECT 1 FROM chats c WHERE c.dm_user_id = u.id) AS "has_dm!: bool",
+                  coalesce(u.last_active_at, u.created_at) AS "last_active!: DateTime<Utc>",
+                  u.warned_at AS "warned_at?: DateTime<Utc>",
+                  u.cleared_at AS "cleared_at?: DateTime<Utc>"
            FROM users u
            WHERE ?1 IS NULL OR u.id = ?1
            ORDER BY u.display_name"#,
@@ -78,6 +88,13 @@ pub struct UserChat {
     pub bought: i64,
     /// `/todo reminders on`, for this person in this chat.
     pub todo_reminders: bool,
+    /// When someone last used the bot in the chat (for a group; a DM's
+    /// activity is its owner's).
+    pub last_active: DateTime<Utc>,
+    /// When the bot warned the group it would leave.
+    pub warned_at: Option<DateTime<Utc>>,
+    /// When the bot was found to be no longer in the group.
+    pub left_at: Option<DateTime<Utc>>,
 }
 
 /// The person's DM (if any) and the groups they've been seen in, DM first,
@@ -99,7 +116,10 @@ pub async fn chats_of(
                   (SELECT count(*) FROM shopping_items s
                    WHERE s.chat_id = c.id AND s.bought_at IS NOT NULL) AS "bought!: i64",
                   EXISTS(SELECT 1 FROM todo_reminders r
-                         WHERE r.chat_id = c.id AND r.user_id = ?1) AS "todo_reminders!: bool"
+                         WHERE r.chat_id = c.id AND r.user_id = ?1) AS "todo_reminders!: bool",
+                  coalesce(c.last_active_at, c.created_at) AS "last_active!: DateTime<Utc>",
+                  c.warned_at AS "warned_at?: DateTime<Utc>",
+                  c.left_at AS "left_at?: DateTime<Utc>"
            FROM chats c
            WHERE c.dm_user_id = ?1
               OR (c.kind = 'group'
@@ -335,6 +355,16 @@ mod tests {
             .unwrap();
 
         let found = chats_of(&mut conn, bilal.id).await.unwrap();
+        // Activity is checked elsewhere; here, the counts.
+        let found: Vec<UserChat> = found
+            .into_iter()
+            .map(|c| UserChat {
+                last_active: now,
+                warned_at: None,
+                left_at: None,
+                ..c
+            })
+            .collect();
         assert_eq!(
             found,
             [
@@ -347,6 +377,9 @@ mod tests {
                     to_buy: 2,
                     bought: 1,
                     todo_reminders: false,
+                    last_active: now,
+                    warned_at: None,
+                    left_at: None,
                 },
                 UserChat {
                     id: group,
@@ -357,6 +390,9 @@ mod tests {
                     to_buy: 0,
                     bought: 0,
                     todo_reminders: true,
+                    last_active: now,
+                    warned_at: None,
+                    left_at: None,
                 },
             ]
         );

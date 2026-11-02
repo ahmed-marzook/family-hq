@@ -73,7 +73,7 @@ echo "GOWA_WEBHOOK_SECRET=$(openssl rand -hex 32)"
 ```
 
 Paste those two lines into `.env` (replacing the `change-me` ones) with
-`nano .env`. Leave `FAMILY_HQ_TAG=0.11.0`. Then lock it down, since it holds
+`nano .env`. Leave `FAMILY_HQ_TAG=0.12.0`. Then lock it down, since it holds
 the passwords:
 
 ```sh
@@ -265,6 +265,27 @@ anything it needs, so take a backup before updating.)
 **Updating GOWA** is the same, but by editing the `image:` tag in
 `compose.yaml`. Read GOWA's release notes first: its webhook format is what
 our parser depends on.
+
+## Clearing data nobody uses
+
+The bot clears the data of people and groups that stop using it, after 14
+days by default. Change that with `INACTIVE_DAYS` in the stack's `.env`, or
+set it to `0` to never clear anything. The admin dashboard's user pages
+show who will be cleared, and when. What happens:
+
+- **A person** inactive for `INACTIVE_DAYS` is warned in their DM, then 3 days
+  later their DM (lists, settings, reminders), group memberships, prayer log
+  and usage log are deleted. Their name and number go too, unless a group's
+  list still mentions them; then those stay until the list is cleared.
+- **A group** nobody uses the bot in gets the same warning, then the bot
+  leaves it and deletes its lists and settings. To bring the bot back,
+  someone in the group adds its number again.
+- **A group the bot was removed from** is deleted a day after GOWA stops
+  listing it.
+
+Using the bot (a command, a list reply, a reaction to a reminder, or any
+message in a DM) keeps everything. Each step is in the server log
+(`cleanup: ...`). Deleted data only comes back from a backup.
 
 ## Backups
 

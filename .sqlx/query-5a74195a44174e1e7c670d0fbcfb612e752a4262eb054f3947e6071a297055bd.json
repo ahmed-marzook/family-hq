@@ -1,0 +1,21 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT coalesce(last_active_at, created_at) AS \"at!: DateTime<Utc>\"\n           FROM users WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "at!: DateTime<Utc>",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "5a74195a44174e1e7c670d0fbcfb612e752a4262eb054f3947e6071a297055bd"
+}

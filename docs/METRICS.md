@@ -4,6 +4,10 @@ Every time someone uses the bot, a row goes into the `command_log` table
 (migration `0004`). Ordinary chat in a group is never logged, and neither
 is what anyone wrote: a row says `todo.add`, not the todo's title.
 
+When a person's data is cleared for not using the bot (`INACTIVE_DAYS`,
+see `src/cleanup.rs`), their rows here are deleted too, and so are a
+group's when the bot leaves it: past totals drop.
+
 The admin dashboard's **Metrics** page shows the main ones (for 7 days, 30
 days or all time, with days and hours on the UK clock). The queries below
 are for anything it doesn't show.

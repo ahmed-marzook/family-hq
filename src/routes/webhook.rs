@@ -230,6 +230,21 @@ async fn handle_message(
         _ => None,
     };
     let is_group = dm_owner.is_none();
+    // Using the bot keeps a person's data (see `crate::cleanup`): anything
+    // in their DM, or a command (even one it didn't know) or list reply in
+    // a group. Ordinary group chat doesn't count.
+    let tried_a_command = msg
+        .body
+        .as_deref()
+        .and_then(metrics::command_word)
+        .is_some();
+    if !is_group || action.is_some() || tried_a_command {
+        users::touch(&mut tx, user.id, now).await?;
+    }
+    // The same in a group keeps the group's data, and the bot in it.
+    if is_group && (action.is_some() || tried_a_command) {
+        chats::touch(&mut tx, chat_id, now).await?;
+    }
     let Some(action) = action else {
         // Ordinary chat: keep the registration, nothing else to do. But a
         // `+word` or `/word` the bot didn't understand is worth knowing
@@ -393,6 +408,8 @@ async fn handle_reaction(
         println!("webhook: can't register {} (no phone number)", r.from);
         return Ok(());
     };
+    // Reacting to a reminder is using the bot.
+    users::touch(&mut tx, user.id, now).await?;
 
     // Adding the same reaction twice, or removing one that's already
     // gone, is harmless: both repo calls are safe to repeat, and say
@@ -404,6 +421,9 @@ async fn handle_reaction(
     let is_group = r.chat_id.ends_with("@g.us");
     let dm_owner = (!is_group).then_some(user.id);
     let chat_id = chats::find_or_create(&mut tx, &r.chat_id, dm_owner, now).await?;
+    if is_group {
+        chats::touch(&mut tx, chat_id, now).await?;
+    }
     let event: Event = metrics::reaction(removed);
     let row = Logged {
         event: &event,

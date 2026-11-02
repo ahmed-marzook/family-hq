@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM todo_reminders WHERE user_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "2f0c02e6f701729d249afeb8dac5011d1c075aa61bf0796b08f7265e44b50ae2"
+}

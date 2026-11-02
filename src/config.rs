@@ -22,6 +22,9 @@ pub struct Config {
     /// The SQLite database (`DATABASE_URL`), e.g. `sqlite:family-hq.db`.
     /// Same variable name the `sqlx` command-line tool uses.
     pub database_url: String,
+    /// Days without using the bot before a person's data is cleared
+    /// (`INACTIVE_DAYS`, see `crate::cleanup`). 0 turns clearing off.
+    pub inactive_days: i64,
     /// Settings for every chat that hasn't chosen its own (`DEFAULT_*`).
     /// Chats change theirs with `/settings ...`.
     pub defaults: Settings,
@@ -35,6 +38,7 @@ impl Config {
     /// | `PORT` | 3000 |
     /// | `GOWA_URL` | `http://localhost:3001` |
     /// | `DATABASE_URL` | `sqlite:family-hq.db` (next to where you run it) |
+    /// | `INACTIVE_DAYS` | 14 (0 never clears anything) |
     /// | `DEFAULT_TIMEZONE` | Europe/London |
     /// | `DEFAULT_CITY` / `DEFAULT_COUNTRY` | Milton Keynes / GB |
     /// | `DEFAULT_PRAYER_METHOD` | 3 (Muslim World League) |
@@ -50,6 +54,7 @@ impl Config {
             gowa_url: text_or("GOWA_URL", "http://localhost:3001"),
             gowa_basic_auth: required("GOWA_BASIC_AUTH"),
             database_url: text_or("DATABASE_URL", "sqlite:family-hq.db"),
+            inactive_days: number_or("INACTIVE_DAYS", 14),
             defaults: Settings {
                 timezone: timezone_or("DEFAULT_TIMEZONE", chrono_tz::Europe::London),
                 city: text_or("DEFAULT_CITY", "Milton Keynes"),
