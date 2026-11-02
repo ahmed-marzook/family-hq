@@ -14,9 +14,27 @@ in features from later phases (ntfy, React, AI, and the rest of the
 reminder/prayer work) while Phase 1 (todo and shop) is still in progress.
 Exception, at the owner's request: basic prayer times, reminders and
 tracking were brought forward and already exist (see the note at the top
-of Phase 2 in the roadmap). The admin dashboard (React, in `web/`) is also
-at the owner's request, and has its own section in the roadmap. It isn't the
+of `docs/roadmap/reminders-prayer.md`), and so were habits and group goals
+(Stage 2.5, built as H1–H6). The admin dashboard (React, in `web/`) is also
+at the owner's request, and has its own file in the roadmap. It isn't the
 family-facing dashboard in Phase 3, which is still later.
+
+## Roadmap
+
+- Start from `docs/ROADMAP.md`. It's only an index: one line per area,
+  with its status and a link.
+- Open only the linked file in `docs/roadmap/` that's relevant to the
+  current task.
+- Never read `docs/roadmap/archive.md` unless asked. Never read
+  `docs/roadmap/roadmap.original.md`; it's a backup of the file from
+  before the split.
+- Keeping it up to date: when a stage is finished (every **Done when** box
+  ticked), move it word for word into `archive.md`. Update its area's
+  status line in the index and the **Status** / **Last updated** header of
+  the detail file. New work goes in its area's file; a new area gets its own
+  file (roughly 100–300 lines, same header) and one line in the index.
+- Keep the index under ~100 lines. Relative links in `docs/roadmap/` need
+  `../` to reach `docs/` and `../../` to reach the repo root.
 
 ## The owner is learning Rust
 
