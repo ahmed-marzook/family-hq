@@ -11,7 +11,7 @@ unticked ones aren't yet.
 | **2. Reminders & Prayer Coach** | `+remind`, ntfy pushes, prayer windows, escalation, reflections | Prayer reminders done early; `+remind` planned |
 | **3. Dashboard** | React web app served by the Rust binary | Later |
 | **4. AI & Extras** | Weekly coaching, natural language, weather, calendars, Home Assistant | `/weather` and per-person timezones done early |
-| **Admin dashboard** | The owner's view of users, settings and metrics, in its own container | In progress, at the owner's request: A1 released (0.8.0), A2 released (0.8.1, 0.9.0) |
+| **Admin dashboard** | The owner's view of users, settings and metrics, in its own container | In progress, at the owner's request: A1 (0.8.0), A2 (0.8.1, 0.9.0) and A3 (0.10.0) released |
 
 Rule: don't start a phase until the one before it has been **used by the
 family for at least two weeks**. Real use finds the problems that matter.
@@ -549,21 +549,26 @@ Done when:
 - [x] Group lists match `/todo` and `/shop` (the same queries, in the same
       order)
 
-### Stage A3: Metrics (read-only)
+### Stage A3: Metrics (read-only) ✅
 
 Build:
-- The queries from [METRICS.md](METRICS.md), moved into `src/repo/metrics.rs`.
-- For 7 days, 30 days or all time: uses per day, top commands, per person
+- ✅ The queries from [METRICS.md](METRICS.md), in `src/repo/metrics.rs`;
+  `GET /api/metrics?days=7` (no `days`: all time) in
+  `src/routes/admin_metrics.rs`.
+- ✅ For 7 days, 30 days or all time: uses per day, top commands, per person
   (including inactive people), busiest hours, unknown commands, failures,
   slowest commands.
-- Plain Tailwind bars and small SVGs, no chart library.
-- Hours are bucketed in UTC and converted in Rust to the default timezone.
+- ✅ Plain Tailwind bars, no chart library, with a tooltip per bar and a
+  table view.
+- ✅ Days and hours are grouped in Rust (`metrics::per_day`, `by_hour`) on
+  the default timezone's clock, from the UTC times in the log.
 
 New concepts: query parameters, aggregate SQL with SQLx macros.
 
 Done when:
-- [ ] Totals match the same SQL run directly
-- [ ] Busiest hours are correct in both BST and GMT
+- [x] Totals match the same SQL run directly
+- [x] Busiest hours are correct in both BST and GMT (including the night the
+      clocks go back)
 
 ### Stage A4: Edit a user's settings
 

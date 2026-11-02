@@ -4,6 +4,11 @@
 //! Pure functions, like the parser: a command in, a name and detail out.
 //! The webhook records them with `repo::metrics::record`.
 
+use std::collections::{BTreeMap, HashSet};
+
+use chrono::{DateTime, NaiveDate, Timelike, Utc};
+use chrono_tz::Tz;
+
 use crate::help;
 use crate::parser::{BotCommand, Got, ReplyCommand, SettingsCommand, TodoView};
 use crate::person::Assignee;
@@ -205,6 +210,63 @@ pub fn reaction(removed: bool) -> Event {
     Event::new(Kind::Reaction, "prayers.react", Some(detail))
 }
 
+// ---- Reading the log, for the admin dashboard ----
+
+/// Uses on one day, on the dashboard's clock.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DayCount {
+    pub day: NaiveDate,
+    pub uses: i64,
+    /// Different people who used the bot that day.
+    pub people: i64,
+}
+
+/// Uses per day from `from` to `to` (both included), with every day
+/// present, even the quiet ones. Each use is `(when, who)`. Days are dates
+/// on `timezone`'s clock, not UTC's: in a UK summer, 23:30 UTC is already
+/// the next day.
+pub fn per_day(
+    uses: &[(DateTime<Utc>, i64)],
+    timezone: Tz,
+    from: NaiveDate,
+    to: NaiveDate,
+) -> Vec<DayCount> {
+    // A `BTreeMap` keeps its keys sorted, so the days come out in order.
+    // Each day holds its count and the set of people seen that day.
+    let mut days: BTreeMap<NaiveDate, (i64, HashSet<i64>)> = from
+        .iter_days()
+        .take_while(|day| *day <= to)
+        .map(|day| (day, (0, HashSet::new())))
+        .collect();
+    for (at, user) in uses {
+        let day = at.with_timezone(&timezone).date_naive();
+        // `if let Some(...) = get_mut` skips uses outside the range.
+        if let Some((count, people)) = days.get_mut(&day) {
+            *count += 1;
+            people.insert(*user);
+        }
+    }
+    days.into_iter()
+        .map(|(day, (uses, people))| DayCount {
+            day,
+            uses,
+            people: people.len() as i64,
+        })
+        .collect()
+}
+
+/// Uses in each hour of the day, 0 to 23, on `timezone`'s clock. So a
+/// 17:30 UTC use counts as 18:00 to 19:00 in a UK summer, and as 17:00 to
+/// 18:00 in winter.
+pub fn by_hour(uses: &[(DateTime<Utc>, i64)], timezone: Tz) -> [i64; 24] {
+    let mut hours = [0; 24];
+    for (at, _) in uses {
+        // `hour()` is 0..=23, so it always fits the array.
+        hours[at.with_timezone(&timezone).hour() as usize] += 1;
+    }
+    hours
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -306,5 +368,85 @@ mod tests {
             (undo.name.as_str(), undo.detail.as_deref()),
             ("prayers.react", Some("removed"))
         );
+    }
+
+    // ---- per_day / by_hour ----
+
+    use chrono_tz::Europe::London;
+
+    fn at(text: &str) -> DateTime<Utc> {
+        text.parse().unwrap()
+    }
+
+    fn day(text: &str) -> NaiveDate {
+        text.parse().unwrap()
+    }
+
+    #[test]
+    fn every_day_is_there_even_quiet_ones() {
+        let uses = [
+            (at("2026-10-20T09:00:00Z"), 1),
+            (at("2026-10-20T10:00:00Z"), 1),
+            (at("2026-10-20T11:00:00Z"), 2),
+            (at("2026-10-22T09:00:00Z"), 2),
+            // Outside the range: left out.
+            (at("2026-10-10T09:00:00Z"), 1),
+        ];
+        let days = per_day(&uses, London, day("2026-10-20"), day("2026-10-22"));
+        assert_eq!(
+            days,
+            [
+                DayCount {
+                    day: day("2026-10-20"),
+                    uses: 3,
+                    people: 2
+                },
+                DayCount {
+                    day: day("2026-10-21"),
+                    uses: 0,
+                    people: 0
+                },
+                DayCount {
+                    day: day("2026-10-22"),
+                    uses: 1,
+                    people: 1
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn days_are_on_the_uk_clock() {
+        // 23:30 UTC in summer (BST) is 00:30 the next day in London; in
+        // winter (GMT) it's still the same day.
+        let summer = [(at("2026-07-01T23:30:00Z"), 1)];
+        let days = per_day(&summer, London, day("2026-07-01"), day("2026-07-02"));
+        assert_eq!((days[0].uses, days[1].uses), (0, 1));
+
+        let winter = [(at("2026-12-01T23:30:00Z"), 1)];
+        let days = per_day(&winter, London, day("2026-12-01"), day("2026-12-02"));
+        assert_eq!((days[0].uses, days[1].uses), (1, 0));
+    }
+
+    #[test]
+    fn hours_follow_bst_and_gmt() {
+        let uses = [
+            // BST (UTC+1): 17:30 UTC is 18:30 in London.
+            (at("2026-07-01T17:30:00Z"), 1),
+            // GMT (UTC+0): 17:30 UTC is 17:30.
+            (at("2026-12-01T17:30:00Z"), 1),
+            // The clocks went back at 01:00 UTC on 25 Oct 2026: 00:30 UTC
+            // is 01:30 BST, and 01:30 UTC is 01:30 GMT. Both hour 1.
+            (at("2026-10-25T00:30:00Z"), 1),
+            (at("2026-10-25T01:30:00Z"), 1),
+            // 23:30 UTC in summer is 00:30 the next day.
+            (at("2026-07-01T23:30:00Z"), 1),
+        ];
+        let hours = by_hour(&uses, London);
+        assert_eq!(hours[18], 1);
+        assert_eq!(hours[17], 1);
+        assert_eq!(hours[1], 2);
+        assert_eq!(hours[0], 1);
+        assert_eq!(hours.iter().sum::<i64>(), 5);
     }
 }

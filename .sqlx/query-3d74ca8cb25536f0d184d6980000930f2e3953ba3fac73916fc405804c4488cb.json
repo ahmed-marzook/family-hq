@@ -1,0 +1,62 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT l.at AS \"at: DateTime<Utc>\", u.display_name AS person, l.name, l.detail\n           FROM command_log l JOIN users u ON u.id = l.user_id\n           WHERE l.ok = 0 AND l.kind != 'unknown'\n             AND (?1 IS NULL OR datetime(l.at) >= datetime(?1))\n           ORDER BY l.at DESC\n           LIMIT ?2",
+  "describe": {
+    "columns": [
+      {
+        "name": "at: DateTime<Utc>",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "command_log",
+            "name": "at"
+          }
+        }
+      },
+      {
+        "name": "person",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "display_name"
+          }
+        }
+      },
+      {
+        "name": "name",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "command_log",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "detail",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "command_log",
+            "name": "detail"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "3d74ca8cb25536f0d184d6980000930f2e3953ba3fac73916fc405804c4488cb"
+}

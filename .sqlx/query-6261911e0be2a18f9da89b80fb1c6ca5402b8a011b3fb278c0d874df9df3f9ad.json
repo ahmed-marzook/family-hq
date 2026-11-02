@@ -1,0 +1,40 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT name AS typed, count(*) AS \"times!: i64\",\n                  count(DISTINCT user_id) AS \"people!: i64\"\n           FROM command_log\n           WHERE kind = 'unknown' AND (?1 IS NULL OR datetime(at) >= datetime(?1))\n           GROUP BY name\n           ORDER BY count(*) DESC, name",
+  "describe": {
+    "columns": [
+      {
+        "name": "typed",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "command_log",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "times!: i64",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "people!: i64",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "6261911e0be2a18f9da89b80fb1c6ca5402b8a011b3fb278c0d874df9df3f9ad"
+}

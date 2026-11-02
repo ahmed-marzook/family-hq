@@ -1,0 +1,47 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT name AS \"name!\", count(*) AS \"uses!: i64\",\n                  CAST(round(avg(duration_ms)) AS INTEGER) AS \"avg_ms!: i64\",\n                  max(duration_ms) AS \"max_ms!: i64\"\n           FROM command_log\n           WHERE kind IN ('command', 'list_reply') AND (?1 IS NULL OR datetime(at) >= datetime(?1))\n           GROUP BY name\n           ORDER BY avg(duration_ms) DESC, name\n           LIMIT ?2",
+  "describe": {
+    "columns": [
+      {
+        "name": "name!",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "command_log",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "uses!: i64",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "avg_ms!: i64",
+        "ordinal": 2,
+        "type_info": "Null",
+        "origin": "Expression"
+      },
+      {
+        "name": "max_ms!: i64",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      true,
+      false,
+      null,
+      false
+    ]
+  },
+  "hash": "8900f4603c29c34e4ce6e6bd89726a848c21166768ca9734b63ba6187c964e9b"
+}

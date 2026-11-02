@@ -4,6 +4,10 @@ Every time someone uses the bot, a row goes into the `command_log` table
 (migration `0004`). Ordinary chat in a group is never logged, and neither
 is what anyone wrote: a row says `todo.add`, not the todo's title.
 
+The admin dashboard's **Metrics** page shows the main ones (for 7 days, 30
+days or all time, with days and hours on the UK clock). The queries below
+are for anything it doesn't show.
+
 | Column | Example | Meaning |
 |---|---|---|
 | `at` | `2026-10-28T18:02:11…+00:00` | When, in UTC |

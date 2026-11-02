@@ -39,6 +39,181 @@ pub async fn record(conn: &mut SqliteConnection, row: &Logged<'_>) -> Result<(),
     Ok(())
 }
 
+// ---- Reading the log, for the admin dashboard ----
+//
+// Every query takes `since`: only rows from then on, or `None` for all
+// time. `?1 IS NULL OR ...` makes that one query instead of two.
+// `datetime(...)` puts both times in one text form before comparing, as
+// docs/METRICS.md does. A "use" is a command, a list reply or a reaction:
+// `unknown` rows (a `+word` the bot didn't understand) are counted apart.
+
+/// When each use happened and who by, oldest first, for grouping by day
+/// and hour on the dashboard's clock (`metrics::per_day`, `by_hour`).
+pub async fn use_times(
+    conn: &mut SqliteConnection,
+    since: Option<DateTime<Utc>>,
+) -> Result<Vec<(DateTime<Utc>, i64)>, sqlx::Error> {
+    let rows = sqlx::query!(
+        r#"SELECT at AS "at: DateTime<Utc>", user_id
+           FROM command_log
+           WHERE kind != 'unknown' AND (?1 IS NULL OR datetime(at) >= datetime(?1))
+           ORDER BY at"#,
+        since
+    )
+    .fetch_all(conn)
+    .await?;
+    Ok(rows.into_iter().map(|r| (r.at, r.user_id)).collect())
+}
+
+/// One command and how often it was used.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CommandUses {
+    pub name: String,
+    pub uses: i64,
+}
+
+/// Most used commands first.
+pub async fn top_commands(
+    conn: &mut SqliteConnection,
+    since: Option<DateTime<Utc>>,
+) -> Result<Vec<CommandUses>, sqlx::Error> {
+    sqlx::query_as!(
+        CommandUses,
+        r#"SELECT name, count(*) AS "uses!: i64"
+           FROM command_log
+           WHERE kind != 'unknown' AND (?1 IS NULL OR datetime(at) >= datetime(?1))
+           GROUP BY name
+           ORDER BY count(*) DESC, name"#,
+        since
+    )
+    .fetch_all(conn)
+    .await
+}
+
+/// Someone, with when they last used the bot (ever, not just since).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Person {
+    pub id: i64,
+    pub name: String,
+    pub last_seen: Option<DateTime<Utc>>,
+}
+
+/// Everyone, including people who never used a command, A to Z.
+pub async fn people(conn: &mut SqliteConnection) -> Result<Vec<Person>, sqlx::Error> {
+    sqlx::query_as!(
+        Person,
+        r#"SELECT u.id AS "id!", u.display_name AS name,
+                  (SELECT max(l.at) FROM command_log l
+                   WHERE l.user_id = u.id AND l.kind != 'unknown') AS "last_seen?: DateTime<Utc>"
+           FROM users u
+           ORDER BY u.display_name"#
+    )
+    .fetch_all(conn)
+    .await
+}
+
+/// A `+word` or `/word` the bot didn't understand.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Unknown {
+    /// The word as typed, e.g. `+remind`.
+    pub typed: String,
+    pub times: i64,
+    pub people: i64,
+}
+
+/// Unknown words, most typed first: the best ideas for new commands.
+pub async fn unknown_words(
+    conn: &mut SqliteConnection,
+    since: Option<DateTime<Utc>>,
+) -> Result<Vec<Unknown>, sqlx::Error> {
+    sqlx::query_as!(
+        Unknown,
+        r#"SELECT name AS typed, count(*) AS "times!: i64",
+                  count(DISTINCT user_id) AS "people!: i64"
+           FROM command_log
+           WHERE kind = 'unknown' AND (?1 IS NULL OR datetime(at) >= datetime(?1))
+           GROUP BY name
+           ORDER BY count(*) DESC, name"#,
+        since
+    )
+    .fetch_all(conn)
+    .await
+}
+
+/// A use that failed (the error itself is in the server log at `at`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Failure {
+    pub at: DateTime<Utc>,
+    pub person: String,
+    pub name: String,
+    pub detail: Option<String>,
+}
+
+/// How many uses failed, and the latest `limit` of them, newest first.
+pub async fn failures(
+    conn: &mut SqliteConnection,
+    since: Option<DateTime<Utc>>,
+    limit: i64,
+) -> Result<(i64, Vec<Failure>), sqlx::Error> {
+    let total = sqlx::query_scalar!(
+        r#"SELECT count(*) AS "total!: i64" FROM command_log
+           WHERE ok = 0 AND kind != 'unknown' AND (?1 IS NULL OR datetime(at) >= datetime(?1))"#,
+        since
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    let latest = sqlx::query_as!(
+        Failure,
+        r#"SELECT l.at AS "at: DateTime<Utc>", u.display_name AS person, l.name, l.detail
+           FROM command_log l JOIN users u ON u.id = l.user_id
+           WHERE l.ok = 0 AND l.kind != 'unknown'
+             AND (?1 IS NULL OR datetime(l.at) >= datetime(?1))
+           ORDER BY l.at DESC
+           LIMIT ?2"#,
+        since,
+        limit
+    )
+    .fetch_all(conn)
+    .await?;
+    Ok((total, latest))
+}
+
+/// How long a command takes to answer.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Speed {
+    pub name: String,
+    pub uses: i64,
+    pub avg_ms: i64,
+    pub max_ms: i64,
+}
+
+/// The slowest commands on average, slowest first (usually ones that call
+/// an outside API: AlAdhan, Open-Meteo).
+pub async fn slowest(
+    conn: &mut SqliteConnection,
+    since: Option<DateTime<Utc>>,
+    limit: i64,
+) -> Result<Vec<Speed>, sqlx::Error> {
+    // `CAST(round(...) AS INTEGER)`: `avg` gives a decimal; whole
+    // milliseconds are plenty. `name AS "name!"`: SQLite can't tell the
+    // macro that `name` is never NULL here, so the `!` says it.
+    sqlx::query_as!(
+        Speed,
+        r#"SELECT name AS "name!", count(*) AS "uses!: i64",
+                  CAST(round(avg(duration_ms)) AS INTEGER) AS "avg_ms!: i64",
+                  max(duration_ms) AS "max_ms!: i64"
+           FROM command_log
+           WHERE kind IN ('command', 'list_reply') AND (?1 IS NULL OR datetime(at) >= datetime(?1))
+           GROUP BY name
+           ORDER BY avg(duration_ms) DESC, name
+           LIMIT ?2"#,
+        since,
+        limit
+    )
+    .fetch_all(conn)
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

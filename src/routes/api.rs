@@ -8,7 +8,7 @@ use axum::{Json, Router, routing::get};
 use serde_json::{Value, json};
 
 use crate::AppState;
-use crate::routes::{admin, admin_auth, health};
+use crate::routes::{admin, admin_auth, admin_metrics, health};
 
 /// The routes under `/api`, all behind the admin password.
 ///
@@ -23,6 +23,7 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/users/{id}", get(admin::user))
         .route("/chats/{id}/todos", get(admin::group_todos))
         .route("/chats/{id}/shop", get(admin::group_shop))
+        .route("/metrics", get(admin_metrics::metrics))
         .fallback(not_found);
     admin_auth::protect(routes, state)
 }
