@@ -32,7 +32,7 @@ export async function getJson<T>(path: string): Promise<T> {
 
 /** Sends `body` as JSON to a path under `/api` and returns the answer. */
 export async function sendJson<T>(
-  method: "PATCH" | "POST",
+  method: "PATCH" | "POST" | "PUT",
   path: string,
   body: unknown,
 ): Promise<T> {
@@ -125,6 +125,27 @@ export type Reports = { prayers: Delivery };
 /** A feature with reports: the key in `Reports` and the API path. */
 export type ReportFeature = keyof Reports;
 
+/** How one prayer went; null is no record. "late" is made up. */
+export type PrayerStatus = "prayed" | "late" | "missed" | null;
+
+/** The five prayers, as the API names them. */
+export const PRAYERS = ["fajr", "dhuhr", "asr", "maghrib", "isha"] as const;
+export type PrayerName = (typeof PRAYERS)[number];
+
+/** One day: how many of the five were prayed (null: no record), and each. */
+export type PrayerDay = {
+  date: string;
+  prayed: number | null;
+  prayers: { prayer: PrayerName; status: PrayerStatus }[];
+};
+
+/** `GET /api/users/{id}/prayers?month=2026-11`. */
+export type PrayerMonth = {
+  /** Today in their timezone; later days can't be changed. */
+  today: string;
+  month: PrayerSpan;
+};
+
 /** One person's prayers over a week or a month (src/routes/admin_prayers.rs). */
 export type PrayerSpan = {
   /** The period's first and last day, "2026-10-26". */
@@ -138,7 +159,7 @@ export type PrayerSpan = {
   /** The most on-time prayers in a row. */
   longest_streak: number;
   /** Every day of the period; `prayed` is null for a day with no record. */
-  days: { date: string; prayed: number | null }[];
+  days: PrayerDay[];
   missed: { prayer: string; count: number }[];
   made_up: { prayer: string; count: number }[];
 };

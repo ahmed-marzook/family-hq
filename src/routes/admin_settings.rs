@@ -606,4 +606,81 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
+
+    #[tokio::test]
+    async fn a_month_of_prayers_can_be_seen_and_corrected() {
+        let pool = test_pool().await;
+        let (bilal, _, _, _) = seed(&pool).await;
+        let server = start_server_with_geocoder(pool.clone(), &fake_geocoder().await).await;
+        let today = chrono::Utc::now()
+            .with_timezone(&chrono_tz::Europe::London)
+            .date_naive();
+        let get = |path: String| send(reqwest::Method::GET, format!("{server}{path}"), json!(null));
+        let put =
+            |path: String, body: Value| send(reqwest::Method::PUT, format!("{server}{path}"), body);
+
+        let (status, page) = get(format!("/api/users/{bilal}/prayers")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(page["today"], today.to_string());
+        let days = page["month"]["days"].as_array().unwrap();
+        assert!(
+            days.iter().any(|d| d["date"] == today.to_string()),
+            "this month"
+        );
+        assert_eq!(days[0]["prayers"].as_array().unwrap().len(), 5);
+
+        // Mark today's Asr prayed: the answer is the month, updated.
+        let (status, page) = put(
+            format!("/api/users/{bilal}/prayers/{today}/asr"),
+            json!({ "status": "prayed" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let day = page["month"]["days"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["date"] == today.to_string())
+            .unwrap()
+            .clone();
+        assert_eq!(day["prayed"], 1);
+        assert_eq!(
+            day["prayers"][2],
+            json!({ "prayer": "asr", "status": "prayed" })
+        );
+        assert_eq!(day["prayers"][0]["status"], Value::Null);
+
+        // Then missed, then cleared.
+        let path = format!("/api/users/{bilal}/prayers/{today}/asr");
+        let (_, page) = put(path.clone(), json!({ "status": "missed" })).await;
+        assert_eq!(page["month"]["recorded"], 1);
+        assert_eq!(page["month"]["prayed"], 0);
+        let (_, page) = put(path.clone(), json!({ "status": null })).await;
+        assert_eq!(page["month"]["recorded"], 0);
+
+        // Another month, and the refusals.
+        let (status, page) = get(format!("/api/users/{bilal}/prayers?month=2026-02")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(page["month"]["first"], "2026-02-01");
+        assert_eq!(page["month"]["days"].as_array().unwrap().len(), 28);
+        let (status, _) = get(format!("/api/users/{bilal}/prayers?month=feb")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let tomorrow = today.succ_opt().unwrap();
+        let (status, _) = put(
+            format!("/api/users/{bilal}/prayers/{tomorrow}/asr"),
+            json!({ "status": "prayed" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "not yet");
+        let (status, _) = put(path.clone(), json!({ "status": "skipped" })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _) = put(
+            format!("/api/users/{bilal}/prayers/{today}/sunrise"),
+            json!({ "status": "prayed" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, _) = get("/api/users/9999/prayers".to_string()).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
 }

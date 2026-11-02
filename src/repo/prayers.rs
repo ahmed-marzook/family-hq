@@ -224,6 +224,53 @@ pub async fn set_prayed(
     Ok(())
 }
 
+/// Sets a prayer to exactly `status`, or (`None`) takes it out of the log,
+/// whatever it was before. For the admin dashboard's corrections.
+pub async fn set_status(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    date: NaiveDate,
+    prayer: Prayer,
+    status: Option<Status>,
+    now: DateTime<Utc>,
+) -> Result<(), sqlx::Error> {
+    match status {
+        Some(Status::Prayed) => set_prayed(conn, user_id, date, prayer, true, now).await,
+        Some(Status::Late) => set_prayed(conn, user_id, date, prayer, false, now).await,
+        Some(Status::Missed) => {
+            let prayer = prayer.as_db_str();
+            // Prayed or not, it becomes missed: no check-in time, and the
+            // earliest time it was marked missed (or now).
+            sqlx::query!(
+                "INSERT INTO prayer_log (user_id, prayer_date, prayer, status, missed_at)
+                 VALUES (?, ?, ?, 'missed', ?)
+                 ON CONFLICT (user_id, prayer_date, prayer) DO UPDATE
+                 SET status = 'missed', prayed_at = NULL,
+                     missed_at = COALESCE(prayer_log.missed_at, excluded.missed_at)",
+                user_id,
+                date,
+                prayer,
+                now
+            )
+            .execute(conn)
+            .await?;
+            Ok(())
+        }
+        None => {
+            let prayer = prayer.as_db_str();
+            sqlx::query!(
+                "DELETE FROM prayer_log WHERE user_id = ? AND prayer_date = ? AND prayer = ?",
+                user_id,
+                date,
+                prayer
+            )
+            .execute(conn)
+            .await?;
+            Ok(())
+        }
+    }
+}
+
 /// Undoes `mark_prayed` (the reaction was removed): a made-up prayer goes
 /// back to missed, an on-time one is deleted. (If its time has already
 /// ended, the reminder loop then marks it missed again.)
@@ -640,6 +687,49 @@ mod tests {
         unmark_prayed(&mut conn, user, date(), Prayer::Isha)
             .await
             .unwrap();
+
+        // The dashboard can set anything, or clear it. (Isha is ❌ from
+        // above; cleared first so the day holds only Asr.)
+        set_status(&mut conn, user, date(), Prayer::Isha, None, now)
+            .await
+            .unwrap();
+        set_status(
+            &mut conn,
+            user,
+            date(),
+            Prayer::Asr,
+            Some(Status::Missed),
+            now,
+        )
+        .await
+        .unwrap();
+        assert_eq!(log(&mut conn).await, [asr(Status::Missed)]);
+        set_status(
+            &mut conn,
+            user,
+            date(),
+            Prayer::Asr,
+            Some(Status::Prayed),
+            now,
+        )
+        .await
+        .unwrap();
+        assert_eq!(log(&mut conn).await, [asr(Status::Prayed)]);
+        set_status(
+            &mut conn,
+            user,
+            date(),
+            Prayer::Asr,
+            Some(Status::Missed),
+            now,
+        )
+        .await
+        .unwrap();
+        assert_eq!(log(&mut conn).await, [asr(Status::Missed)], "✅ → ❌");
+        set_status(&mut conn, user, date(), Prayer::Asr, None, now)
+            .await
+            .unwrap();
+        assert!(log(&mut conn).await.is_empty());
 
         // A prayer prayed in time is never marked missed afterwards.
         mark_prayed(&mut conn, user, date(), Prayer::Fajr, now)

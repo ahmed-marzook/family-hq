@@ -2,7 +2,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { sendJson } from "./api";
 
-type Request = { method: "PATCH" | "POST"; path: string; body: unknown };
+type Request = { method: "PATCH" | "POST" | "PUT"; path: string; body: unknown };
 
 /** Whose settings a change is for: their API path and their page's query. */
 export type Owner = { path: string; queryKey: string[] };

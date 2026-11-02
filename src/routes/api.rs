@@ -4,14 +4,14 @@
 use std::sync::Arc;
 
 use axum::http::StatusCode;
-use axum::routing::{get, patch, post};
+use axum::routing::{get, patch, post, put};
 use axum::{Json, Router};
 use serde_json::{Value, json};
 
 use crate::AppState;
 use crate::routes::{
-    admin, admin_auth, admin_cleanup, admin_groups, admin_metrics, admin_reports, admin_settings,
-    health,
+    admin, admin_auth, admin_cleanup, admin_groups, admin_metrics, admin_prayers, admin_reports,
+    admin_settings, health,
 };
 
 /// The routes under `/api`, all behind the admin password.
@@ -62,6 +62,11 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route(
             "/users/{id}/reports/{feature}",
             post(admin_reports::user_reports),
+        )
+        .route("/users/{id}/prayers", get(admin_prayers::user_month))
+        .route(
+            "/users/{id}/prayers/{date}/{prayer}",
+            put(admin_prayers::set_prayer),
         )
         .route(
             "/users/{id}/chats/{chat}/todo-reminders",

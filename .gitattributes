@@ -2,3 +2,8 @@
 # on a Windows checkout (core.autocrlf would otherwise turn them into CRLF
 # and `sh` would fail with "not found").
 *.sh text eol=lf
+
+# Migrations: always LF too. SQLx checksums each migration's exact bytes, so
+# a CRLF checkout would make every database that ran it refuse to start
+# ("migration N was previously applied but has been modified").
+*.sql text eol=lf

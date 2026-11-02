@@ -11,7 +11,7 @@ import GroupLists from "../components/GroupLists";
 import LoadError from "../components/LoadError";
 import { ScopedMetrics } from "../components/MetricsReport";
 import Page from "../components/Page";
-import { HeatmapKey, PrayerSummary } from "../components/PrayerStats";
+import { HeatmapKey, PrayerCalendar, PrayerSummary } from "../components/PrayerStats";
 import ReportDelivery from "../components/ReportDelivery";
 import SettingsEditor from "../components/SettingsEditor";
 import Switch from "../components/Switch";
@@ -70,10 +70,8 @@ function Detail({ data }: { data: UserDetail }) {
 
       <Section title="Prayers">
         <div className="flex flex-col gap-3">
-          <div className="grid gap-3 sm:grid-cols-2">
-            <PrayerSummary title="This week" span={data.prayers.week} />
-            <PrayerSummary title="This month" span={data.prayers.month} calendar />
-          </div>
+          <PrayerSummary title="This week" span={data.prayers.week} />
+          <PrayerCalendar userId={user.id} />
           <HeatmapKey />
           <ReportDelivery
             owner={userOwner(user.id)}

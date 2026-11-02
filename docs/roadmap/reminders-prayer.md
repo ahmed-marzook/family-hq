@@ -123,6 +123,9 @@ Done when:
   when, where, and never twice. Habits (H6) should use it.
 - Admin dashboard: each person's week and month, each group's members'
   week, and where reports go.
+- 0.15.0: a month calendar on each person's page (any month, day numbers,
+  each prayer on hover), and correcting any past day's five prayers
+  (`PUT /api/users/{id}/prayers/{date}/{prayer}`).
 
 Done when:
 
