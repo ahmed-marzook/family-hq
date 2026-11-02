@@ -12,6 +12,7 @@ use chrono_tz::Tz;
 use crate::help;
 use crate::parser::{BotCommand, Got, ReplyCommand, SettingsCommand, TodoView};
 use crate::person::Assignee;
+use crate::reports::Span;
 use crate::weather::When;
 
 /// The `kind` column.
@@ -144,10 +145,22 @@ pub fn command(command: &BotCommand) -> Event {
         BotCommand::PrayerReminders(on) => {
             event("prayers.reminders", Some(if *on { "on" } else { "off" }))
         }
-        BotCommand::Prayed(prayers) => {
+        BotCommand::PrayerSummary(span) => event(
+            "prayers.summary",
+            Some(match span {
+                Span::Week => "week",
+                Span::Month => "month",
+            }),
+        ),
+        BotCommand::PrayerReports(reports) => event(
+            "prayers.reports",
+            Some(reports.map_or("status", |r| r.as_db_str())),
+        ),
+        BotCommand::Prayed(checkin) => {
             // "asr" or "fajr,dhuhr": which prayers get ticked off by hand
             // rather than by reacting. At most 27 characters.
-            let names: Vec<String> = prayers
+            let names: Vec<String> = checkin
+                .prayers
                 .iter()
                 .map(|p| p.to_string().to_lowercase())
                 .collect();

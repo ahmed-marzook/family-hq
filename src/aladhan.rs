@@ -42,13 +42,23 @@ impl PrayerTimes {
     /// location, so asking for that never touches the network.
     #[cfg(test)]
     pub(crate) fn with_cached(defaults: Settings, day: DayTimes) -> Self {
+        Self::with_cached_days(defaults, vec![day])
+    }
+
+    /// The same, with several days in memory.
+    #[cfg(test)]
+    pub(crate) fn with_cached_days(defaults: Settings, days: Vec<DayTimes>) -> Self {
         let at = defaults
             .coordinates
             .expect("test defaults have coordinates");
-        let key = (defaults.prayer_location(at), day.date);
+        let location = defaults.prayer_location(at);
+        let cache = days
+            .into_iter()
+            .map(|day| ((location.clone(), day.date), day))
+            .collect();
         let source = PrayerTimes::new(defaults);
         PrayerTimes {
-            cache: Mutex::new(HashMap::from([(key, day)])),
+            cache: Mutex::new(cache),
             ..source
         }
     }

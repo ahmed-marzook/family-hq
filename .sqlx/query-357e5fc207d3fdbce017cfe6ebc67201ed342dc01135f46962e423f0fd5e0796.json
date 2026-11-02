@@ -1,0 +1,21 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT EXISTS (\n               SELECT 1 FROM chats c\n               JOIN chat_settings s ON s.chat_id = c.id\n               WHERE c.dm_user_id = ? AND c.left_at IS NULL AND s.prayer_reminders = 1\n           ) AS \"on: bool\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "on: bool",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "357e5fc207d3fdbce017cfe6ebc67201ed342dc01135f46962e423f0fd5e0796"
+}

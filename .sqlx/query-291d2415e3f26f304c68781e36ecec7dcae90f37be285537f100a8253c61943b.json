@@ -1,0 +1,21 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT EXISTS (\n               SELECT 1 FROM prayer_reminders\n               WHERE chat_id = ? AND prayer_date = ? AND prayer = ? AND place = ?\n           ) AS \"reminded: bool\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "reminded: bool",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "291d2415e3f26f304c68781e36ecec7dcae90f37be285537f100a8253c61943b"
+}

@@ -10,6 +10,8 @@ import GroupLists from "../components/GroupLists";
 import LoadError from "../components/LoadError";
 import { ScopedMetrics } from "../components/MetricsReport";
 import Page from "../components/Page";
+import { HeatmapKey, MemberPrayers } from "../components/PrayerStats";
+import ReportDelivery from "../components/ReportDelivery";
 import SettingsEditor from "../components/SettingsEditor";
 import { count, date, timeAgo } from "../format";
 import { groupOwner } from "../useChange";
@@ -57,6 +59,24 @@ function Detail({ data }: { data: GroupDetail }) {
           where="in the group"
           note="The group's own settings, as /settings in the group changes them. Members who set their own in a private chat get prayer reminders on their own times. Changes apply straight away; the bot doesn't tell the group."
         />
+      </Section>
+
+      <Section title="Prayers">
+        <div className="flex flex-col gap-3">
+          <MemberPrayers members={data.members} />
+          <HeatmapKey />
+          <ReportDelivery
+            owner={groupOwner(group.id)}
+            feature="prayers"
+            delivery={data.reports.prayers}
+            isGroup
+          />
+          <p className="text-xs text-stone-500">
+            While prayer reminders are on: a 🎉 for everyone who prayed all 5 each day, and a
+            summary on Sundays and at each month's end. "Each member privately" sends each
+            person their own, to people who have messaged the bot privately.
+          </p>
+        </div>
       </Section>
 
       <Section title="Lists">

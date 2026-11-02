@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO report_settings (chat_id, feature, delivery) VALUES (?, ?, ?)\n         ON CONFLICT (chat_id, feature) DO UPDATE SET delivery = excluded.delivery",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "e6e737fa8a1d558ec2373b04ef92937ca78b187a94e62468e9a7256285339a90"
+}

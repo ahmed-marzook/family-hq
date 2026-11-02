@@ -9,6 +9,7 @@
 
 use crate::person::Assignee;
 use crate::prayer::{HANAFI, Prayer, SHAFII};
+use crate::reports::{Delivery, Span};
 use crate::weather::When;
 
 /// A command typed as a normal message.
@@ -47,9 +48,16 @@ pub enum BotCommand {
     Prayers,
     /// `/prayers on` (true) / `/prayers off` (false): reminders in this chat
     PrayerReminders(bool),
+    /// `/prayers week` / `/prayers month`: the sender's own summary so far,
+    /// with its heatmap
+    PrayerSummary(Span),
+    /// `/prayers reports here|dm|off`, or just `/prayers reports` (`None`,
+    /// to see which it is): where this chat's prayer reports go
+    PrayerReports(Option<Delivery>),
     /// `+prayed asr` or `+prayed fajr, dhuhr` or `+prayed all`: mark
-    /// prayers as prayed today without reacting to a reminder
-    Prayed(Vec<Prayer>),
+    /// prayers as prayed without reacting to a reminder. Can end with
+    /// `on time` or `late`, and say `yesterday`.
+    Prayed(Checkin),
     /// `/settings ...`: show or change this chat's settings
     Settings(SettingsCommand),
     /// `/weather`, `/weather hourly`, `/weather tomorrow`, `/weather week`
@@ -103,6 +111,39 @@ pub enum SettingsCommand {
     PrayerSchool(u8),
     /// `/settings ending 20`
     PrayerEnding(i64),
+}
+
+/// A `+prayed` message: which prayers, which day, and whether on time.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Checkin {
+    /// In day order, each once.
+    pub prayers: Vec<Prayer>,
+    pub timing: Timing,
+    /// `+prayed yesterday isha`: for yesterday rather than today.
+    pub yesterday: bool,
+}
+
+impl Checkin {
+    /// Just these prayers, today, timing worked out as usual.
+    pub fn today(prayers: Vec<Prayer>) -> Self {
+        Checkin {
+            prayers,
+            timing: Timing::Auto,
+            yesterday: false,
+        }
+    }
+}
+
+/// Whether a check-in was on time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Timing {
+    /// Nothing said: on time, unless the prayer was already marked ❌
+    /// (then it's made up). The same as reacting to a reminder.
+    Auto,
+    /// `on time`: prayed in its time, just ticked off late. Replaces a ❌.
+    OnTime,
+    /// `late` (or `qada`): prayed after its time.
+    Late,
 }
 
 /// What `+got` refers to.
@@ -176,6 +217,16 @@ pub fn parse(text: &str) -> Option<BotCommand> {
             "" => Some(BotCommand::Prayers),
             "on" => Some(BotCommand::PrayerReminders(true)),
             "off" => Some(BotCommand::PrayerReminders(false)),
+            "week" => Some(BotCommand::PrayerSummary(Span::Week)),
+            "month" => Some(BotCommand::PrayerSummary(Span::Month)),
+            "reports" | "report" => Some(BotCommand::PrayerReports(None)),
+            "reports here" | "reports group" | "reports on" | "report here" | "report on" => {
+                Some(BotCommand::PrayerReports(Some(Delivery::Here)))
+            }
+            "reports dm" | "reports private" | "report dm" => {
+                Some(BotCommand::PrayerReports(Some(Delivery::Dm)))
+            }
+            "reports off" | "report off" => Some(BotCommand::PrayerReports(Some(Delivery::Off))),
             _ => None,
         },
         "/settings" | "/setting" => parse_settings(rest).map(BotCommand::Settings),
@@ -356,18 +407,56 @@ fn parse_add_todo(rest: &str) -> Option<BotCommand> {
     Some(BotCommand::AddTodo { titles, assignee })
 }
 
-/// "asr" → [Asr], "fajr, dhuhr" → [Fajr, Dhuhr], "all" → all five.
+/// "asr" → [Asr], "fajr, dhuhr" → [Fajr, Dhuhr], "all" → all five, with
+/// `on time` / `late` and `yesterday` anywhere among them.
 /// `None` if nothing is named or any word isn't a prayer, so a typo gets
 /// no silent half-result.
-fn parse_prayed(rest: &str) -> Option<Vec<Prayer>> {
-    let words: Vec<String> = rest
+fn parse_prayed(rest: &str) -> Option<Checkin> {
+    let mut words: Vec<String> = rest
         .split([',', ' ', '\n'])
         .filter(|w| !w.is_empty())
         .map(str::to_lowercase)
         .collect();
 
+    // Take out the words that aren't prayers. `retain` keeps the ones the
+    // closure returns `true` for; `on time` is two words, so "on" waits
+    // for the "time" after it.
+    let mut timing = Timing::Auto;
+    let mut yesterday = false;
+    let joined = words.join(" ");
+    if joined.contains("on time") {
+        timing = Timing::OnTime;
+        words = joined
+            .replace("on time", "ontime")
+            .split(' ')
+            .map(str::to_string)
+            .collect();
+    }
+    words.retain(|word| match word.as_str() {
+        "ontime" | "intime" => {
+            timing = Timing::OnTime;
+            false
+        }
+        "late" | "qada" | "qadha" | "qaza" => {
+            timing = Timing::Late;
+            false
+        }
+        "yesterday" | "yday" | "yest" => {
+            yesterday = true;
+            false
+        }
+        _ => true,
+    });
+    let checkin = |prayers| {
+        Some(Checkin {
+            prayers,
+            timing,
+            yesterday,
+        })
+    };
+
     if words == ["all"] {
-        return Some(Prayer::ALL.to_vec());
+        return checkin(Prayer::ALL.to_vec());
     }
 
     // Same trick as `parse_reply`: collecting `Option`s into
@@ -382,7 +471,7 @@ fn parse_prayed(rest: &str) -> Option<Vec<Prayer>> {
     // In day order, each once: "asr fajr asr" → [Fajr, Asr].
     prayers.sort_by_key(|p| Prayer::ALL.iter().position(|q| q == p));
     prayers.dedup();
-    Some(prayers)
+    checkin(prayers)
 }
 
 /// A prayer as people type it: its name (including common spellings) or
@@ -638,22 +727,62 @@ mod tests {
     }
 
     #[test]
+    fn prayer_summaries_and_reports() {
+        assert_eq!(
+            parse("/prayers week"),
+            Some(BotCommand::PrayerSummary(Span::Week))
+        );
+        assert_eq!(
+            parse("/p Month"),
+            Some(BotCommand::PrayerSummary(Span::Month))
+        );
+        assert_eq!(
+            parse("/prayers reports"),
+            Some(BotCommand::PrayerReports(None))
+        );
+        assert_eq!(
+            parse("/prayers reports here"),
+            Some(BotCommand::PrayerReports(Some(Delivery::Here)))
+        );
+        assert_eq!(
+            parse("/prayers reports group"),
+            Some(BotCommand::PrayerReports(Some(Delivery::Here)))
+        );
+        assert_eq!(
+            parse("/prayers REPORTS DM"),
+            Some(BotCommand::PrayerReports(Some(Delivery::Dm)))
+        );
+        assert_eq!(
+            parse("/prayer report off"),
+            Some(BotCommand::PrayerReports(Some(Delivery::Off)))
+        );
+        assert_eq!(parse("/prayers reports sometimes"), None);
+        assert_eq!(parse("/prayers weekly please"), None);
+    }
+
+    #[test]
     fn prayed_names_one_or_more_prayers() {
         assert_eq!(
             parse("+prayed asr"),
-            Some(BotCommand::Prayed(vec![Prayer::Asr]))
+            Some(BotCommand::Prayed(Checkin::today(vec![Prayer::Asr])))
         );
         assert_eq!(
             parse("+Prayed Isha, fajr"),
-            Some(BotCommand::Prayed(vec![Prayer::Fajr, Prayer::Isha]))
+            Some(BotCommand::Prayed(Checkin::today(vec![
+                Prayer::Fajr,
+                Prayer::Isha
+            ])))
         );
         assert_eq!(
             parse("+prayed zuhr asr zohr"),
-            Some(BotCommand::Prayed(vec![Prayer::Dhuhr, Prayer::Asr]))
+            Some(BotCommand::Prayed(Checkin::today(vec![
+                Prayer::Dhuhr,
+                Prayer::Asr
+            ])))
         );
         assert_eq!(
             parse("+prayed all"),
-            Some(BotCommand::Prayed(Prayer::ALL.to_vec()))
+            Some(BotCommand::Prayed(Checkin::today(Prayer::ALL.to_vec())))
         );
     }
 
@@ -860,22 +989,66 @@ mod tests {
     fn prayers_by_number_one_to_five() {
         assert_eq!(
             parse("+prayed 1"),
-            Some(BotCommand::Prayed(vec![Prayer::Fajr]))
+            Some(BotCommand::Prayed(Checkin::today(vec![Prayer::Fajr])))
         );
         assert_eq!(
             parse("+p 3 1"),
-            Some(BotCommand::Prayed(vec![Prayer::Fajr, Prayer::Asr]))
+            Some(BotCommand::Prayed(Checkin::today(vec![
+                Prayer::Fajr,
+                Prayer::Asr
+            ])))
         );
         assert_eq!(
             parse("+p 1, 2, 3, 4, 5"),
-            Some(BotCommand::Prayed(Prayer::ALL.to_vec()))
+            Some(BotCommand::Prayed(Checkin::today(Prayer::ALL.to_vec())))
         );
         // Names and numbers can be mixed.
         assert_eq!(
             parse("+p isha 4"),
-            Some(BotCommand::Prayed(vec![Prayer::Maghrib, Prayer::Isha]))
+            Some(BotCommand::Prayed(Checkin::today(vec![
+                Prayer::Maghrib,
+                Prayer::Isha
+            ])))
         );
         assert_eq!(parse("+p 0"), None);
+    }
+
+    #[test]
+    fn prayed_can_say_on_time_late_and_yesterday() {
+        let checkin = |prayers: &[Prayer], timing, yesterday| {
+            Some(BotCommand::Prayed(Checkin {
+                prayers: prayers.to_vec(),
+                timing,
+                yesterday,
+            }))
+        };
+        assert_eq!(
+            parse("+prayed asr on time"),
+            checkin(&[Prayer::Asr], Timing::OnTime, false)
+        );
+        assert_eq!(
+            parse("+p 1 3 ontime"),
+            checkin(&[Prayer::Fajr, Prayer::Asr], Timing::OnTime, false)
+        );
+        assert_eq!(
+            parse("+prayed fajr late"),
+            checkin(&[Prayer::Fajr], Timing::Late, false)
+        );
+        assert_eq!(
+            parse("+prayed qada fajr"),
+            checkin(&[Prayer::Fajr], Timing::Late, false)
+        );
+        assert_eq!(
+            parse("+prayed yesterday isha on time"),
+            checkin(&[Prayer::Isha], Timing::OnTime, true)
+        );
+        assert_eq!(
+            parse("+p yday all"),
+            checkin(&Prayer::ALL, Timing::Auto, true)
+        );
+        assert_eq!(parse("+prayed on time"), None, "no prayer named");
+        assert_eq!(parse("+prayed asr on"), None, "\"on\" alone isn't a prayer");
+        assert_eq!(parse("+prayed asr sometime"), None);
         assert_eq!(parse("+p 6"), None);
     }
 

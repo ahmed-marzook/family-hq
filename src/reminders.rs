@@ -16,6 +16,7 @@ use chrono::{DateTime, Utc};
 use crate::AppState;
 use crate::error::AppError;
 use crate::prayer::{self, ReminderKind};
+use crate::prayer_tracking;
 use crate::repo::prayers::{self, NewReminder, ReminderChat};
 use crate::repo::settings::{self as stored, MemberSettings};
 use crate::settings::Settings;
@@ -30,6 +31,9 @@ pub struct Recipient {
     pub user_id: i64,
     /// Phone number (no `@s.whatsapp.net`), for the @mention.
     pub phone: String,
+    /// Display name, for a group's weekly and monthly reports. Empty in a
+    /// DM, whose reports say "you".
+    pub name: String,
 }
 
 /// The members of one group who share the same settings, so they get the
@@ -93,6 +97,7 @@ async fn check_chat(
             recipients: vec![Recipient {
                 user_id: owner,
                 phone: String::new(),
+                name: String::new(),
             }],
         }]
     } else {
@@ -108,6 +113,9 @@ async fn check_chat(
     let name_places = places.len() > 1;
     for place in &places {
         send_due(state, chat, place, name_places, now).await?;
+        // After the reminders: prayers whose time has ended are marked
+        // missed, then the day's, week's and month's reports go out.
+        prayer_tracking::check(state, chat, place, now).await?;
     }
     Ok(())
 }
@@ -131,6 +139,7 @@ pub fn places_for_group(group: &Settings, members: &[MemberSettings]) -> Vec<Pla
                 .wa_jid
                 .split_once('@')
                 .map_or(member.wa_jid.clone(), |(phone, _)| phone.to_string()),
+            name: member.display_name.clone(),
         };
         // Same place = same town, method, school, timezone and reminder
         // timing. Exact coordinates may differ a little (two people sharing

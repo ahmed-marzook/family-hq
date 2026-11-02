@@ -301,37 +301,82 @@ pub fn due_reminders(
 
 /// The reminder message.
 ///
-/// The reply to a reaction on a reminder, so the person knows it counted:
-/// "✅ *Asr* prayed · ■■■■■■□□□□ 3/5 prayed", or "↩️ *Asr* unticked · ..."
-/// when the reaction was removed. `prayed` is how many of that day's five
-/// they've now marked. In a group, `mention` (a phone number) @mentions them
-/// so it's clear whose it was.
-pub fn reaction_reply(
+/// Which day a `+prayed` for `prayer` at `now` is for. Usually `today`,
+/// but Isha's time runs on to Islamic midnight, which is often after
+/// midnight on the clock: until it ends, Isha is still yesterday's.
+///
+/// `yesterday` is only needed before today's Fajr starts (yesterday's
+/// Isha always ends by then), so callers pass `None` the rest of the day
+/// and needn't look its times up.
+pub fn checkin_date(
     prayer: Prayer,
-    removed: bool,
-    prayed: usize,
-    mention: Option<&str>,
-) -> String {
+    today: &DayTimes,
+    yesterday: Option<&DayTimes>,
+    now: DateTime<Utc>,
+) -> NaiveDate {
+    let still_open = |day: &&DayTimes| {
+        day.windows
+            .iter()
+            .any(|w| w.prayer == prayer && w.start <= now && now < w.end)
+    };
+    yesterday
+        .filter(still_open)
+        .map_or(today.date, |day| day.date)
+}
+
+/// Whether yesterday's times can matter for a check-in at `now`: before
+/// today's first prayer (Fajr) starts.
+pub fn before_fajr(today: &DayTimes, now: DateTime<Utc>) -> bool {
+    now < today.windows[0].start
+}
+
+/// What a reaction on a reminder did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tick {
+    /// Ticked off while its time lasted.
+    Prayed,
+    /// Ticked off after its time ended and it was marked missed.
+    MadeUp,
+    /// The reaction was removed.
+    Unticked,
+}
+
+/// The reply to a reaction on a reminder, so the person knows it counted:
+/// "✅ *Asr* prayed · ■■■■■■□□□□ 3/5 prayed", "🕐 *Asr* made up · ...", or
+/// "↩️ *Asr* unticked · ..." when the reaction was removed. `prayed` is how
+/// many of that day's five they've now marked. In a group, `mention` (a
+/// phone number) @mentions them so it's clear whose it was.
+pub fn reaction_reply(prayer: Prayer, tick: Tick, prayed: usize, mention: Option<&str>) -> String {
     let done = prayed as i64;
     let total = Prayer::ALL.len() as i64;
-    let (mark, what) = if removed {
-        (UNDONE, "unticked")
-    } else {
-        (TICK, "prayed")
+    let (mark, what) = match tick {
+        Tick::Prayed => (TICK, "prayed"),
+        Tick::MadeUp => (MADE_UP, "made up"),
+        Tick::Unticked => (UNDONE, "unticked"),
     };
-    let all = if done == total && !removed {
+    let all = if done == total && tick != Tick::Unticked {
         " 🎉"
     } else {
         ""
     };
     let who = mention.map_or(String::new(), |phone| format!("@{phone} "));
-    format!(
+    let mut text = format!(
         "{who}{mark} *{prayer}* {what} · {} {done}/{total} prayed{all}",
         progress::bar(done, total)
-    )
+    );
+    // People don't always have their phone to hand: it may well have been
+    // prayed in time and only ticked off now.
+    if tick == Tick::MadeUp {
+        text.push_str(&format!(
+            "\nPrayed it in time? Send `+prayed {} on time`.",
+            prayer.as_db_str()
+        ));
+    }
+    text
 }
 
 const TICK: &str = "✅";
+const MADE_UP: &str = "🕐";
 const UNDONE: &str = "↩️";
 
 /// `place` names the city when it matters (in a group whose members are in
@@ -392,16 +437,21 @@ mod tests {
     #[test]
     fn reaction_replies_say_what_changed() {
         assert_eq!(
-            reaction_reply(Prayer::Asr, false, 3, None),
+            reaction_reply(Prayer::Asr, Tick::Prayed, 3, None),
             "✅ *Asr* prayed · ■■■■■■□□□□ 3/5 prayed"
         );
         assert_eq!(
-            reaction_reply(Prayer::Asr, true, 2, None),
+            reaction_reply(Prayer::Asr, Tick::Unticked, 2, None),
             "↩️ *Asr* unticked · ■■■■□□□□□□ 2/5 prayed"
         );
         assert_eq!(
-            reaction_reply(Prayer::Isha, false, 5, Some("447700900001")),
+            reaction_reply(Prayer::Isha, Tick::Prayed, 5, Some("447700900001")),
             "@447700900001 ✅ *Isha* prayed · ■■■■■■■■■■ 5/5 prayed 🎉"
+        );
+        assert_eq!(
+            reaction_reply(Prayer::Fajr, Tick::MadeUp, 4, None),
+            "🕐 *Fajr* made up · ■■■■■■■■□□ 4/5 prayed\n\
+             Prayed it in time? Send `+prayed fajr on time`."
         );
     }
 
@@ -433,6 +483,41 @@ mod tests {
             .into_iter()
             .map(|(kind, w)| (w.prayer, kind))
             .collect()
+    }
+
+    /// A summer night: 27 Oct's Isha runs to 00:30 on the 28th.
+    fn late_isha() -> (DayTimes, DayTimes) {
+        let mut yesterday = day();
+        yesterday.windows[4] = window(Prayer::Isha, "2026-10-27T18:31:00Z", "2026-10-28T00:30:00Z");
+        let mut today = day();
+        today.date = NaiveDate::from_ymd_opt(2026, 10, 28).unwrap();
+        today.windows[0] = window(Prayer::Fajr, "2026-10-28T04:56:00Z", "2026-10-28T06:50:00Z");
+        (yesterday, today)
+    }
+
+    #[test]
+    fn isha_after_midnight_is_still_yesterdays() {
+        let (yesterday, today) = late_isha();
+        let at = |prayer, now| checkin_date(prayer, &today, Some(&yesterday), utc(now));
+        assert_eq!(at(Prayer::Isha, "2026-10-28T00:10:00Z"), yesterday.date);
+        assert_eq!(at(Prayer::Isha, "2026-10-28T00:29:59Z"), yesterday.date);
+        // Once it has ended, a tick is for today's Isha (still to come).
+        assert_eq!(at(Prayer::Isha, "2026-10-28T00:30:00Z"), today.date);
+        // Other prayers named after midnight are today's.
+        assert_eq!(at(Prayer::Fajr, "2026-10-28T00:10:00Z"), today.date);
+        assert_eq!(
+            checkin_date(Prayer::Isha, &today, None, utc("2026-10-28T00:10:00Z")),
+            today.date,
+            "without yesterday's times, today"
+        );
+    }
+
+    #[test]
+    fn yesterday_only_matters_before_fajr() {
+        let (_, today) = late_isha();
+        assert!(before_fajr(&today, utc("2026-10-28T00:10:00Z")));
+        assert!(!before_fajr(&today, utc("2026-10-28T04:56:00Z")));
+        assert!(!before_fajr(&today, utc("2026-10-28T19:00:00Z")));
     }
 
     #[test]

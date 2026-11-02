@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO prayer_log (user_id, prayer_date, prayer, status, missed_at)\n         VALUES (?, ?, ?, 'missed', ?)\n         ON CONFLICT (user_id, prayer_date, prayer) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "f6bcca196c8177c6cb0088812ac110a384273f737c0389dedb04e62d8aee4faf"
+}

@@ -20,7 +20,8 @@ use crate::handlers::{self, Context, Outcome};
 use crate::metrics::{self, Event};
 use crate::parser::{self, BotCommand, ReplyCommand};
 use crate::person::{Assignee, Person};
-use crate::prayer;
+use crate::prayer::{self, Tick};
+use crate::prayer_stats::Status;
 use crate::repo::messages::{self, ListItem};
 use crate::repo::metrics::Logged;
 use crate::repo::{self, chats, prayers, users};
@@ -436,25 +437,30 @@ async fn handle_reaction(
     };
     repo::metrics::record(&mut tx, &row).await?;
 
-    let changed = if removed {
+    // `None` if nothing changed.
+    let tick = if removed {
         let changed = prayers::unmark_prayed(&mut tx, user.id, date, prayer).await?;
         println!(
             "webhook: {} un-prayed {prayer} on {date}",
             user.display_name
         );
-        changed
+        changed.then_some(Tick::Unticked)
     } else {
-        let changed = prayers::mark_prayed(&mut tx, user.id, date, prayer, now).await?;
+        let status = prayers::mark_prayed(&mut tx, user.id, date, prayer, now).await?;
         println!("webhook: {} prayed {prayer} on {date}", user.display_name);
-        changed
+        // Its time had ended and it was marked missed: made up.
+        status.map(|s| match s {
+            Status::Late => Tick::MadeUp,
+            _ => Tick::Prayed,
+        })
     };
     let prayed = prayers::prayed_on(&mut tx, user.id, date).await?.len();
     tx.commit().await?;
 
     // Swapping 👍 for ❤️ changes nothing, so it gets no second reply.
-    if !changed {
+    let Some(tick) = tick else {
         return Ok(());
-    }
+    };
     // In a group, @mention them by their phone number (from `users`, as the
     // reminders do: a group reaction's `from` may be a LID, not a number).
     let phone = user
@@ -462,7 +468,7 @@ async fn handle_reaction(
         .split_once('@')
         .map_or(user.wa_jid.as_str(), |(number, _)| number);
     let mention = is_group.then_some(phone);
-    let text = prayer::reaction_reply(prayer, removed, prayed, mention);
+    let text = prayer::reaction_reply(prayer, tick, prayed, mention);
     let mentions: Vec<String> = mention.map(str::to_string).into_iter().collect();
     // Saved already, so a failure here is logged, not returned: a 500
     // would only make GOWA retry, and the retry changes nothing.

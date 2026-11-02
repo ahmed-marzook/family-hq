@@ -16,6 +16,7 @@ pub mod cleanup;
 pub mod messages;
 pub mod metrics;
 pub mod prayers;
+pub mod reports;
 pub mod settings;
 pub mod shop;
 pub mod todo_reminders;

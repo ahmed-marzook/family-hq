@@ -248,6 +248,8 @@ mod tests {
                 "prayer_log",
                 "prayer_reminders",
                 "processed_messages",
+                "report_settings",
+                "reports_sent",
                 "shopping_items",
                 "todo_reminders",
                 "todos",

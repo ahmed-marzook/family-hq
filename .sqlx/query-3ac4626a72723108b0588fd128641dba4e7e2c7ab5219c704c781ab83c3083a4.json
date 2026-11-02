@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT prayer_date AS \"prayer_date: NaiveDate\", prayer, status\n           FROM prayer_log\n           WHERE user_id = ? AND prayer_date BETWEEN ? AND ?\n           ORDER BY prayer_date",
+  "describe": {
+    "columns": [
+      {
+        "name": "prayer_date: NaiveDate",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "prayer_log",
+            "name": "prayer_date"
+          }
+        }
+      },
+      {
+        "name": "prayer",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "prayer_log",
+            "name": "prayer"
+          }
+        }
+      },
+      {
+        "name": "status",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "prayer_log",
+            "name": "status"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "3ac4626a72723108b0588fd128641dba4e7e2c7ab5219c704c781ab83c3083a4"
+}

@@ -11,6 +11,8 @@ import GroupLists from "../components/GroupLists";
 import LoadError from "../components/LoadError";
 import { ScopedMetrics } from "../components/MetricsReport";
 import Page from "../components/Page";
+import { HeatmapKey, PrayerSummary } from "../components/PrayerStats";
+import ReportDelivery from "../components/ReportDelivery";
 import SettingsEditor from "../components/SettingsEditor";
 import Switch from "../components/Switch";
 import { count, date, timeAgo } from "../format";
@@ -64,6 +66,27 @@ function Detail({ data }: { data: UserDetail }) {
               : `${user.name} hasn't messaged the bot privately, so these are the defaults. A change starts their private chat's settings; the bot doesn't message them about it, but prayer reminders, if turned on, are sent there.`
           }
         />
+      </Section>
+
+      <Section title="Prayers">
+        <div className="flex flex-col gap-3">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <PrayerSummary title="This week" span={data.prayers.week} />
+            <PrayerSummary title="This month" span={data.prayers.month} calendar />
+          </div>
+          <HeatmapKey />
+          <ReportDelivery
+            owner={userOwner(user.id)}
+            feature="prayers"
+            delivery={data.reports.prayers}
+            isGroup={false}
+          />
+          <p className="text-xs text-stone-500">
+            Reports in their private chat: a 🎉 each day all 5 are prayed, and a summary on
+            Sundays and at each month's end. They only go out while prayer reminders are on there.
+            Groups they're in have their own.
+          </p>
+        </div>
       </Section>
 
       <Section title="Data">

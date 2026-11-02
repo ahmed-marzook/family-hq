@@ -26,9 +26,10 @@ family for at least two weeks**. The admin dashboard is outside this rule.
 
 - **Todo due dates and notes (Stages 1.7, 1.8)**: planned →
   [roadmap/todo-shop.md](roadmap/todo-shop.md)
-- **Reminders & Prayer Coach (Phase 2)**: prayer reminders done early;
-  ntfy (2.1), `+remind` and the shared reminder engine (2.2), AlAdhan
-  fallback (2.3), Missed tracking (2.4) to do →
+- **Reminders & Prayer Coach (Phase 2)**: prayer reminders, missed
+  tracking and reports done early; ntfy (2.1), `+remind` and the shared
+  reminder engine (2.2), AlAdhan fallback (2.3), the `PrayerStage` state
+  machine (2.4) to do →
   [roadmap/reminders-prayer.md](roadmap/reminders-prayer.md)
 
 ## Later

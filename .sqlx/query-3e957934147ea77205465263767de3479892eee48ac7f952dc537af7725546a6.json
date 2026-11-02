@@ -1,16 +1,16 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT prayer FROM prayer_log WHERE user_id = ? AND prayer_date = ?",
+  "query": "SELECT delivery FROM report_settings WHERE chat_id = ? AND feature = ?",
   "describe": {
     "columns": [
       {
-        "name": "prayer",
+        "name": "delivery",
         "ordinal": 0,
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "prayer_log",
-            "name": "prayer"
+            "table": "report_settings",
+            "name": "delivery"
           }
         }
       }
@@ -22,5 +22,5 @@
       false
     ]
   },
-  "hash": "b73f9b8b48544330f911ce7830619c18076734508be8044ab1442da9aa8f136f"
+  "hash": "3e957934147ea77205465263767de3479892eee48ac7f952dc537af7725546a6"
 }

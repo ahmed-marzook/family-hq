@@ -1,7 +1,7 @@
 # Reminders & Prayer Coach (Phase 2)
 
 > **Goal:** `+remind`, ntfy pushes, prayer windows, escalation, reflections.
-> **Status:** Prayer reminders and check-ins done early; still to do: ntfy (2.1), `+remind` and the shared reminder engine (2.2), the AlAdhan fallback and BST/GMT test (2.3), Missed tracking (2.4).
+> **Status:** Prayer reminders and check-ins done early; missed tracking and prayer reports done early (2.4); still to do: ntfy (2.1), `+remind` and the shared reminder engine (2.2), the AlAdhan fallback and BST/GMT test (2.3), the `PrayerStage` state machine (2.4).
 > **Last updated:** 2026-11-02
 
 ## Phase 2: Reminders & Prayer Coach
@@ -18,7 +18,10 @@ Starts after Phase 1 has been in daily use for two weeks.
 > countries get theirs at the right local time. "Ending soon" only
 > mentions people who haven't prayed. Any reaction on a reminder, or
 > `+prayed asr` / `+p 3`, marks it in `prayer_log`. Still to do:
-> yesterday's-times fallback, "missed" tracking, and ntfy.
+> yesterday's-times fallback, and ntfy.
+>
+> **Missed tracking and prayer reports, at the owner's request
+> (2026-11-02):** see "Missed prayers and reports" under Stage 2.4.
 >
 > **Also brought forward, at the owner's request (2026-11-02):** habits and
 > group goals, Stage 2.5 below, built as stages H1–H6.
@@ -96,10 +99,37 @@ Done when:
 - Start reminder, and a warning shortly before the window ends that only
   @mentions the people who haven't checked in. ✅
 - Check in with any reaction, or `+prayed`. ✅
-- Still to do: a cutoff that logs `Missed`; a `PrayerStage` state machine
+- A cutoff that logs `Missed`. ✅ (see below)
+- Still to do: a `PrayerStage` state machine
   (`NotStarted → Started → Warned → Done | Missed`) as a pure function,
   tested with a fake clock; the ntfy Done button.
 - Done when: a full day runs correctly, tested with a fake clock.
+
+#### Missed prayers and reports ✅ (0.14.0, done early)
+
+- `prayer_log.status` (migration `0007`): `prayed`, `late` (made up) or
+  `missed`. When a prayer's time ends, everyone its reminder was for who
+  hasn't ticked it gets ❌ (`src/prayer_tracking.rs`). Only prayers a
+  reminder actually went out for, so downtime never counts against anyone.
+- Ticking a ❌ off later makes it 🕐 made up. `+prayed asr on time` /
+  `late`, and `yesterday`, let people correct it.
+- `/prayers week` and `/prayers month`: completion %, longest streak
+  (on-time prayers in a row), misses per prayer, and an emoji heatmap.
+- Reports, once Isha has ended: a 🎉 for praying all 5, plus the week's
+  summary on Sundays and the month's on its last day. `/prayers reports
+  here|dm|off` chooses where they go (default: the chat itself).
+- Reports are generic (`src/reports.rs`, `report_settings`,
+  `reports_sent`): a feature supplies the text, and the module handles
+  when, where, and never twice. Habits (H6) should use it.
+- Admin dashboard: each person's week and month, each group's members'
+  week, and where reports go.
+
+Done when:
+
+- [x] A prayer reminded but not ticked is ❌ after its time; a late tick is 🕐
+- [x] Reports go once each, even across a restart (checked on a running
+      server)
+- [ ] A week of real family use: the Sunday summary reads right in WhatsApp
 
 ## Open questions
 

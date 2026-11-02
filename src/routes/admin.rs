@@ -24,6 +24,9 @@ use crate::error::AppError;
 use crate::prayer;
 use crate::repo::settings::{self as stored, ChatSettings};
 use crate::repo::{admin, chats, shop, todos};
+use crate::routes::admin_prayers::{PrayerView, prayer_view, today_for};
+use crate::routes::admin_reports::{ReportsView, reports_view};
+use crate::routes::admin_settings::existing_dm;
 use crate::settings::Settings;
 
 /// How far back the users page counts uses.
@@ -123,6 +126,10 @@ pub struct UserDetail {
     cleanup: CleanupView,
     user: UserRow,
     settings: SettingsView,
+    /// Where each feature's reports go, in their DM: "here" or "off".
+    reports: ReportsView,
+    /// Their prayers this week and this month (counts, never times).
+    prayers: PrayerView,
     chats: Vec<ChatView>,
 }
 
@@ -297,12 +304,19 @@ pub(crate) async fn detail(
         .ok_or(AppError::NotFound)?;
     let personal = stored::personal(conn, id).await?;
     let chats = admin::chats_of(conn, id).await?;
+    let defaults = &state.apis.prayer_times.defaults;
+    let today = today_for(conn, id, defaults).await?;
+    let prayers = prayer_view(conn, id, today).await?;
+    let dm = existing_dm(conn, id).await?;
+    let reports = reports_view(conn, dm).await?;
 
     Ok(UserDetail {
         recent_days: RECENT_DAYS,
         cleanup: CleanupView::of(state),
         user: user_row(summary, state, now),
-        settings: settings_view(personal, &state.apis.prayer_times.defaults),
+        settings: settings_view(personal, defaults),
+        reports,
+        prayers,
         chats: chats
             .into_iter()
             .map(|c| chat_view(c, state, now))

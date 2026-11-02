@@ -19,9 +19,12 @@ use crate::AppState;
 use crate::error::AppError;
 use crate::repo::admin;
 use crate::repo::settings as stored;
+use crate::reports::Span;
 use crate::routes::admin::{
     CleanupView, RECENT_DAYS, SettingsView, leaves_on, refresh_group_names, settings_view,
 };
+use crate::routes::admin_prayers::{SpanView, span_view, today_for};
+use crate::routes::admin_reports::{ReportsView, reports_view};
 use crate::routes::admin_settings::{SettingsPatch, Switch, apply_patch, on_off};
 
 #[derive(Debug, Serialize)]
@@ -77,6 +80,8 @@ pub struct GroupDetail {
     group: GroupRow,
     /// The group's own settings, defaults filled in.
     settings: SettingsView,
+    /// Where each feature's reports go: "here", "dm" or "off".
+    reports: ReportsView,
     members: Vec<MemberView>,
 }
 
@@ -86,6 +91,9 @@ pub struct GroupDetail {
 struct MemberView {
     id: i64,
     name: String,
+    /// Their prayers this week so far, for the group's heatmap. The same
+    /// as the group's weekly report shows.
+    prayer_week: SpanView,
 }
 
 // ---- handlers ----
@@ -165,14 +173,14 @@ pub async fn prayer_reminders(
 // ---- helpers ----
 
 /// 404 unless `id` is a group.
-async fn ensure_group(conn: &mut SqliteConnection, id: i64) -> Result<(), AppError> {
+pub(crate) async fn ensure_group(conn: &mut SqliteConnection, id: i64) -> Result<(), AppError> {
     admin::group(conn, id).await?.ok_or(AppError::NotFound)?;
     Ok(())
 }
 
 /// Everything the group page shows. Also what the edit endpoints answer
 /// with, so the page shows the result straight away.
-async fn detail(
+pub(crate) async fn detail(
     conn: &mut SqliteConnection,
     state: &AppState,
     id: i64,
@@ -183,19 +191,26 @@ async fn detail(
         .pop()
         .ok_or(AppError::NotFound)?;
     let settings = stored::get(conn, id).await?;
-    let members = admin::members_of(conn, id).await?;
+    let group_settings = settings.overrides.apply(&state.apis.prayer_times.defaults);
+    let reports = reports_view(conn, Some(id)).await?;
+    // A `for` loop rather than `map`: each member needs two `.await`s,
+    // and a closure can't `.await` inside a plain `map`.
+    let mut members = Vec::new();
+    for m in admin::members_of(conn, id).await? {
+        let today = today_for(conn, m.id, &group_settings).await?;
+        members.push(MemberView {
+            id: m.id,
+            name: m.name,
+            prayer_week: span_view(conn, m.id, Span::Week, today).await?,
+        });
+    }
     Ok(GroupDetail {
         recent_days: RECENT_DAYS,
         cleanup: CleanupView::of(state),
         group: group_row(summary, state, now),
         settings: settings_view(Some(settings), &state.apis.prayer_times.defaults),
-        members: members
-            .into_iter()
-            .map(|m| MemberView {
-                id: m.id,
-                name: m.name,
-            })
-            .collect(),
+        reports,
+        members,
     })
 }
 

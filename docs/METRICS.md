@@ -28,7 +28,7 @@ below are for anything it doesn't show.
 
 Command names: `shop.add`, `shop.list`, `shop.got`, `shop.clear`,
 `todo.add`, `todo.list`, `todo.done`, `todo.clear`, `todo.reminders`, `prayers.list`,
-`prayers.reminders`, `prayers.prayed`, `prayers.react`, `settings`,
+`prayers.reminders`, `prayers.summary`, `prayers.reports`, `prayers.prayed`, `prayers.react`, `settings`,
 `settings.location`, `weather`, `moon`, `help`, and list replies like
 `todo.reply_done` or `shop.reply_tick`.
 

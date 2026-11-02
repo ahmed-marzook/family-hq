@@ -24,7 +24,7 @@ I keep shared lists for each group I'm in, and private ones when you message me 
 
 🛒 *Shopping*: `+shop milk, eggs` · `/shop` · `+got milk`
 📝 *Todos*: `+todo fix the tap` · `/todo` · `+done 2` or `+done gym`
-🕌 *Prayers*: `/prayers` · `/prayers on` · `+prayed asr`
+🕌 *Prayers*: `/prayers` · `/prayers on` · `+prayed asr` · `/prayers week`
 ⚙️ *Settings*: `/settings` · `/settings city Leicester, GB` · or share your location with me
 🌤️ *Weather*: `/weather` · `/weather hourly` · `/weather tomorrow` · `/weather week`
 🌙 *Moon*: `/moon`
@@ -90,7 +90,7 @@ The numbers always mean the list you replied to, even if it's old.";
 
 const PRAYERS: &str = "🕌 *Help: prayers*
 *Today's times*
-`/prayers`: today's Islamic date and moon phase, then each prayer's start and end time, ✅ for the ones you've prayed.
+`/prayers`: today's Islamic date and moon phase, then each prayer's start and end time: ✅ prayed, 🕐 made up, ❌ missed.
 
 *Reminders*
 `/prayers on`: in this chat, a reminder when each prayer starts, and another shortly before it ends (20 min by default). `/prayers off` stops them.
@@ -101,6 +101,17 @@ The \"ending soon\" reminder only goes to people who haven't prayed yet.
 • React to its reminder with any emoji (remove the reaction to undo). I'll reply to confirm, with how many you've prayed that day.
 • Or type `+prayed asr`. Several: `+prayed fajr, dhuhr`. All five: `+prayed all`. Spellings like zuhr, asar, esha work too.
 • Or by number, 1 (Fajr) to 5 (Isha), as shown in `/prayers`: `+p 3` is Asr, `+p 1 3` is Fajr and Asr.
+
+*Missed and made up*
+With reminders on, a prayer whose time ends without a tick is marked ❌ missed. Ticking it off after that marks it 🕐 made up.
+Forgot to tick it in time? `+prayed asr on time` puts it right. `+prayed asr late` marks one as made up. Add `yesterday` for yesterday's: `+prayed yesterday isha on time`.
+
+*Your progress*
+`/prayers week` / `/prayers month`: how many you've prayed, your longest streak (on-time prayers in a row), which you missed, and a heatmap: 🟩 all 5 · 🟨 3–4 · 🟧 1–2 · 🟥 none · ⬜ no record.
+
+*Reports*
+With reminders on, I send a 🎉 when all 5 are prayed in a day, and the same summary every Sunday and at each month's end.
+`/prayers reports here` (the default), `dm` (in a group: each person gets their own, privately) or `off`.
 
 *When prayers end*
 Fajr ends at sunrise, Dhuhr at Asr, Asr at Maghrib, Maghrib at Isha, and Isha at Islamic midnight.

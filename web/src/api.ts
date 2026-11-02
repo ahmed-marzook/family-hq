@@ -116,11 +116,42 @@ export type Chat = {
   leaves_on: string | null;
 };
 
+/** Where a feature's reports go. "dm" (each member privately) is for groups. */
+export type Delivery = "here" | "dm" | "off";
+
+/** Where each feature's reports go (src/routes/admin_reports.rs). */
+export type Reports = { prayers: Delivery };
+
+/** A feature with reports: the key in `Reports` and the API path. */
+export type ReportFeature = keyof Reports;
+
+/** One person's prayers over a week or a month (src/routes/admin_prayers.rs). */
+export type PrayerSpan = {
+  /** The period's first and last day, "2026-10-26". */
+  first: string;
+  last: string;
+  /** Prayed on time or made up. */
+  prayed: number;
+  /** Prayed, made up or missed; prayers with no record don't count. */
+  recorded: number;
+  percent: number;
+  /** The most on-time prayers in a row. */
+  longest_streak: number;
+  /** Every day of the period; `prayed` is null for a day with no record. */
+  days: { date: string; prayed: number | null }[];
+  missed: { prayer: string; count: number }[];
+  made_up: { prayer: string; count: number }[];
+};
+
 export type UserDetail = {
   recent_days: number;
   cleanup: Cleanup;
   user: UserRow;
   settings: Settings;
+  /** Where the reports in their private chat go. */
+  reports: Reports;
+  /** Their prayers this week and this month, so far. */
+  prayers: { week: PrayerSpan; month: PrayerSpan };
   chats: Chat[];
 };
 
@@ -155,7 +186,10 @@ export type GroupDetail = {
   group: GroupRow;
   /** The group's own settings, shared by everyone in it. */
   settings: Settings;
-  members: { id: number; name: string }[];
+  /** Where the group's reports go. */
+  reports: Reports;
+  /** Each member, with their prayers this week so far. */
+  members: { id: number; name: string; prayer_week: PrayerSpan }[];
 };
 
 export type Group = { id: number; name: string | null; timezone: string };

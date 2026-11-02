@@ -10,7 +10,8 @@ use serde_json::{Value, json};
 
 use crate::AppState;
 use crate::routes::{
-    admin, admin_auth, admin_cleanup, admin_groups, admin_metrics, admin_settings, health,
+    admin, admin_auth, admin_cleanup, admin_groups, admin_metrics, admin_reports, admin_settings,
+    health,
 };
 
 /// The routes under `/api`, all behind the admin password.
@@ -38,6 +39,10 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             "/groups/{id}/prayer-reminders",
             post(admin_groups::prayer_reminders),
         )
+        .route(
+            "/groups/{id}/reports/{feature}",
+            post(admin_reports::group_reports),
+        )
         .route("/chats/{id}/todos", get(admin::group_todos))
         .route("/chats/{id}/shop", get(admin::group_shop))
         .route("/metrics", get(admin_metrics::metrics))
@@ -53,6 +58,10 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route(
             "/users/{id}/prayer-reminders",
             post(admin_settings::prayer_reminders),
+        )
+        .route(
+            "/users/{id}/reports/{feature}",
+            post(admin_reports::user_reports),
         )
         .route(
             "/users/{id}/chats/{chat}/todo-reminders",

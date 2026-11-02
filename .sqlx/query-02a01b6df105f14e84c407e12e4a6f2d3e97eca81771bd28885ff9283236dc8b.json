@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO reports_sent (chat_id, feature, kind, period_end, place, sent_at)\n         VALUES (?, ?, ?, ?, ?, ?)\n         ON CONFLICT (chat_id, feature, kind, period_end, place) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "02a01b6df105f14e84c407e12e4a6f2d3e97eca81771bd28885ff9283236dc8b"
+}

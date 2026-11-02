@@ -164,6 +164,9 @@ Done when:
 
 - Sunday evening, in each group with habits: everyone's streaks, the group
   streak, goal progress, and the most common obstacle. Together, not ranked.
+- Built on `src/reports.rs`, as the prayer reports are: add `Habits` to
+  `reports::Feature` (the schema already allows `'habits'`), and the
+  delivery setting, claiming and admin endpoints come with it.
 - Admin dashboard: habit and goal counts per person and group (DMs counts
   only); `command_log` names for the new commands.
 

@@ -176,7 +176,7 @@ pub(crate) async fn apply_patch(
 
 /// The person's DM, created if they don't have one. 404 if there's no such
 /// person.
-async fn dm_for(conn: &mut SqliteConnection, id: i64) -> Result<i64, AppError> {
+pub(crate) async fn dm_for(conn: &mut SqliteConnection, id: i64) -> Result<i64, AppError> {
     if let Some(dm) = existing_dm(conn, id).await? {
         return Ok(dm);
     }
@@ -189,7 +189,10 @@ async fn dm_for(conn: &mut SqliteConnection, id: i64) -> Result<i64, AppError> {
 }
 
 /// The person's DM if they have one; 404 if there's no such person.
-async fn existing_dm(conn: &mut SqliteConnection, id: i64) -> Result<Option<i64>, AppError> {
+pub(crate) async fn existing_dm(
+    conn: &mut SqliteConnection,
+    id: i64,
+) -> Result<Option<i64>, AppError> {
     if admin::user_jid(conn, id).await?.is_none() {
         return Err(AppError::NotFound);
     }
@@ -521,5 +524,86 @@ mod tests {
         )
         .await;
         assert!(status.is_client_error());
+    }
+
+    #[tokio::test]
+    async fn report_delivery_and_prayer_stats_on_the_pages() {
+        use crate::prayer::Prayer;
+        use crate::repo::prayers;
+
+        let pool = test_pool().await;
+        let (bilal, khadija, group, _) = seed(&pool).await;
+        // Today in London, the test server's default timezone.
+        let today = chrono::Utc::now()
+            .with_timezone(&chrono_tz::Europe::London)
+            .date_naive();
+        {
+            let mut conn = pool.acquire().await.unwrap();
+            let now = chrono::Utc::now();
+            prayers::mark_prayed(&mut conn, bilal, today, Prayer::Fajr, now)
+                .await
+                .unwrap();
+            prayers::mark_missed(&mut conn, bilal, today, Prayer::Dhuhr, now)
+                .await
+                .unwrap();
+        }
+        let server = start_server_with_geocoder(pool.clone(), &fake_geocoder().await).await;
+        let post = |path: String, body: Value| {
+            send(reqwest::Method::POST, format!("{server}{path}"), body)
+        };
+
+        let (_, page) = send(
+            reqwest::Method::GET,
+            format!("{server}/api/users/{bilal}"),
+            json!(null),
+        )
+        .await;
+        assert_eq!(page["reports"]["prayers"], "here", "the default");
+        let week = &page["prayers"]["week"];
+        assert_eq!(week["prayed"], 1);
+        assert_eq!(week["recorded"], 2);
+        assert_eq!(week["percent"], 50);
+        assert_eq!(week["days"].as_array().unwrap().len(), 7);
+        assert_eq!(week["missed"], json!([{ "prayer": "Dhuhr", "count": 1 }]));
+
+        let (status, page) = post(
+            format!("/api/users/{bilal}/reports/prayers"),
+            json!({ "delivery": "off" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(page["reports"]["prayers"], "off");
+
+        // A person's reports are already private: "dm" is for groups.
+        let (status, page) = post(
+            format!("/api/users/{khadija}/reports/prayers"),
+            json!({ "delivery": "dm" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(page["error"].as_str().unwrap().contains("only for a group"));
+        let (status, _) = post(
+            format!("/api/users/{bilal}/reports/weather"),
+            json!({ "delivery": "off" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "no such feature");
+
+        let (status, page) = post(
+            format!("/api/groups/{group}/reports/prayers"),
+            json!({ "delivery": "dm" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(page["reports"]["prayers"], "dm");
+        let members = page["members"].as_array().unwrap();
+        let bilals = members.iter().find(|m| m["id"] == bilal).unwrap();
+        assert_eq!(bilals["prayer_week"]["prayed"], 1);
+        let (status, _) = post(
+            format!("/api/groups/{group}/reports/prayers"),
+            json!({ "delivery": "sometimes" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 }

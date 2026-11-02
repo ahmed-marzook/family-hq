@@ -166,6 +166,12 @@ pub async fn delete_chat(conn: &mut SqliteConnection, chat_id: i64) -> Result<()
     sqlx::query!("DELETE FROM prayer_reminders WHERE chat_id = ?", chat_id)
         .execute(&mut *conn)
         .await?;
+    sqlx::query!("DELETE FROM report_settings WHERE chat_id = ?", chat_id)
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query!("DELETE FROM reports_sent WHERE chat_id = ?", chat_id)
+        .execute(&mut *conn)
+        .await?;
     sqlx::query!("DELETE FROM chats WHERE id = ?", chat_id)
         .execute(conn)
         .await?;

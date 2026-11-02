@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT wa_chat_id FROM chats WHERE dm_user_id = ? AND left_at IS NULL",
+  "describe": {
+    "columns": [
+      {
+        "name": "wa_chat_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chats",
+            "name": "wa_chat_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "1584d6647a0104a478a5720d58deb0a7915b9502e09a005282a5785020e5e302"
+}

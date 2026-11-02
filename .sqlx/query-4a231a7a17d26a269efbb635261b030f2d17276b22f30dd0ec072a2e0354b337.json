@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT c.id, c.wa_chat_id, c.dm_user_id, s.timezone, s.city, s.country,\n                s.latitude, s.longitude, s.prayer_method, s.prayer_school, s.prayer_ending_minutes\n         FROM chat_settings s\n         JOIN chats c ON c.id = s.chat_id\n         WHERE s.prayer_reminders = 1\n         ORDER BY c.id",
+  "query": "SELECT c.id, c.wa_chat_id, c.dm_user_id, s.timezone, s.city, s.country,\n                  s.latitude, s.longitude, s.prayer_method, s.prayer_school, s.prayer_ending_minutes,\n                  r.delivery AS \"delivery?\"\n           FROM chat_settings s\n           JOIN chats c ON c.id = s.chat_id\n           LEFT JOIN report_settings r ON r.chat_id = c.id AND r.feature = 'prayers'\n           WHERE s.prayer_reminders = 1\n           ORDER BY c.id",
   "describe": {
     "columns": [
       {
@@ -123,6 +123,17 @@
             "name": "prayer_ending_minutes"
           }
         }
+      },
+      {
+        "name": "delivery?",
+        "ordinal": 11,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "report_settings",
+            "name": "delivery"
+          }
+        }
       }
     ],
     "parameters": {
@@ -139,8 +150,9 @@
       true,
       true,
       true,
+      true,
       true
     ]
   },
-  "hash": "72e17f67aea27a18d98ab1cf7fe5afbc605d194d2829fd3ccd94d717e61b62ad"
+  "hash": "4a231a7a17d26a269efbb635261b030f2d17276b22f30dd0ec072a2e0354b337"
 }
