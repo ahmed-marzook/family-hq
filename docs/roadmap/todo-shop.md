@@ -1,7 +1,7 @@
 # Todo & Shop (Phase 1)
 
 > **Goal:** each WhatsApp group has a working shared shopping list and todo list, and each person can keep private lists in a DM.
-> **Status:** Built and deployed; in family testing. Open: logging, backups and the two-week test (1.6). Planned: due dates (1.7).
+> **Status:** Built and deployed; in family testing. Open: logging and the two-week test (1.6). Planned: due dates (1.7).
 > **Last updated:** 2026-11-03
 
 ## Phase 1: Todo & Shop
@@ -45,15 +45,17 @@ Build:
 - `/help`, with a page per topic.
 - Not built yet: logging with `tracing` (every webhook: who, which chat,
   which command, result). It uses `println!` for now.
-- Not built yet: daily SQLite backup (`VACUUM INTO`) to a second volume.
-  Kopia backs up `/opt/stacks/family-hq` meanwhile.
+- Daily SQLite backup (`src/backup.rs`, 0.16.0): `VACUUM INTO` a second volume
+  (`BACKUP_DIR`), keeping the newest `BACKUP_KEEP` (7). Made on the first
+  check of each day, or at start-up after downtime; written as `.partial`
+  and renamed, so a half-written copy never looks finished.
 
 Done when:
 
 - [x] `@name` assignment works, and an unknown name lists the valid ones
 - [x] `/help` explains every command
 - [ ] Logging with `tracing`
-- [ ] Daily `VACUUM INTO` backup
+- [x] Daily `VACUUM INTO` backup
 - [ ] The family uses it for two weeks
 - [ ] Every bug found in those two weeks has a test
 
@@ -100,8 +102,8 @@ Done when:
 - Can personal todos be assigned to the other person from a DM, or is
   assignment group-only? (Today `@name` only finds members of the chat, so
   in a DM only yourself.)
-- Backups: where should the second copy live (another disk, or cloud
-  storage)? Kopia covers `/opt/stacks/family-hq` for now.
+- Backups: which disk should the daily copies live on (`BACKUP_PATH`)?
+  And Kopia should back up that folder rather than the live database.
 - Notes (`+note`, `/notes`): dropped for now (2026-11-03). Bring back if
   the family asks for it during the two-week test; the old plan is in git
   history.

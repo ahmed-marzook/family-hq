@@ -28,6 +28,15 @@ async fn main() {
     };
     println!("database ready at {}", config.database_url);
 
+    match &config.backup_dir {
+        Some(dir) => println!(
+            "backups: daily into {}, keeping {}",
+            dir.display(),
+            config.backup_keep
+        ),
+        None => println!("backups: off (set BACKUP_DIR to turn them on)"),
+    }
+
     let port = config.port;
     let defaults = config.defaults.clone();
     let state = AppState::new(config, db);

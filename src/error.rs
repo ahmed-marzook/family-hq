@@ -14,6 +14,10 @@ pub enum AppError {
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
 
+    /// Reading or writing a file: the daily backup.
+    #[error("file error: {0}")]
+    Io(#[from] std::io::Error),
+
     /// Any outgoing HTTP call: GOWA or AlAdhan.
     #[error("HTTP request failed: {0}")]
     Http(#[from] reqwest::Error),

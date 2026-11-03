@@ -2,6 +2,7 @@
 //! `main.rs` only wires things together and starts the server.
 
 pub mod aladhan;
+pub mod backup;
 pub mod cache;
 pub mod calendar;
 pub mod cleanup;

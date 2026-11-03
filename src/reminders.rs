@@ -64,6 +64,10 @@ pub async fn run(state: Arc<AppState>) {
         if let Err(err) = crate::cleanup::check(&state, Utc::now()).await {
             println!("cleanup: check failed: {err}");
         }
+        // The daily copy of the database, made on the first tick of each day.
+        if let Err(err) = crate::backup::check(&state, Utc::now()).await {
+            println!("backup: failed: {err}");
+        }
     }
 }
 

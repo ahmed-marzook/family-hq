@@ -1,6 +1,7 @@
 //! Settings read from environment variables.
 
 use std::env;
+use std::path::PathBuf;
 use std::str::FromStr;
 
 use chrono_tz::Tz;
@@ -25,6 +26,11 @@ pub struct Config {
     /// Days without using the bot before a person's data is cleared
     /// (`INACTIVE_DAYS`, see `crate::cleanup`). 0 turns clearing off.
     pub inactive_days: i64,
+    /// Where the daily copy of the database goes (`BACKUP_DIR`, see
+    /// `crate::backup`). `None` when it isn't set: no backups.
+    pub backup_dir: Option<PathBuf>,
+    /// How many daily copies to keep (`BACKUP_KEEP`).
+    pub backup_keep: usize,
     /// Settings for every chat that hasn't chosen its own (`DEFAULT_*`).
     /// Chats change theirs with `/settings ...`.
     pub defaults: Settings,
@@ -39,6 +45,8 @@ impl Config {
     /// | `GOWA_URL` | `http://localhost:3001` |
     /// | `DATABASE_URL` | `sqlite:family-hq.db` (next to where you run it) |
     /// | `INACTIVE_DAYS` | 14 (0 never clears anything) |
+    /// | `BACKUP_DIR` | not set: no daily backup |
+    /// | `BACKUP_KEEP` | 7 |
     /// | `DEFAULT_TIMEZONE` | Europe/London |
     /// | `DEFAULT_CITY` / `DEFAULT_COUNTRY` | Milton Keynes / GB |
     /// | `DEFAULT_PRAYER_METHOD` | 3 (Muslim World League) |
@@ -55,6 +63,8 @@ impl Config {
             gowa_basic_auth: required("GOWA_BASIC_AUTH"),
             database_url: text_or("DATABASE_URL", "sqlite:family-hq.db"),
             inactive_days: number_or("INACTIVE_DAYS", 14),
+            backup_dir: optional("BACKUP_DIR").map(PathBuf::from),
+            backup_keep: number_or("BACKUP_KEEP", 7),
             defaults: Settings {
                 timezone: timezone_or("DEFAULT_TIMEZONE", chrono_tz::Europe::London),
                 city: text_or("DEFAULT_CITY", "Milton Keynes"),
@@ -83,10 +93,13 @@ fn required(name: &str) -> String {
 
 /// Reads a text variable, or `default` if it isn't set (or is empty).
 fn text_or(name: &str, default: &str) -> String {
-    env::var(name)
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| default.to_string())
+    optional(name).unwrap_or_else(|| default.to_string())
+}
+
+/// Reads a text variable whose absence means "off": `None` if it isn't set
+/// (or is empty).
+fn optional(name: &str) -> Option<String> {
+    env::var(name).ok().filter(|s| !s.is_empty())
 }
 
 /// Reads a number, or `default` if the variable isn't set.

@@ -20,10 +20,14 @@ if [ "$(id -u)" != "0" ]; then
 fi
 
 # Only touch ownership if it's wrong, so restarts on a big folder stay fast.
-if [ "$(stat -c '%u:%g' /data)" != "$PUID:$PGID" ]; then
-    echo "entrypoint: giving /data to $PUID:$PGID"
-    chown -R "$PUID:$PGID" /data
-fi
+# The backup folder (BACKUP_DIR, usually a second bind mount) needs the same.
+for dir in /data ${BACKUP_DIR:-}; do
+    mkdir -p "$dir"
+    if [ "$(stat -c '%u:%g' "$dir")" != "$PUID:$PGID" ]; then
+        echo "entrypoint: giving $dir to $PUID:$PGID"
+        chown -R "$PUID:$PGID" "$dir"
+    fi
+done
 
 # `exec` replaces this script, so family-hq becomes PID 1 and receives the
 # stop signal directly. `setpriv` switches user and group, and

@@ -73,7 +73,7 @@ echo "GOWA_WEBHOOK_SECRET=$(openssl rand -hex 32)"
 ```
 
 Paste those two lines into `.env` (replacing the `change-me` ones) with
-`nano .env`. Leave `FAMILY_HQ_TAG=0.15.0`. Then lock it down, since it holds
+`nano .env`. Leave `FAMILY_HQ_TAG=0.16.0`. Then lock it down, since it holds
 the passwords:
 
 ```sh
@@ -289,20 +289,37 @@ message in a DM) keeps everything. Each step is in the server log
 
 ## Backups
 
-The database is one file in the `family-hq_family_hq_data` volume. To copy
-it out safely (with the server stopped, so nothing is half-written):
+Every day, family-hq copies the whole database into the
+`family-hq_family_hq_backups` volume as `family-hq-2026-11-03.db`, and keeps
+the newest 7 (`BACKUP_KEEP` in `.env`). The copy is made on the first check
+after midnight, or when the server starts if it was down then. Each copy is
+one complete file that never changes after it's written. The log says
+`backup: wrote ...` each day.
+
+To keep the copies on another disk, set `BACKUP_PATH` in `.env` to a folder
+there (for example `/mnt/backup/family-hq`); the container makes it
+writable on start. Kopia, or anything else, should back up that folder
+rather than the live database, which is two files (the database and its
+`-wal`) that change all the time.
+
+To see them:
+
+```sh
+docker run --rm -v family-hq_family_hq_backups:/backups debian:bookworm-slim ls -l /backups
+```
+
+To restore one, stop family-hq, put the copy in place of the database, and
+remove the old `-wal` and `-shm` files, which belong to the database being
+replaced:
 
 ```sh
 cd ~/family-hq
 docker compose stop family-hq
-docker run --rm -v family-hq_family_hq_data:/data -v "$PWD":/backup \
-  debian:bookworm-slim tar czf /backup/family-hq-$(date +%F).tgz -C /data .
+docker run --rm -v family-hq_family_hq_data:/data -v family-hq_family_hq_backups:/backups   debian:bookworm-slim sh -c 'rm -f /data/family-hq.db-wal /data/family-hq.db-shm   && cp /backups/family-hq-2026-11-03.db /data/family-hq.db'
 docker compose start family-hq
 ```
 
-Restore by doing the reverse (`tar xzf` into the volume) with family-hq
-stopped. Keep a copy somewhere other than the server. (Automatic daily
-backups are planned for Stage 1.6.)
+Keep a copy somewhere other than the server too.
 
 The GOWA login (`family-hq_gowa_storages`) can be backed up the same way,
 but re-pairing is only a QR scan, so it matters less.

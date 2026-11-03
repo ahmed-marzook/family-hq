@@ -39,6 +39,10 @@ services:
       # Days without using the bot before a person's (or group's) data is
       # cleared, after a warning. 0 = never. See src/cleanup.rs.
       INACTIVE_DAYS: ${INACTIVE_DAYS:-14}
+      # A copy of the database every day, into the backups volume below.
+      # See "Backups" in docs/DEPLOY.md.
+      BACKUP_DIR: /backups
+      BACKUP_KEEP: ${BACKUP_KEEP:-7}
     ports:
       # Only for checking it from the server itself (curl localhost:3000/health).
       # GOWA reaches it over the Compose network, not through this port.
@@ -46,6 +50,9 @@ services:
     volumes:
       # The SQLite database. Back this up (see docs/DEPLOY.md).
       - family_hq_data:/data
+      # The daily copies. BACKUP_PATH in .env can point this at a folder
+      # on another disk instead (a path like /mnt/backup/family-hq).
+      - ${BACKUP_PATH:-family_hq_backups}:/backups
 
   admin:
     # The same version as family-hq; they're released together.
@@ -83,5 +90,6 @@ services:
 
 volumes:
   family_hq_data:
+  family_hq_backups:
   gowa_storages:
   gowa_statics:

@@ -15,7 +15,7 @@ family for at least two weeks**. The admin dashboard is outside this rule.
 ## Now
 
 - **Todo & Shop (Phase 1)**: deployed, in family testing. Open:
-  `tracing` logging, daily backup, two-week family test (1.6) →
+  `tracing` logging, two-week family test (1.6) →
   [roadmap/todo-shop.md](roadmap/todo-shop.md)
 - **Admin dashboard**: A1–A5 done (0.15.0), nothing open →
   [roadmap/admin-dashboard.md](roadmap/admin-dashboard.md)

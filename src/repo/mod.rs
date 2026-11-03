@@ -11,6 +11,7 @@
 //! wrong Rust type is a compile error, not a runtime surprise.
 
 pub mod admin;
+pub mod backup;
 pub mod chats;
 pub mod cleanup;
 pub mod messages;
