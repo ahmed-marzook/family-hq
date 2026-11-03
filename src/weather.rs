@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use chrono::{Datelike, NaiveDate, NaiveDateTime};
 use chrono_tz::Tz;
 use serde::Deserialize;
+use tracing::warn;
 
 use crate::cache::{PlaceKey, TtlCache};
 use crate::calendar::{self, Climate, Normals};
@@ -156,7 +157,7 @@ impl Weather {
             forecast.normals = self
                 .normals(at, timezone, this_year)
                 .await
-                .inspect_err(|err| println!("weather: no monthly averages: {err}"))
+                .inspect_err(|err| warn!("no monthly averages: {err}"))
                 .ok();
         }
         // Only answers are cached, never errors, so a failure is retried

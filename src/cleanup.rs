@@ -24,6 +24,7 @@ use std::collections::HashSet;
 
 use chrono::{DateTime, Duration, Timelike, Utc};
 use sqlx::Connection;
+use tracing::{info, warn};
 
 use crate::AppState;
 use crate::error::AppError;
@@ -172,7 +173,7 @@ pub async fn check(state: &AppState, now: DateTime<Utc>) -> Result<(), AppError>
         // One person's problem mustn't stop the others, so errors are
         // logged per person.
         if let Err(err) = check_person(state, &person, now, days).await {
-            println!("cleanup: {} failed: {err}", person.name);
+            warn!("{} failed: {err}", person.name);
         }
     }
     Ok(())
@@ -188,15 +189,15 @@ pub async fn check_groups(state: &AppState, now: DateTime<Utc>) -> Result<(), Ap
     let listed = match state.gowa.groups().await {
         Ok(groups) => groups,
         Err(err) => {
-            println!("cleanup: couldn't ask GOWA for its groups: {err}");
+            warn!("couldn't ask GOWA for its groups: {err}");
             return Ok(());
         }
     };
     let mut conn = state.db.acquire().await?;
     let stored = repo::groups(&mut conn).await?;
     if !trust_group_list(listed.len(), stored.len()) {
-        println!(
-            "cleanup: GOWA lists no groups, but {} are stored; not trusting that",
+        warn!(
+            "GOWA lists no groups, but {} are stored; not trusting that",
             stored.len()
         );
         return Ok(());
@@ -213,13 +214,11 @@ pub async fn check_groups(state: &AppState, now: DateTime<Utc>) -> Result<(), Ap
             GroupStep::Keep => {}
             GroupStep::Back => {
                 repo::set_left(&mut conn, group.id, None).await?;
-                println!("cleanup: the bot is in {name} again");
+                info!("the bot is in {name} again");
             }
             GroupStep::Missing => {
                 repo::set_left(&mut conn, group.id, Some(now)).await?;
-                println!(
-                    "cleanup: the bot isn't in {name} any more; deleting it in {LEFT_GRACE_HOURS} hours"
-                );
+                info!("the bot isn't in {name} any more; deleting it in {LEFT_GRACE_HOURS} hours");
             }
             GroupStep::Delete => {
                 // On the connection already held: asking the pool for a
@@ -228,7 +227,7 @@ pub async fn check_groups(state: &AppState, now: DateTime<Utc>) -> Result<(), Ap
                 let mut tx = conn.begin().await?;
                 repo::delete_chat(&mut tx, group.id).await?;
                 tx.commit().await?;
-                println!("cleanup: deleted {name} and its lists (the bot left it)");
+                info!("deleted {name} and its lists (the bot left it)");
             }
         }
     }
@@ -254,23 +253,18 @@ async fn check_quiet_groups(
         let result = match due(&group.activity(), now, days) {
             Due::Nothing => Ok(()),
             Due::Warn => warn_group(state, &group, now, days).await,
-            Due::Clear => leave_and_delete(
-                state,
-                group.id,
-                &group.wa_chat_id,
-                Some(group.last_active),
-            )
-            .await
-            .map(|left| {
-                if left {
-                    println!(
-                        "cleanup: left {name} and deleted its lists (nobody used the bot there)"
-                    );
-                }
-            }),
+            Due::Clear => {
+                leave_and_delete(state, group.id, &group.wa_chat_id, Some(group.last_active))
+                    .await
+                    .map(|left| {
+                        if left {
+                            info!("left {name} and deleted its lists (nobody used the bot there)");
+                        }
+                    })
+            }
         };
         if let Err(err) = result {
-            println!("cleanup: group {name} failed: {err}");
+            warn!("group {name} failed: {err}");
         }
     }
     Ok(())
@@ -289,8 +283,8 @@ async fn warn_group(
         .await?;
     let mut conn = state.db.acquire().await?;
     repo::set_group_warned(&mut conn, group.id, now).await?;
-    println!(
-        "cleanup: warned {}",
+    info!(
+        "warned {}",
         group.name.as_deref().unwrap_or(&group.wa_chat_id)
     );
     Ok(())
@@ -331,7 +325,7 @@ async fn check_person(
     if person.cleared_at.is_some() {
         let mut conn = state.db.acquire().await?;
         if repo::delete_if_unnamed(&mut conn, person.id).await? {
-            println!("cleanup: deleted {}'s last record", person.name);
+            info!("deleted {}'s last record", person.name);
         }
         return Ok(());
     }
@@ -347,7 +341,7 @@ async fn check_person(
             state.gowa.send_text(dm, &warning(days), None, &[]).await?;
             let mut conn = state.db.acquire().await?;
             repo::set_warned(&mut conn, person.id, now).await?;
-            println!("cleanup: warned {}", person.name);
+            info!("warned {}", person.name);
         }
         Due::Clear => {
             let mut tx = state.db.begin().await?;
@@ -358,15 +352,15 @@ async fn check_person(
             tx.commit().await?;
             match cleared {
                 Some(repo::Cleared { deleted_user: true }) => {
-                    println!(
-                        "cleanup: cleared {} (last active {})",
+                    info!(
+                        "cleared {} (last active {})",
                         person.name, person.last_active
                     );
                 }
                 Some(repo::Cleared {
                     deleted_user: false,
-                }) => println!(
-                    "cleanup: cleared {} (last active {}); kept their name, a group list mentions them",
+                }) => info!(
+                    "cleared {} (last active {}); kept their name, a group list mentions them",
                     person.name, person.last_active
                 ),
                 None => {}

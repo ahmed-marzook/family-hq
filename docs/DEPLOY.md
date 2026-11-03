@@ -73,7 +73,7 @@ echo "GOWA_WEBHOOK_SECRET=$(openssl rand -hex 32)"
 ```
 
 Paste those two lines into `.env` (replacing the `change-me` ones) with
-`nano .env`. Leave `FAMILY_HQ_TAG=0.16.0`. Then lock it down, since it holds
+`nano .env`. Leave `FAMILY_HQ_TAG=0.17.0`. Then lock it down, since it holds
 the passwords:
 
 ```sh
@@ -336,6 +336,26 @@ docker compose down                  # stop everything (keeps all data)
 
 `docker compose down -v` also **deletes the volumes**: the database and the
 WhatsApp login. Don't, unless you mean it.
+
+## Logs
+
+Each command is one line, with who sent it, in which chat, what it was and
+whether it worked:
+
+```text
+INFO message: family_hq::routes::webhook: handled command=shop.add ok=true ms=0 id=3EB0... chat=...@g.us user="Bilal"
+```
+
+Everything logged while handling that message (a failed reply, say) carries
+the same `id`, `chat` and `user`, so `grep 3EB0...` finds all of it. Lines
+start with a level: `INFO`, `WARN` (something went wrong but it carried on,
+e.g. GOWA didn't answer) or `ERROR` (something failed).
+
+`RUST_LOG` in `.env` picks how much is shown: `info` by default. `debug`
+adds ordinary chat and what each command contained, including list items,
+so use it only while looking into a problem, and only for the part you
+need, e.g. `RUST_LOG=info,family_hq::routes::webhook=debug`. Restart
+family-hq after changing it.
 
 ## Troubleshooting
 

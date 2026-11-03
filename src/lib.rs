@@ -12,6 +12,7 @@ pub mod error;
 pub mod geo;
 pub mod handlers;
 pub mod help;
+pub mod logging;
 pub mod metrics;
 pub mod moon;
 pub mod parser;

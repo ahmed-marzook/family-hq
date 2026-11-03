@@ -19,6 +19,7 @@ use std::path::Path;
 
 use chrono::{DateTime, NaiveDate, Utc};
 use sqlx::SqliteConnection;
+use tracing::info;
 
 use crate::AppState;
 use crate::error::AppError;
@@ -106,11 +107,7 @@ pub async fn back_up(
     repo::vacuum_into(conn, &partial.to_string_lossy()).await?;
     tokio::fs::rename(&partial, &path).await?;
     let size = tokio::fs::metadata(&path).await?.len();
-    println!(
-        "backup: wrote {} ({} KB)",
-        path.display(),
-        size.div_ceil(1024)
-    );
+    info!("wrote {} ({} KB)", path.display(), size.div_ceil(1024));
     prune(dir, keep).await?;
     Ok(true)
 }
@@ -127,7 +124,7 @@ async fn prune(dir: &Path, keep: usize) -> Result<(), AppError> {
     }
     for name in to_delete(&names, keep) {
         tokio::fs::remove_file(dir.join(&name)).await?;
-        println!("backup: deleted {name}");
+        info!("deleted {name}");
     }
     Ok(())
 }

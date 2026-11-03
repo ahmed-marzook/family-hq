@@ -13,6 +13,7 @@ use chrono::{DateTime, Utc};
 use hmac::{Hmac, KeyInit, Mac};
 use serde::Deserialize;
 use sha2::Sha256;
+use tracing::{Span, debug, info, warn};
 
 use crate::AppState;
 use crate::error::AppError;
@@ -141,7 +142,7 @@ pub async fn whatsapp(
         .and_then(|value| value.to_str().ok());
 
     if !signature_is_valid(config.webhook_secret.as_bytes(), &body, signature) {
-        println!("webhook: rejected, bad or missing signature");
+        warn!("rejected, bad or missing signature");
         return StatusCode::UNAUTHORIZED;
     }
 
@@ -151,7 +152,7 @@ pub async fn whatsapp(
     let event: WebhookEvent = match serde_json::from_slice(&body) {
         Ok(event) => event,
         Err(err) => {
-            println!("webhook: ignored, unknown event or unreadable body: {err}");
+            warn!("ignored, unknown event or unreadable body: {err}");
             return StatusCode::OK;
         }
     };
@@ -164,13 +165,11 @@ pub async fn whatsapp(
     };
 
     // A database error means nothing was saved (the transaction rolled
-    // back), so answer 500 and let GOWA retry.
+    // back), so answer 500 and let GOWA retry. The error itself is already
+    // logged, by `instrument(err)` on the handler.
     match result {
         Ok(()) => StatusCode::OK,
-        Err(err) => {
-            println!("webhook: failed: {err}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        }
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 
@@ -183,6 +182,20 @@ enum Action {
 
 /// Handles one incoming message: register who sent it and where, work out
 /// whether it's for the bot, act on it, then react and reply.
+///
+/// `#[instrument]` runs the whole function inside a *span* named
+/// `message`: every log line from in here, or from anything it calls,
+/// carries these fields, e.g. `message{id=3EB0... chat=...@g.us user=Bilal}`.
+/// `skip_all` stops it logging every argument (the whole message, the
+/// state); the fields are picked by hand instead. `user` starts `Empty` and
+/// is filled in once we know who it is. `err` logs a returned `Err` as an
+/// error, inside the span.
+#[tracing::instrument(
+    name = "message",
+    skip_all,
+    fields(id = %msg.id, chat = %msg.chat_id, user = tracing::field::Empty),
+    err
+)]
 async fn handle_message(
     state: &AppState,
     msg: Message,
@@ -191,13 +204,13 @@ async fn handle_message(
     // The bot's own messages come back through the webhook too. Answering
     // them could make the bot talk to itself forever.
     if msg.is_from_me {
-        println!("webhook: skipped own message {}", msg.id);
+        debug!("skipped, the bot's own message");
         return Ok(());
     }
     // `.or(...)`: the first of the two that's present.
     let shared = msg.location.as_ref().or(msg.live_location.as_ref());
     if msg.body.is_none() && shared.is_none() {
-        println!("webhook: skipped message {} with no text", msg.id);
+        debug!("skipped, no text");
         return Ok(());
     }
 
@@ -209,9 +222,10 @@ async fn handle_message(
 
     let sender = msg.sender();
     let Some(user) = users::find_or_register(&mut tx, &sender, now).await? else {
-        println!("webhook: can't register {} (no phone number)", msg.from);
+        warn!("can't register {} (no phone number)", msg.from);
         return Ok(());
     };
+    Span::current().record("user", user.display_name.as_str());
     // `then_some`: `Some(user.id)` if this isn't a group, else `None`.
     let dm_owner = (!msg.chat_id.ends_with("@g.us")).then_some(user.id);
     let chat_id = chats::find_or_create(&mut tx, &msg.chat_id, dm_owner, now).await?;
@@ -263,14 +277,14 @@ async fn handle_message(
             repo::metrics::record(&mut tx, &row).await?;
         }
         tx.commit().await?;
-        println!("webhook: message {} is chat, not a command", msg.id);
+        debug!("chat, not a command");
         return Ok(());
     };
 
     // A retried webhook stops here. Returning drops `tx`, so nothing from
     // this second delivery is saved.
     if !messages::mark_processed(&mut tx, &msg.id, now).await? {
-        println!("webhook: skipped {} (already handled)", msg.id);
+        info!("skipped, already handled (GOWA retried it)");
         return Ok(());
     }
 
@@ -296,23 +310,22 @@ async fn handle_message(
     let started = Instant::now();
     let result = match action {
         Action::Command(command) => {
-            println!(
-                "webhook: {} in {}: {command:?}",
-                ctx.sender.display_name, msg.chat_id
-            );
+            // `?command` logs it with `{:?}`. Only at debug level, because
+            // it includes the item text (what's on someone's list).
+            debug!(?command, "running");
             handlers::run_command(&mut tx, &ctx, &state.apis, command).await
         }
         Action::ListReply(items, reply) => {
-            println!(
-                "webhook: {} replied {reply:?} to a list",
-                ctx.sender.display_name
-            );
+            debug!(?reply, "list reply");
             handlers::run_list_reply(&mut tx, &ctx, &items, reply).await
         }
     };
     // `try_from` because `as_millis` is a u128; anything that doesn't fit
     // an i64 (290 million years) is capped.
     let duration_ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
+    // One line per command: which one, whether it worked, how long it took.
+    // `%` logs a field with `{}`; a plain name logs it as it is.
+    info!(command = %event.name, ok = result.is_ok(), ms = duration_ms, "handled");
     let row = Logged {
         event: &event,
         chat_id,
@@ -373,13 +386,19 @@ async fn log_failure(state: &AppState, row: &Logged<'_>) {
         Err(err) => Err(err),
     };
     if let Err(err) = result {
-        println!("webhook: couldn't log a failed {}: {err}", row.event.name);
+        warn!("couldn't log a failed {}: {err}", row.event.name);
     }
 }
 
 /// Handles a reaction. The only reactions that mean anything are on prayer
 /// reminders: any emoji marks that prayer as prayed for whoever reacted,
 /// and removing it (an empty `reaction`) unmarks it.
+#[tracing::instrument(
+    name = "reaction",
+    skip_all,
+    fields(id = %r.id, chat = %r.chat_id, user = tracing::field::Empty),
+    err
+)]
 async fn handle_reaction(
     state: &AppState,
     r: Reaction,
@@ -393,10 +412,7 @@ async fn handle_reaction(
     let Some((date, prayer)) =
         prayers::find_reminder(&mut tx, &r.reacted_message_id, &r.chat_id).await?
     else {
-        println!(
-            "webhook: {} reacted {:?} (not to a reminder)",
-            r.from, r.reaction
-        );
+        debug!("{} reacted {:?}, not to a reminder", r.from, r.reaction);
         return Ok(());
     };
 
@@ -406,9 +422,10 @@ async fn handle_reaction(
         lid: r.from_lid.clone(),
     };
     let Some(user) = users::find_or_register(&mut tx, &sender, now).await? else {
-        println!("webhook: can't register {} (no phone number)", r.from);
+        warn!("can't register {} (no phone number)", r.from);
         return Ok(());
     };
+    Span::current().record("user", user.display_name.as_str());
     // Reacting to a reminder is using the bot.
     users::touch(&mut tx, user.id, now).await?;
 
@@ -440,14 +457,11 @@ async fn handle_reaction(
     // `None` if nothing changed.
     let tick = if removed {
         let changed = prayers::unmark_prayed(&mut tx, user.id, date, prayer).await?;
-        println!(
-            "webhook: {} un-prayed {prayer} on {date}",
-            user.display_name
-        );
+        info!("unticked {prayer} on {date}");
         changed.then_some(Tick::Unticked)
     } else {
         let status = prayers::mark_prayed(&mut tx, user.id, date, prayer, now).await?;
-        println!("webhook: {} prayed {prayer} on {date}", user.display_name);
+        info!("prayed {prayer} on {date}");
         // Its time had ended and it was marked missed: made up.
         status.map(|s| match s {
             Status::Late => Tick::MadeUp,
@@ -477,10 +491,7 @@ async fn handle_reaction(
         .send_text(&r.chat_id, &text, Some(&r.reacted_message_id), &mentions)
         .await
     {
-        println!(
-            "webhook: couldn't confirm {prayer} for {}: {err}",
-            user.display_name
-        );
+        warn!("couldn't confirm {prayer}: {err}");
     }
     Ok(())
 }
@@ -512,7 +523,7 @@ async fn action_for(
 /// Thumbs-up on the message so the sender knows it was seen.
 async fn react(state: &AppState, msg: &Message) {
     if let Err(err) = state.gowa.react(&msg.chat_id, &msg.id, whatsapp::ACK).await {
-        println!("webhook: couldn't react to {}: {err}", msg.id);
+        warn!("couldn't react: {err}");
     }
 }
 
@@ -526,7 +537,7 @@ async fn send(state: &AppState, msg: &Message, text: &str, mentions: &[String]) 
     {
         Ok(id) => Some(id),
         Err(err) => {
-            println!("webhook: couldn't reply to {}: {err}", msg.id);
+            warn!("couldn't reply: {err}");
             None
         }
     }

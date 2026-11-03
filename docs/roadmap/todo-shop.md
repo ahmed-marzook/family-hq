@@ -1,7 +1,7 @@
 # Todo & Shop (Phase 1)
 
 > **Goal:** each WhatsApp group has a working shared shopping list and todo list, and each person can keep private lists in a DM.
-> **Status:** Built and deployed; in family testing. Open: logging and the two-week test (1.6). Planned: due dates (1.7).
+> **Status:** Done and in daily use (1.1–1.6, archived). Planned: due dates (1.7).
 > **Last updated:** 2026-11-03
 
 ## Phase 1: Todo & Shop
@@ -34,31 +34,6 @@ Numbers always refer to **the list message being replied to**, never
 "whatever the list looks like now" (see `wa_message_context` below). That
 avoids the number-shifting problem from the CLI MVP.
 
-### Stage 1.6: Assignments and polish (partly done)
-
-Build:
-
-- `+todo @Khadija …` resolves the name against `users.display_name`
-  (case-insensitive), among the members of this chat (`chat_members`).
-  An unknown name gives an error reply listing valid names.
-- `/todo` in the group shows who each todo is assigned to.
-- `/help`, with a page per topic.
-- Not built yet: logging with `tracing` (every webhook: who, which chat,
-  which command, result). It uses `println!` for now.
-- Daily SQLite backup (`src/backup.rs`, 0.16.0): `VACUUM INTO` a second volume
-  (`BACKUP_DIR`), keeping the newest `BACKUP_KEEP` (7). Made on the first
-  check of each day, or at start-up after downtime; written as `.partial`
-  and renamed, so a half-written copy never looks finished.
-
-Done when:
-
-- [x] `@name` assignment works, and an unknown name lists the valid ones
-- [x] `/help` explains every command
-- [ ] Logging with `tracing`
-- [x] Daily `VACUUM INTO` backup
-- [ ] The family uses it for two weeks
-- [ ] Every bug found in those two weeks has a test
-
 ### Stage 1.7: Todo due dates and priority flags (planned)
 
 Bring the CLI MVP's flags (`cli.rs`'s `parse_flags`, `dates.rs`,
@@ -81,7 +56,7 @@ Build:
   `-f` (`/todo mine` and `/todo <name>` already exist).
 - Change after adding, by replying to a `/todo` list: `due 2 fri`,
   `due 2 none`, `priority 2 high`.
-- Migration `0003`: `todos.due_date` (`date(due_date) IS due_date` CHECK,
+- A new migration: `todos.due_date` (`date(due_date) IS due_date` CHECK,
   as in the CLI's `db.rs`) and `todos.priority` (`CHECK IN (...)`).
 
 New concepts: porting your own CLI code, a second migration, sorting with

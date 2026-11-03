@@ -17,6 +17,7 @@ use axum::extract::{Path, State};
 use chrono::{DateTime, Duration, Utc};
 use serde::Serialize;
 use sqlx::SqliteConnection;
+use tracing::warn;
 
 use crate::AppState;
 use crate::cleanup;
@@ -416,7 +417,7 @@ pub(crate) async fn refresh_group_names(state: &AppState) {
     let groups = match state.gowa.groups().await {
         Ok(groups) => groups,
         Err(err) => {
-            println!("admin: couldn't get group names from GOWA: {err}");
+            warn!("couldn't get group names from GOWA: {err}");
             return;
         }
     };
@@ -425,7 +426,7 @@ pub(crate) async fn refresh_group_names(state: &AppState) {
     };
     for group in groups {
         if let Err(err) = chats::set_group_name(&mut conn, &group.jid, &group.name).await {
-            println!("admin: couldn't save a group name: {err}");
+            warn!("couldn't save a group name: {err}");
         }
     }
 }

@@ -14,6 +14,7 @@ use axum::extract::{Path, State};
 use chrono::{DateTime, Duration, Utc};
 use serde::Serialize;
 use sqlx::SqliteConnection;
+use tracing::info;
 
 use crate::AppState;
 use crate::error::AppError;
@@ -134,7 +135,7 @@ pub async fn change_settings(
     ensure_group(&mut tx, id).await?;
     let changes = apply_patch(&mut tx, &state, id, patch).await?;
     tx.commit().await?;
-    println!("admin: changed group {id}'s settings: {changes:?}");
+    info!("changed group {id}'s settings: {changes:?}");
 
     let mut conn = state.db.acquire().await?;
     Ok(Json(detail(&mut conn, &state, id).await?))
@@ -149,7 +150,7 @@ pub async fn reset_settings(
     let mut conn = state.db.acquire().await?;
     ensure_group(&mut conn, id).await?;
     stored::reset(&mut conn, id).await?;
-    println!("admin: reset group {id}'s settings");
+    info!("reset group {id}'s settings");
     Ok(Json(detail(&mut conn, &state, id).await?))
 }
 
@@ -163,10 +164,7 @@ pub async fn prayer_reminders(
     let mut conn = state.db.acquire().await?;
     ensure_group(&mut conn, id).await?;
     stored::set_prayer_reminders(&mut conn, id, switch.on).await?;
-    println!(
-        "admin: group {id}'s prayer reminders: {}",
-        on_off(switch.on)
-    );
+    info!("group {id}'s prayer reminders: {}", on_off(switch.on));
     Ok(Json(detail(&mut conn, &state, id).await?))
 }
 

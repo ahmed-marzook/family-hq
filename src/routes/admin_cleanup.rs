@@ -8,6 +8,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use chrono::Utc;
 use serde::Serialize;
+use tracing::info;
 
 use crate::AppState;
 use crate::cleanup::leave_and_delete;
@@ -33,8 +34,8 @@ pub async fn clear(
     }
     let cleared = cleanup::clear(&mut tx, id, Utc::now()).await?;
     tx.commit().await?;
-    println!(
-        "admin: cleared user {id}'s data{}",
+    info!(
+        "cleared user {id}'s data{}",
         if cleared.deleted_user {
             ""
         } else {
@@ -70,7 +71,7 @@ pub async fn leave(
             )),
             other => other,
         })?;
-    println!("admin: left group {id} and deleted its data");
+    info!("left group {id} and deleted its data");
     Ok(Json(serde_json::json!({ "left": true })))
 }
 

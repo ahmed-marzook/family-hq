@@ -14,6 +14,7 @@ use std::fmt;
 use std::str::FromStr;
 
 use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc, Weekday};
+use tracing::{info, warn};
 
 use crate::AppState;
 use crate::error::AppError;
@@ -282,12 +283,10 @@ pub async fn send(
             .await
         {
             Ok(_) => {
-                println!("reports: sent the {feature} {kind} report for {date} to {wa_chat_id}")
+                info!("sent the {feature} {kind} report for {date} to {wa_chat_id}")
             }
             Err(err) => {
-                println!(
-                    "reports: couldn't send the {feature} {kind} report to {wa_chat_id}: {err}"
-                )
+                warn!("couldn't send the {feature} {kind} report to {wa_chat_id}: {err}")
             }
         }
     }

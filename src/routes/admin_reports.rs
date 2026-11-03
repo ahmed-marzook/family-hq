@@ -10,6 +10,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use serde::{Deserialize, Serialize};
 use sqlx::SqliteConnection;
+use tracing::info;
 
 use crate::AppState;
 use crate::error::AppError;
@@ -79,8 +80,8 @@ pub async fn user_reports(
     let dm = dm_for(&mut tx, id).await?;
     reports::set_delivery(&mut tx, dm, feature, delivery).await?;
     tx.commit().await?;
-    println!(
-        "admin: user {id}'s {} reports: {}",
+    info!(
+        "user {id}'s {} reports: {}",
         feature.as_db_str(),
         delivery.as_db_str()
     );
@@ -100,8 +101,8 @@ pub async fn group_reports(
     let mut conn = state.db.acquire().await?;
     admin_groups::ensure_group(&mut conn, id).await?;
     reports::set_delivery(&mut conn, id, feature, delivery).await?;
-    println!(
-        "admin: group {id}'s {} reports: {}",
+    info!(
+        "group {id}'s {} reports: {}",
         feature.as_db_str(),
         delivery.as_db_str()
     );

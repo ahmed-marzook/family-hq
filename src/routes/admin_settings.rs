@@ -17,6 +17,7 @@ use axum::extract::{Path, State};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use sqlx::SqliteConnection;
+use tracing::info;
 
 use crate::AppState;
 use crate::error::AppError;
@@ -67,7 +68,7 @@ pub async fn change_settings(
     let dm = dm_for(&mut tx, id).await?;
     let changes = apply_patch(&mut tx, &state, dm, patch).await?;
     tx.commit().await?;
-    println!("admin: changed user {id}'s settings: {changes:?}");
+    info!("changed user {id}'s settings: {changes:?}");
 
     let mut conn = state.db.acquire().await?;
     Ok(Json(detail(&mut conn, &state, id).await?))
@@ -83,7 +84,7 @@ pub async fn reset_settings(
     // No DM means nothing was ever set: already the defaults.
     if let Some(dm) = existing_dm(&mut conn, id).await? {
         stored::reset(&mut conn, dm).await?;
-        println!("admin: reset user {id}'s settings");
+        info!("reset user {id}'s settings");
     }
     Ok(Json(detail(&mut conn, &state, id).await?))
 }
@@ -99,7 +100,7 @@ pub async fn prayer_reminders(
     let dm = dm_for(&mut tx, id).await?;
     stored::set_prayer_reminders(&mut tx, dm, switch.on).await?;
     tx.commit().await?;
-    println!("admin: user {id}'s prayer reminders: {}", on_off(switch.on));
+    info!("user {id}'s prayer reminders: {}", on_off(switch.on));
 
     let mut conn = state.db.acquire().await?;
     Ok(Json(detail(&mut conn, &state, id).await?))
@@ -123,8 +124,8 @@ pub async fn todo_reminders(
     } else {
         todo_reminders::disable(&mut conn, chat, id).await?;
     }
-    println!(
-        "admin: user {id}'s todo reminders in chat {chat}: {}",
+    info!(
+        "user {id}'s todo reminders in chat {chat}: {}",
         on_off(switch.on)
     );
     Ok(Json(detail(&mut conn, &state, id).await?))

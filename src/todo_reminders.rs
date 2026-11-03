@@ -6,6 +6,7 @@
 
 use chrono::{DateTime, Duration, NaiveTime, TimeZone, Utc};
 use chrono_tz::Tz;
+use tracing::warn;
 
 use crate::AppState;
 use crate::error::AppError;
@@ -93,7 +94,7 @@ pub async fn check(state: &AppState, now: DateTime<Utc>) -> Result<(), AppError>
     };
     for subscriber in &subscribers {
         if let Err(err) = check_subscriber(state, subscriber, now).await {
-            println!("todo reminders: {} failed: {err}", subscriber.display_name);
+            warn!("{} failed: {err}", subscriber.display_name);
         }
     }
     Ok(())
@@ -160,10 +161,7 @@ async fn check_subscriber(
             let ids: Vec<i64> = items.iter().map(|t| t.id).collect();
             messages::save_list(&mut conn, &message_id, chat_id, TODO_ITEM, &ids, now).await?;
         }
-        Err(err) => println!(
-            "todo reminders: couldn't send to {}: {err}",
-            subscriber.display_name
-        ),
+        Err(err) => warn!("couldn't send to {}: {err}", subscriber.display_name),
     }
     Ok(())
 }

@@ -43,6 +43,9 @@ services:
       # See "Backups" in docs/DEPLOY.md.
       BACKUP_DIR: /backups
       BACKUP_KEEP: ${BACKUP_KEEP:-7}
+      # How much to log: info, or debug to see every message (including
+      # list items). See "Logs" in docs/DEPLOY.md.
+      RUST_LOG: ${RUST_LOG:-info}
     ports:
       # Only for checking it from the server itself (curl localhost:3000/health).
       # GOWA reaches it over the Compose network, not through this port.

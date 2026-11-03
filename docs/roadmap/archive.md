@@ -123,6 +123,34 @@ Done when:
 - [x] Two people can tick items off the same list without confusing each other
 - [x] Replying `5` to a 3-item list gives a friendly error, not a crash
 
+### Stage 1.6: Assignments and polish ✅
+
+Build:
+
+- `+todo @Khadija …` resolves the name against `users.display_name`
+  (case-insensitive), among the members of this chat (`chat_members`).
+  An unknown name gives an error reply listing valid names.
+- `/todo` in the group shows who each todo is assigned to.
+- `/help`, with a page per topic.
+- Logging with `tracing` (`src/logging.rs`, 0.17.0): one `handled` line
+  per command (its name, whether it worked, how long it took), inside a span
+  with the message ID, chat and sender, so everything from one message can
+  be found together. `RUST_LOG` picks how much is shown; list items only
+  appear at `debug`.
+- Daily SQLite backup (`src/backup.rs`, 0.16.0): `VACUUM INTO` a second volume
+  (`BACKUP_DIR`), keeping the newest `BACKUP_KEEP` (7). Made on the first
+  check of each day, or at start-up after downtime; written as `.partial`
+  and renamed, so a half-written copy never looks finished.
+
+Done when:
+
+- [x] `@name` assignment works, and an unknown name lists the valid ones
+- [x] `/help` explains every command
+- [x] Logging with `tracing`
+- [x] Daily `VACUUM INTO` backup
+- [x] The family uses it for two weeks
+- [x] Every bug found in those two weeks has a test
+
 ### Built beyond the original plan
 
 All of these are released and tested:

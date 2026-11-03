@@ -62,7 +62,7 @@ impl IntoResponse for AppError {
             )
                 .into_response(),
             _ => {
-                println!("error: {self}");
+                tracing::error!("{self}");
                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
             }
         }

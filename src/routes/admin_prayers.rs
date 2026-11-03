@@ -13,6 +13,7 @@ use axum::extract::{Path, Query, State};
 use chrono::{NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::SqliteConnection;
+use tracing::info;
 
 use crate::AppState;
 use crate::error::AppError;
@@ -253,8 +254,8 @@ pub async fn set_prayer(
         ));
     }
     prayers::set_status(&mut conn, id, date, prayer, status, Utc::now()).await?;
-    println!(
-        "admin: set user {id}'s {prayer} on {date} to {}",
+    info!(
+        "set user {id}'s {prayer} on {date} to {}",
         status.map_or("no record", |s| s.as_db_str())
     );
     Ok(Json(month_of(&mut conn, &state, id, Some(date)).await?))

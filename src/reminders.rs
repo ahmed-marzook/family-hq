@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::Duration as StdDuration;
 
 use chrono::{DateTime, Utc};
+use tracing::{error, info, warn};
 
 use crate::AppState;
 use crate::error::AppError;
@@ -54,19 +55,19 @@ pub async fn run(state: Arc<AppState>) {
         ticks.tick().await;
         // The clock is read here, at the edge, and passed down.
         if let Err(err) = check(&state, Utc::now()).await {
-            println!("reminders: check failed: {err}");
+            error!("check failed: {err}");
         }
         if let Err(err) = todo_reminders::check(&state, Utc::now()).await {
-            println!("todo reminders: check failed: {err}");
+            error!("todo reminders: check failed: {err}");
         }
         // Not a reminder, but it runs on the same clock: warns, and clears
         // the data of, people who stopped using the bot.
         if let Err(err) = crate::cleanup::check(&state, Utc::now()).await {
-            println!("cleanup: check failed: {err}");
+            error!("cleanup: check failed: {err}");
         }
         // The daily copy of the database, made on the first tick of each day.
         if let Err(err) = crate::backup::check(&state, Utc::now()).await {
-            println!("backup: failed: {err}");
+            error!("backup failed: {err}");
         }
     }
 }
@@ -81,7 +82,7 @@ async fn check(state: &AppState, now: DateTime<Utc>) -> Result<(), AppError> {
         // One chat's problem (say AlAdhan can't find a city today) must not
         // stop the others' reminders, so errors are logged per chat.
         if let Err(err) = check_chat(state, &chat, now).await {
-            println!("reminders: {} failed: {err}", chat.wa_chat_id);
+            warn!("{} failed: {err}", chat.wa_chat_id);
         }
     }
     Ok(())
@@ -255,15 +256,15 @@ async fn send_due(
         {
             Ok(message_id) => {
                 prayers::set_reminder_message(&mut conn, reminder_id, &message_id).await?;
-                println!(
-                    "reminders: sent {} {:?} ({}) to {}",
+                info!(
+                    "sent {} {:?} ({}) to {}",
                     window.prayer, kind, settings.city, chat.wa_chat_id
                 );
             }
             // Not retried: the claim stays, so a flaky GOWA can't cause a
             // burst of repeats later.
-            Err(err) => println!(
-                "reminders: couldn't send {} to {}: {err}",
+            Err(err) => warn!(
+                "couldn't send {} to {}: {err}",
                 window.prayer, chat.wa_chat_id
             ),
         }

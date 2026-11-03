@@ -13,6 +13,7 @@
 //! pure function.
 
 use chrono::{DateTime, NaiveDate, Utc};
+use tracing::info;
 
 use crate::AppState;
 use crate::error::AppError;
@@ -66,10 +67,7 @@ async fn mark_missed(
         }
         for r in &place.recipients {
             if prayers::mark_missed(&mut conn, r.user_id, day.date, prayer, now).await? {
-                println!(
-                    "prayers: {prayer} on {} missed by user {}",
-                    day.date, r.user_id
-                );
+                info!("{prayer} on {} missed by user {}", day.date, r.user_id);
             }
         }
     }

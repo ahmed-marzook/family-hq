@@ -3,6 +3,7 @@
 
 use chrono::{DateTime, NaiveDate, Utc};
 use sqlx::SqliteConnection;
+use tracing::warn;
 
 use crate::Apis;
 use crate::aladhan::PrayerTimes;
@@ -497,7 +498,7 @@ async fn weather(
     match apis.weather.forecast(at, settings.timezone).await {
         Ok(forecast) => Ok(weather::format(&forecast, when, &settings.city)),
         Err(err) => {
-            println!("weather: {err}");
+            warn!("weather: {err}");
             Ok(format!(
                 "{PROBLEM} The weather service isn't answering. Try again in a bit."
             ))
@@ -525,7 +526,7 @@ async fn moon_command(
             .weather
             .moon_times(at, settings.timezone, today)
             .await
-            .inspect_err(|err| println!("moon times: {err}"))
+            .inspect_err(|err| warn!("moon times: {err}"))
             .ok(),
         None => None,
     };

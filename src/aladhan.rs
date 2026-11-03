@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::Deserialize;
 use tokio::sync::Mutex;
+use tracing::info;
 
 use crate::error::AppError;
 use chrono_tz::Tz;
@@ -87,7 +88,7 @@ impl PrayerTimes {
                 format!("{} {}", w.prayer, start.format("%H:%M"))
             })
             .collect();
-        println!(
+        info!(
             "prayer times for {}, {} (method {}) on {date}: {}",
             location.city,
             location.country,

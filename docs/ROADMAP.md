@@ -14,8 +14,8 @@ family for at least two weeks**. The admin dashboard is outside this rule.
 
 ## Now
 
-- **Todo & Shop (Phase 1)**: deployed, in family testing. Open:
-  `tracing` logging, two-week family test (1.6) →
+- **Todo & Shop (Phase 1)**: done (1.1–1.6) and in daily use; the
+  two-week family test passed, so Phase 2 can start →
   [roadmap/todo-shop.md](roadmap/todo-shop.md)
 - **Admin dashboard**: A1–A5 done (0.15.0), nothing open →
   [roadmap/admin-dashboard.md](roadmap/admin-dashboard.md)
@@ -40,6 +40,6 @@ family for at least two weeks**. The admin dashboard is outside this rule.
 
 ## Done
 
-- **Finished stages**: 1.1–1.5, 1.9, "Built beyond the original plan",
+- **Finished stages**: 1.1–1.6, 1.9, "Built beyond the original plan",
   admin A1–A5, answered open questions →
   [roadmap/archive.md](roadmap/archive.md) (read only when asked)

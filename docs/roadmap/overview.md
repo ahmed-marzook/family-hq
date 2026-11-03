@@ -13,7 +13,7 @@ unticked ones aren't yet.
 
 | Phase                           | What it delivers                                                      | Status                                                                                             |
 | ------------------------------- | --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| **1. Todo & Shop**              | Shared shopping list and todos, driven from WhatsApp                  | Built and deployed (0.4.1); in family testing. Next: due dates                                     |
+| **1. Todo & Shop**              | Shared shopping list and todos, driven from WhatsApp                  | Done and in daily use; two-week family test passed. Next: due dates                                |
 | **2. Reminders & Prayer Coach** | `+remind`, ntfy pushes, prayer windows, escalation, reflections       | Prayer reminders done early; habits brought forward (Stage 2.5, H1–H6); `+remind` planned          |
 | **3. Dashboard**                | React web app served by the Rust binary                               | Later                                                                                              |
 | **4. AI & Extras**              | Weekly coaching, natural language, weather, calendars, Home Assistant | `/weather` and per-person timezones done early                                                     |

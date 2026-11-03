@@ -6,6 +6,8 @@ use family_hq::config::Config;
 // runs this function on it. Without a runtime, `.await` can't do anything.
 #[tokio::main]
 async fn main() {
+    // First, so everything after it can log (see `family_hq::logging`).
+    family_hq::logging::init();
     let config = Config::from_env();
 
     // Opens the database (creating it on first run) and applies any new
@@ -16,7 +18,7 @@ async fn main() {
     let db = match family_hq::db::connect(&config.database_url).await {
         Ok(db) => db,
         Err(err) => {
-            eprintln!(
+            tracing::error!(
                 "could not open the database at {}: {err}\n\
                  Usually the folder isn't writable by the user family-hq runs as \
                  (PUID:PGID, default 1000:1000). On the host, for example:\n  \
@@ -26,15 +28,15 @@ async fn main() {
             std::process::exit(1);
         }
     };
-    println!("database ready at {}", config.database_url);
+    tracing::info!("database ready at {}", config.database_url);
 
     match &config.backup_dir {
-        Some(dir) => println!(
+        Some(dir) => tracing::info!(
             "backups: daily into {}, keeping {}",
             dir.display(),
             config.backup_keep
         ),
-        None => println!("backups: off (set BACKUP_DIR to turn them on)"),
+        None => tracing::info!("backups: off (set BACKUP_DIR to turn them on)"),
     }
 
     let port = config.port;
@@ -45,9 +47,12 @@ async fn main() {
     // alongside the web server. It gets its own clone of the `Arc`. It
     // stops when `main` returns.
     tokio::spawn(family_hq::reminders::run(state.clone()));
-    println!(
+    tracing::info!(
         "defaults: {}, {} ({}), prayer method {}",
-        defaults.city, defaults.country, defaults.timezone, defaults.prayer_method
+        defaults.city,
+        defaults.country,
+        defaults.timezone,
+        defaults.prayer_method
     );
 
     // 0.0.0.0 = listen on every network interface, which is needed inside
@@ -56,14 +61,14 @@ async fn main() {
         .await
         .expect("failed to bind port");
 
-    println!("listening on http://localhost:{port}");
+    tracing::info!("listening on http://localhost:{port}");
 
     axum::serve(listener, family_hq::app(state))
         .with_graceful_shutdown(shutdown_signal())
         .await
         .expect("server error");
 
-    println!("shut down cleanly");
+    tracing::info!("shut down cleanly");
 }
 
 /// Finishes when Ctrl+C is pressed. Axum then stops accepting new
