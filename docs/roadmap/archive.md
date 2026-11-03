@@ -100,6 +100,29 @@ Done when:
 - [x] Sending the same webhook body twice adds the item only once
 - [x] A request with a bad signature gets `401`
 
+### Stage 1.5: Lists and replying by number ✅
+
+Build:
+
+- `/shop` and `/todo` send numbered lists.
+- When sending a list, save its WhatsApp message ID and the
+  number → row ID mapping in `wa_message_context`.
+- When someone replies (quotes) to that message with `1 3` or `done 2`, look
+  up the quoted message ID in `wa_message_context` to find the real rows.
+- Replying to an old list still works, because the numbers are frozen
+  per message.
+- Reacting ✅ to an "Added …" message to tick that item off moved to
+  Stage 2.2 (2026-11-03), where reactions are routed to whichever feature
+  owns the message. `+got milk` covers the need meanwhile.
+
+New concepts: reading quoted message IDs from the webhook payload, a
+one-to-many mapping table.
+
+Done when:
+
+- [x] Two people can tick items off the same list without confusing each other
+- [x] Replying `5` to a 3-item list gives a friendly error, not a crash
+
 ### Built beyond the original plan
 
 All of these are released and tested:
@@ -168,6 +191,28 @@ Done when:
 - [x] With `INACTIVE_DAYS=0` nothing is ever deleted
 
 ## Admin dashboard: finished stages
+
+### Stage A1: Skeleton and release ✅
+
+Build:
+
+- The `web/` shell (Users and Metrics pages are placeholders), `web/Dockerfile`
+  and `web/Caddyfile`.
+- `src/routes/api.rs`: `/api/health`, and a JSON 404 for anything else there.
+- An `admin` service in both compose files, and the second image
+  (`kaizenflow/family-hq-admin`) in the release workflow.
+
+New concepts: nested routers, fallback routes.
+
+Done when:
+
+- [x] Refreshing a deep link works
+- [x] `/api/nope` returns a JSON 404
+- [x] The webhook can't be reached through the dashboard
+- [x] Deployed, and port 3000 still isn't reachable from another machine
+      (checked 2026-11-03 on 0.15.0: the stack publishes no port for
+      family-hq; from the LAN, 8090 is the dashboard, `/api` asks for the
+      password, and 3003 is GOWA)
 
 ### Stage A2: Users and what they have (read-only) ✅
 

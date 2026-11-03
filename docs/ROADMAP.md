@@ -14,22 +14,22 @@ family for at least two weeks**. The admin dashboard is outside this rule.
 
 ## Now
 
-- **Todo & Shop (Phase 1)**: deployed, in family testing. Open: reaction
-  tick-off (1.5), `tracing` logging, daily backup, two-week family test
-  (1.6) → [roadmap/todo-shop.md](roadmap/todo-shop.md)
-- **Admin dashboard**: A1–A5 built (0.13.0). Only open item: A1's deploy
-  check → [roadmap/admin-dashboard.md](roadmap/admin-dashboard.md)
+- **Todo & Shop (Phase 1)**: deployed, in family testing. Open:
+  `tracing` logging, daily backup, two-week family test (1.6) →
+  [roadmap/todo-shop.md](roadmap/todo-shop.md)
+- **Admin dashboard**: A1–A5 done (0.15.0), nothing open →
+  [roadmap/admin-dashboard.md](roadmap/admin-dashboard.md)
 - **Habits and group goals (Stage 2.5, H1–H6)**: brought forward at the
   owner's request; planned, H1 first → [roadmap/habits.md](roadmap/habits.md)
 
 ## Next
 
-- **Todo due dates and notes (Stages 1.7, 1.8)**: planned →
+- **Todo due dates (Stage 1.7)**: planned →
   [roadmap/todo-shop.md](roadmap/todo-shop.md)
 - **Reminders & Prayer Coach (Phase 2)**: prayer reminders, missed
-  tracking and reports done early; ntfy (2.1), `+remind` and the shared
-  reminder engine (2.2), AlAdhan fallback (2.3), the `PrayerStage` state
-  machine (2.4) to do →
+  tracking and reports done early; ntfy (2.1), `+remind`, the shared
+  reminder engine and ticking off by reaction (2.2), AlAdhan fallback
+  (2.3), the `PrayerStage` state machine (2.4) to do →
   [roadmap/reminders-prayer.md](roadmap/reminders-prayer.md)
 
 ## Later
@@ -40,6 +40,6 @@ family for at least two weeks**. The admin dashboard is outside this rule.
 
 ## Done
 
-- **Finished stages**: 1.1–1.4, 1.9, "Built beyond the original plan",
-  admin A2–A5, answered open questions →
+- **Finished stages**: 1.1–1.5, 1.9, "Built beyond the original plan",
+  admin A1–A5, answered open questions →
   [roadmap/archive.md](roadmap/archive.md) (read only when asked)

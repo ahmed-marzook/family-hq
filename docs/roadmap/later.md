@@ -8,7 +8,7 @@
 
 - React + Vite + Tailwind + DaisyUI, built into `web/dist` and embedded in
   the Rust binary (`rust-embed` or similar).
-- Read-only first: lists, notes, reminders, streaks, obstacle charts. Then
+- Read-only first: lists, reminders, streaks, obstacle charts. Then
   editing.
 - Login: a magic link sent over WhatsApp.
 - Installable as a PWA (an app on the phone's home screen).

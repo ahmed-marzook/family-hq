@@ -1,8 +1,8 @@
 # Todo & Shop (Phase 1)
 
 > **Goal:** each WhatsApp group has a working shared shopping list and todo list, and each person can keep private lists in a DM.
-> **Status:** Built and deployed; in family testing. Open: reaction tick-off (1.5), logging, backups and the two-week test (1.6). Planned: due dates (1.7), notes (1.8).
-> **Last updated:** 2026-11-02
+> **Status:** Built and deployed; in family testing. Open: logging, backups and the two-week test (1.6). Planned: due dates (1.7).
+> **Last updated:** 2026-11-03
 
 ## Phase 1: Todo & Shop
 
@@ -33,30 +33,6 @@ sender knows it was seen.
 Numbers always refer to **the list message being replied to**, never
 "whatever the list looks like now" (see `wa_message_context` below). That
 avoids the number-shifting problem from the CLI MVP.
-
-### Stage 1.5: Lists and replying by number (mostly done)
-
-Build:
-
-- `/shop` and `/todo` send numbered lists.
-- When sending a list, save its WhatsApp message ID and the
-  number → row ID mapping in `wa_message_context`.
-- When someone replies (quotes) to that message with `1 3` or `done 2`, look
-  up the quoted message ID in `wa_message_context` to find the real rows.
-- Replying to an old list still works, because the numbers are frozen
-  per message.
-- Not built yet: reaction ✅ or 👍 on a single "Added …" confirmation
-  message also ticks that item off (the confirmation's message ID would be
-  stored too). `+got milk` covers most of the need.
-
-New concepts: reading quoted message IDs from the webhook payload, a
-one-to-many mapping table.
-
-Done when:
-
-- [x] Two people can tick items off the same list without confusing each other
-- [x] Replying `5` to a 3-item list gives a friendly error, not a crash
-- [ ] Reacting ✅ to an "Added …" message ticks that item off
 
 ### Stage 1.6: Assignments and polish (partly done)
 
@@ -117,38 +93,6 @@ Done when:
 - [ ] The parser has tests for every flag and date form, including bad
       ones (`-d`, `-p urgent`, a past date)
 
-### Stage 1.8: Notes (planned)
-
-Small things worth keeping and finding again: a driving licence number, the
-Wi-Fi password for guests, a tyre size, the boiler model.
-
-Build:
-
-- `+note driving licence: SAMPL123456AB9CD` (`+n`): saves the note. Text
-  before the first `:` is its title.
-- `/notes` (`/n`): numbered list of titles. Reply with a number to see one,
-  or `remove 2` to delete it.
-- `/note licence`: shows notes whose title or text contains "licence".
-- Notes belong to the chat like everything else: **a DM's notes are
-  private**, a group's are shared with the group.
-- `notes` table (migration `0004`): `chat_id`, `title`, `body`,
-  `created_by`, `created_at`.
-
-Privacy, decided before building:
-
-- Notes are stored **unencrypted** in the SQLite file (and in Kopia's
-  backups of it), and they stay in the WhatsApp chat history. That's fine
-  for a licence number or a tyre size. **Passwords and bank details belong
-  in Vaultwarden**, which the homelab already runs. `/help notes` should
-  say so.
-- Sensitive notes should live in a DM, not a family group.
-
-Done when:
-
-- [ ] `+note`, `/notes`, `/note <word>` and `remove` work in a DM and a group
-- [ ] A DM's notes never show up in a group's `/notes`, or the other way round
-- [ ] `/help notes` explains what not to store
-
 ## Open questions
 
 - Should `/shop clear bought` also run automatically, for example deleting
@@ -158,3 +102,6 @@ Done when:
   in a DM only yourself.)
 - Backups: where should the second copy live (another disk, or cloud
   storage)? Kopia covers `/opt/stacks/family-hq` for now.
+- Notes (`+note`, `/notes`): dropped for now (2026-11-03). Bring back if
+  the family asks for it during the two-week test; the old plan is in git
+  history.

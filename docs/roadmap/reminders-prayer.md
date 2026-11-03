@@ -1,8 +1,8 @@
 # Reminders & Prayer Coach (Phase 2)
 
 > **Goal:** `+remind`, ntfy pushes, prayer windows, escalation, reflections.
-> **Status:** Prayer reminders and check-ins done early; missed tracking and prayer reports done early (2.4); still to do: ntfy (2.1), `+remind` and the shared reminder engine (2.2), the AlAdhan fallback and BST/GMT test (2.3), the `PrayerStage` state machine (2.4).
-> **Last updated:** 2026-11-02
+> **Status:** Prayer reminders and check-ins done early; missed tracking and prayer reports done early (2.4); still to do: ntfy (2.1), `+remind`, the shared reminder engine and ticking off by reaction (2.2), the AlAdhan fallback and BST/GMT test (2.3), the `PrayerStage` state machine (2.4).
+> **Last updated:** 2026-11-03
 
 ## Phase 2: Reminders & Prayer Coach
 
@@ -66,6 +66,9 @@ Build:
   reactions routed back to the feature that owns the reminder (✅ on a todo
   reminder completes the todo).
 - Reacting ✅ to a reminder marks it done; 😴 snoozes it an hour.
+- **Ticking off by reaction** (moved from Stage 1.5): the "Added …" reply
+  to `+shop` / `+todo` stores its message ID too, and ✅ or 👍 on it ticks
+  that item off, through the same routing.
 
 New concepts: refactoring a working feature into a shared one, flags with
 values, a little date arithmetic.
@@ -79,6 +82,7 @@ Done when:
 - [ ] `/remind` lists them, and `remove` / `snooze` work
 - [ ] A due todo gets a morning reminder, and none once it's done
 - [ ] Prayer reminders run on the shared engine with no change in behaviour
+- [ ] Reacting ✅ to an "Added …" message ticks that item off
 
 ### Stage 2.3: Prayer windows (mostly done early)
 

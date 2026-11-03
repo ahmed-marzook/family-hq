@@ -1,8 +1,8 @@
 # Admin dashboard
 
 > **Goal:** an owner-only tool to see who uses the bot and what they have, read the metrics, and change user and group settings.
-> **Status:** A1–A5 built (latest 0.13.0). Open: A1's deploy check (port 3000 unreachable from another machine). Finished stages are in archive.md.
-> **Last updated:** 2026-11-02
+> **Status:** A1–A5 done (latest 0.15.0). Nothing open. Finished stages are in archive.md.
+> **Last updated:** 2026-11-03
 
 ## Admin dashboard
 
@@ -33,21 +33,3 @@ Decisions:
 Not planned for now: editing lists, editing group settings, deleting users, an
 audit history, several admins.
 
-### Stage A1: Skeleton and release ✅ (first deploy to do)
-
-Build:
-
-- The `web/` shell (Users and Metrics pages are placeholders), `web/Dockerfile`
-  and `web/Caddyfile`.
-- `src/routes/api.rs`: `/api/health`, and a JSON 404 for anything else there.
-- An `admin` service in both compose files, and the second image
-  (`kaizenflow/family-hq-admin`) in the release workflow.
-
-New concepts: nested routers, fallback routes.
-
-Done when:
-
-- [x] Refreshing a deep link works
-- [x] `/api/nope` returns a JSON 404
-- [x] The webhook can't be reached through the dashboard
-- [ ] Deployed, and port 3000 still isn't reachable from another machine
