@@ -574,8 +574,14 @@ mod tests {
         let m: Value = serde_json::from_str(&body).unwrap();
         assert_eq!(m["days"], Value::Null);
         assert_eq!(m["totals"]["uses"], 6);
-        // From the first use (40 days ago) to today.
-        assert_eq!(m["per_day"].as_array().unwrap().len(), 41);
+        // From the first use (40 days ago) to today, both as London dates.
+        // Usually 41 days, but not always: in winter, 40 days before 23:30
+        // can be 00:30 *the next day* on summer time, which makes it 40.
+        let london =
+            |t: chrono::DateTime<Utc>| t.with_timezone(&chrono_tz::Europe::London).date_naive();
+        let now = Utc::now();
+        let days = (london(now) - london(now - Duration::days(40))).num_days() + 1;
+        assert_eq!(m["per_day"].as_array().unwrap().len() as i64, days);
 
         let (status, _) = get(format!("{server}/api/metrics?days=abc")).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
