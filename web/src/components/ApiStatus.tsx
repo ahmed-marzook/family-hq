@@ -9,9 +9,9 @@ const CHECK_EVERY_MS = 30_000;
 
 /** Whether the API can be reached through the proxy, and we're signed in. */
 export default function ApiStatus() {
-  const { isPending, error } = useQuery({
+  const { data, isPending, error } = useQuery({
     queryKey: ["health"],
-    queryFn: () => getJson<{ status: string }>("/health"),
+    queryFn: () => getJson<{ status: string; version?: string }>("/health"),
     refetchInterval: CHECK_EVERY_MS,
     retry: false,
   });
@@ -40,7 +40,7 @@ export default function ApiStatus() {
   return (
     <p className="flex items-center gap-1.5 text-xs text-stone-500 md:mt-auto dark:text-stone-400">
       <CheckCircleIcon className="size-4 text-teal-700 dark:text-teal-400" />
-      API connected
+      API connected{data.version && ` · v${data.version}`}
     </p>
   );
 }

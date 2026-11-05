@@ -358,11 +358,13 @@ async fn push_command(
     Ok(match command {
         PushCommand::Status => match push_repo::subscription(conn, user_id).await? {
             Some(sub) => format!(
-                "{BELL} Push notifications are on, on the topic {}.                  `/push test` sends one; `/push off` stops them.",
+                "{BELL} Push notifications are on, on the topic `{}`. `/push test` sends one, \
+                 `/push on` shows the setup steps again (for a new phone) and `/push off` stops them.",
                 sub.topic
             ),
             None => format!(
-                "{BELL} Push notifications are off. `/push on` sets them up: prayer                  reminders then come to the ntfy app as well, with a button to tick them off."
+                "{BELL} Push notifications are off. `/push on` sets them up: prayer \
+                 reminders then come to the ntfy app as well, with a button to tick them off."
             ),
         },
         PushCommand::On => {
@@ -386,7 +388,9 @@ async fn push_command(
                 .await
             {
                 Ok(()) => format!(
-                    "{BELL} Sent a test push. If it hasn't arrived, check the server and topic                      in the ntfy app. Tap its button to check it can reach me too."
+                    "{BELL} Sent a test push. If it hasn't arrived, check the server and topic \
+                     in the ntfy app (`/push on` shows them again). Tap its button to check \
+                     it can reach me too."
                 ),
                 Err(err) => {
                     warn!("test push failed: {err}");

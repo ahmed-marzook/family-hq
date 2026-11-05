@@ -140,7 +140,9 @@ pub fn trust_group_list(listed: usize, stored: usize) -> bool {
 /// The warning posted in a group nobody uses the bot in.
 pub fn group_warning(days: i64) -> String {
     format!(
-        "{WAVE} Nobody has used me in this group for {days} days. To keep things tidy,          I'll leave it in {WARN_DAYS} days and delete its lists and settings. Send any          command (like /help) to keep me here."
+        "{WAVE} Nobody has used me in this group for {days} days. To keep things tidy, \
+         I'll leave it in {WARN_DAYS} days and delete its lists and settings. Send any \
+         command (like /help) to keep me here."
     )
 }
 

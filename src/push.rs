@@ -246,23 +246,37 @@ pub fn new_subscription() -> Subscription {
     }
 }
 
-/// The reply to `/push on`: how to subscribe in the ntfy app.
+/// Where to get the ntfy app.
+const ANDROID_APP: &str = "https://play.google.com/store/apps/details?id=io.heckel.ntfy";
+const IPHONE_APP: &str = "https://apps.apple.com/app/ntfy/id1625396347";
+
+/// The reply to `/push on`: step by step, from installing the ntfy app to
+/// checking the button works. Sent again by a second `/push on` (same
+/// topic), e.g. for a new phone.
+///
+/// No `ntfy://` link: WhatsApp only makes http(s) links tappable.
 pub fn subscribe_text(config: &PushConfig, topic: &str) -> String {
     let server = config.ntfy_public_url.trim_end_matches('/');
-    // `ntfy://` opens the Android app straight on the subscription.
-    let host = server
-        .trim_start_matches("https://")
-        .trim_start_matches("http://");
     format!(
-        "{BELL} Push notifications are on.\n\n\
-         1. Install the *ntfy* app (Play Store, F-Droid or App Store).\n\
-         2. Tap + to add a subscription. Turn on \"Use another server\" and enter:\n\
-         Server: {server}\n\
-         Topic: {topic}\n\
-         (On Android you can just open ntfy://{host}/{topic})\n\
-         3. Send /push test to check it works.\n\n\
+        "{BELL} *Push notifications are on*\n\
+         Prayer reminders now also come to your phone through the free *ntfy* app, \
+         with a *Prayed ✅* button. WhatsApp reminders carry on as before.\n\n\
+         *1. Install ntfy*\n\
+         Android: {ANDROID_APP}\n\
+         iPhone: {IPHONE_APP}\n\n\
+         *2. Subscribe to your topic*\n\
+         Open ntfy and tap *+*. Then:\n\
+         • Topic: `{topic}`\n\
+         • Turn on *Use another server* and enter: `{server}`\n\
+         • Tap *Subscribe*, and allow notifications if it asks.\n\
+         On Android, also say yes if it asks to ignore battery optimisation, \
+         or pushes can arrive late.\n\n\
+         *3. Check it*\n\
+         Send `/push test`. A push should arrive within a few seconds. Tap its \
+         *Test the button* button (on iPhone, press and hold the notification to see it) \
+         and I'll reply here.\n\n\
          Keep the topic to yourself: anyone who has it can read your pushes. \
-         /push off stops them; /push on again gives you a new topic."
+         `/push off` stops them; `/push on` again later gives you a new topic."
     )
 }
 
@@ -364,10 +378,16 @@ mod tests {
     }
 
     #[test]
-    fn subscribing_gives_the_server_and_topic() {
+    fn subscribing_gives_the_app_server_and_topic() {
         let text = subscribe_text(ntfy().config(), "fhq-topic");
-        assert!(text.contains("Server: https://ntfy.example.co.uk\n"));
-        assert!(text.contains("Topic: fhq-topic\n"));
-        assert!(text.contains("ntfy://ntfy.example.co.uk/fhq-topic"));
+        assert!(text.contains("Topic: `fhq-topic`\n"), "{text}");
+        // The trailing / is dropped: the app wants the server exactly.
+        assert!(
+            text.contains("enter: `https://ntfy.example.co.uk`\n"),
+            "{text}"
+        );
+        assert!(text.contains(ANDROID_APP) && text.contains(IPHONE_APP));
+        // No run of spaces from a line break that lost its `\`.
+        assert!(!text.contains("  "), "{text}");
     }
 }

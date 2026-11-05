@@ -187,7 +187,8 @@ mod tests {
         let response = get_as(&format!("{server}/api/health"), Some(PASSWORD)).await;
         assert_eq!(response.status(), StatusCode::OK);
         let body: Value = response.json().await.unwrap();
-        assert_eq!(body, json!({ "status": "ok" }));
+        assert_eq!(body["status"], "ok");
+        assert_eq!(body["version"], health::VERSION);
     }
 
     #[tokio::test]

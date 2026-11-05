@@ -61,7 +61,10 @@ async fn main() {
         .await
         .expect("failed to bind port");
 
-    tracing::info!("listening on http://localhost:{port}");
+    tracing::info!(
+        "family-hq {} listening on http://localhost:{port}",
+        family_hq::routes::health::VERSION
+    );
 
     axum::serve(listener, family_hq::app(state))
         .with_graceful_shutdown(shutdown_signal())

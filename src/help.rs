@@ -156,7 +156,7 @@ The Islamic date comes from AlAdhan's calculated calendar, so it can be a day of
 const PUSH: &str = "🔔 *Help: push notifications*
 Get prayer reminders as phone notifications too, through the free *ntfy* app, with a Prayed button that ticks the prayer off without opening WhatsApp. WhatsApp reminders carry on as before.
 
-`/push on`: turn it on. I'll send you the server and topic to add in the ntfy app.
+`/push on`: turn it on. I'll send you step-by-step setup: the app to install (Android or iPhone), and the server and topic to subscribe to. Send it again any time to see them (say for a new phone).
 `/push test`: send a test push, with a button to check it reaches me.
 `/push`: is it on?
 `/push off`: stop. `/push on` later gives you a new topic.
