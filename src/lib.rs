@@ -21,6 +21,7 @@ pub mod prayer;
 pub mod prayer_stats;
 pub mod prayer_tracking;
 pub mod progress;
+pub mod push;
 pub mod reminders;
 pub mod repo;
 pub mod reports;
@@ -55,6 +56,8 @@ pub struct Apis {
     pub geo: Geo,
     /// Open-Meteo forecasts.
     pub weather: Weather,
+    /// ntfy push notifications, if they're set up (`NTFY_URL`).
+    pub push: Option<push::Ntfy>,
 }
 
 impl Apis {
@@ -63,6 +66,7 @@ impl Apis {
             prayer_times,
             geo: Geo::new(),
             weather: Weather::new(),
+            push: None,
         }
     }
 
@@ -112,11 +116,13 @@ impl AppState {
     pub fn new(config: Config, db: SqlitePool) -> Arc<Self> {
         let gowa = Gowa::new(&config.gowa_url, &config.gowa_basic_auth);
         let prayer_times = PrayerTimes::new(config.defaults.clone());
+        let mut apis = Apis::new(prayer_times);
+        apis.push = config.push.clone().map(push::Ntfy::new);
         Arc::new(AppState {
             config,
             gowa,
             db,
-            apis: Apis::new(prayer_times),
+            apis,
         })
     }
 }
@@ -130,6 +136,8 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/", get(routes::health::hello))
         .route("/health", get(routes::health::health))
         .route("/webhook/whatsapp", post(routes::webhook::whatsapp))
+        // Buttons on push notifications; the only part meant to be public.
+        .route("/actions/{*path}", post(routes::actions::action))
         .nest("/api", routes::api::router(state.clone()))
         .with_state(state)
 }

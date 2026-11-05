@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT topic, token FROM push_subscriptions WHERE user_id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "topic",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "push_subscriptions",
+            "name": "topic"
+          }
+        }
+      },
+      {
+        "name": "token",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "push_subscriptions",
+            "name": "token"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "676d6a2682976c4ba664c2030479b078a218aca2a92a908671b281e767a9baec"
+}

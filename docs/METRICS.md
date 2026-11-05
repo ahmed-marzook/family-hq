@@ -29,8 +29,10 @@ below are for anything it doesn't show.
 Command names: `shop.add`, `shop.list`, `shop.got`, `shop.clear`,
 `todo.add`, `todo.list`, `todo.done`, `todo.clear`, `todo.reminders`, `prayers.list`,
 `prayers.reminders`, `prayers.summary`, `prayers.reports`, `prayers.prayed`, `prayers.react`, `settings`,
-`settings.location`, `weather`, `moon`, `help`, and list replies like
-`todo.reply_done` or `shop.reply_tick`.
+`settings.location`, `weather`, `moon`, `push` (detail `on`, `off`, `status`
+or `test`), `help`, and list replies like `todo.reply_done` or
+`shop.reply_tick`. Buttons tapped on a push are logged with `kind`
+`reaction`: `prayers.push` (Prayed) and `push.test`.
 
 ## Opening the database
 
@@ -190,13 +192,13 @@ GROUP BY name, typed
 ORDER BY name, uses DESC;
 ```
 
-How prayers get ticked off: reacting to a reminder, typing `+prayed`, or
-by number from `/prayers`:
+How prayers get ticked off: reacting to a reminder, typing `+prayed`, by
+number from `/prayers`, or the Prayed button on a push:
 
 ```sql
 SELECT name, coalesce(detail, '') AS detail, count(*) AS times
 FROM command_log
-WHERE name IN ('prayers.react', 'prayers.prayed')
+WHERE name IN ('prayers.react', 'prayers.prayed', 'prayers.push')
 GROUP BY name, detail
 ORDER BY times DESC;
 ```

@@ -12,13 +12,17 @@ use crate::error::AppError;
 use crate::geo::Coordinates;
 use crate::help;
 use crate::moon::{self, Moon};
-use crate::parser::{BotCommand, Got, ReplyCommand, SettingsCommand, Timing, TodoView};
+use crate::parser::{
+    BotCommand, Got, PushCommand, ReplyCommand, SettingsCommand, Timing, TodoView,
+};
 use crate::person::Assignee;
 use crate::prayer::{self, DayTimes, Prayer};
 use crate::prayer_stats::{self, Status, Summary};
 use crate::progress;
+use crate::push;
 use crate::repo::messages::{self, ListItem};
 use crate::repo::prayers;
+use crate::repo::push as push_repo;
 use crate::repo::reports as stored_reports;
 use crate::repo::settings::{self as stored, MemberSettings};
 use crate::repo::shop::{self, ShopItem};
@@ -35,6 +39,7 @@ const LIST: &str = "📋";
 const DONE: &str = "✅";
 const REMOVED: &str = "🗑️";
 const PROBLEM: &str = "❓";
+const MUTED: &str = "🔕";
 const SHOP: &str = "🛒";
 const MOSQUE: &str = "🕌";
 const NOT_YET: &str = "⬜";
@@ -324,9 +329,74 @@ pub async fn run_command(
             };
             shared_location(conn, ctx, apis, at).await?
         }
+        BotCommand::Push(command) => push_command(conn, ctx, apis, command).await?,
         BotCommand::Help(topic) => help::page(topic.as_deref()),
     };
     Ok(Outcome::Reply(text))
+}
+
+/// `/push ...`: the sender's own push notifications (`crate::push`).
+/// Personal, so only in their DM: in a group the reply (with the topic)
+/// would be seen by everyone.
+async fn push_command(
+    conn: &mut SqliteConnection,
+    ctx: &Context,
+    apis: &Apis,
+    command: PushCommand,
+) -> Result<String, AppError> {
+    let Some(ntfy) = &apis.push else {
+        return Ok(format!(
+            "{BELL} Push notifications aren't set up on this server yet."
+        ));
+    };
+    if ctx.is_group {
+        return Ok(format!(
+            "{BELL} Push notifications are personal: send `/push on` in your own chat with me."
+        ));
+    }
+    let user_id = ctx.sender.id;
+    Ok(match command {
+        PushCommand::Status => match push_repo::subscription(conn, user_id).await? {
+            Some(sub) => format!(
+                "{BELL} Push notifications are on, on the topic {}.                  `/push test` sends one; `/push off` stops them.",
+                sub.topic
+            ),
+            None => format!(
+                "{BELL} Push notifications are off. `/push on` sets them up: prayer                  reminders then come to the ntfy app as well, with a button to tick them off."
+            ),
+        },
+        PushCommand::On => {
+            let sub =
+                push_repo::subscribe(conn, user_id, &push::new_subscription(), ctx.now).await?;
+            push::subscribe_text(ntfy.config(), &sub.topic)
+        }
+        PushCommand::Off => {
+            if push_repo::unsubscribe(conn, user_id).await? {
+                format!(
+                    "{MUTED} Push notifications are off. You can delete the subscription in the ntfy app."
+                )
+            } else {
+                format!("{MUTED} Push notifications were already off.")
+            }
+        }
+        PushCommand::Test => match push_repo::subscription(conn, user_id).await? {
+            None => format!("{BELL} Push is off. Send `/push on` first."),
+            Some(sub) => match ntfy
+                .publish(&ntfy.message(&sub, &push::test_notice()))
+                .await
+            {
+                Ok(()) => format!(
+                    "{BELL} Sent a test push. If it hasn't arrived, check the server and topic                      in the ntfy app. Tap its button to check it can reach me too."
+                ),
+                Err(err) => {
+                    warn!("test push failed: {err}");
+                    format!(
+                        "{PROBLEM} Couldn't send it: the push server didn't answer. Try again in a bit."
+                    )
+                }
+            },
+        },
+    })
 }
 
 /// `+got milk, eggs`: ticks each named item off.

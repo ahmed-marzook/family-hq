@@ -18,6 +18,7 @@ use crate::AppState;
 use crate::error::AppError;
 use crate::prayer::{self, ReminderKind};
 use crate::prayer_tracking;
+use crate::push::{self, Feature};
 use crate::repo::prayers::{self, NewReminder, ReminderChat};
 use crate::repo::settings::{self as stored, MemberSettings};
 use crate::settings::Settings;
@@ -267,6 +268,25 @@ async fn send_due(
                 "couldn't send {} to {}: {err}",
                 window.prayer, chat.wa_chat_id
             ),
+        }
+
+        // The same reminder as a push, for anyone it's for who has push on.
+        if let Some(ntfy) = &state.apis.push {
+            let notice =
+                prayer::reminder_notice(kind, &window, day.date, now, settings, place_name);
+            let key = prayer::push_key(day.date, window.prayer, kind);
+            for r in &recipients {
+                push::send_once(
+                    ntfy,
+                    &mut conn,
+                    r.user_id,
+                    Feature::Prayers,
+                    &key,
+                    &notice,
+                    now,
+                )
+                .await?;
+            }
         }
     }
     Ok(())

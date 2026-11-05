@@ -4,7 +4,7 @@
 //! changes, change its page here. Pure functions, no database.
 
 /// The topics `/help <topic>` knows, and the words that lead to each.
-const TOPICS: [(&str, &[&str]); 6] = [
+const TOPICS: [(&str, &[&str]); 7] = [
     ("shop", &["shop", "shopping", "buy", "got", "list"]),
     ("todo", &["todo", "todos", "task", "tasks"]),
     (
@@ -17,6 +17,7 @@ const TOPICS: [(&str, &[&str]); 6] = [
     ),
     ("weather", &["weather", "forecast", "rain"]),
     ("moon", &["moon", "hijri", "islamic", "month", "crescent"]),
+    ("push", &["push", "notifications", "notification", "ntfy"]),
 ];
 
 const OVERVIEW: &str = "🤖 *Family HQ help*
@@ -28,11 +29,12 @@ I keep shared lists for each group I'm in, and private ones when you message me 
 ⚙️ *Settings*: `/settings` · `/settings city Leicester, GB` · or share your location with me
 🌤️ *Weather*: `/weather` · `/weather hourly` · `/weather tomorrow` · `/weather week`
 🌙 *Moon*: `/moon`
+🔔 *Push*: `/push on` in your chat with me, for prayer reminders in the ntfy app
 
 Short forms: `+s` shop · `+g` got · `+t` todo · `+d` done · `+p` prayed · `/s` · `/t` · `/p` · `/w` · `/m` · `/h`
 
 For the full page on a topic, with examples:
-`/help shop` · `/help todo` · `/help prayers` · `/help settings` · `/help weather` · `/help moon`
+`/help shop` · `/help todo` · `/help prayers` · `/help settings` · `/help weather` · `/help moon` · `/help push`
 
 I react 👍 to every command I understand. No reaction means I didn't recognise it.
 
@@ -151,6 +153,16 @@ const MOON: &str = "🌙 *Help: moon*
 
 The Islamic date comes from AlAdhan's calculated calendar, so it can be a day off from the moon sighting your mosque follows. A new Islamic month starts once the new crescent is seen, usually a day or two after the new moon.";
 
+const PUSH: &str = "🔔 *Help: push notifications*
+Get prayer reminders as phone notifications too, through the free *ntfy* app, with a Prayed button that ticks the prayer off without opening WhatsApp. WhatsApp reminders carry on as before.
+
+`/push on`: turn it on. I'll send you the server and topic to add in the ntfy app.
+`/push test`: send a test push, with a button to check it reaches me.
+`/push`: is it on?
+`/push off`: stop. `/push on` later gives you a new topic.
+
+Push is personal, so these work in your own chat with me, not in a group. Keep your topic to yourself: anyone who has it can read your pushes.";
+
 /// The topic a typed word leads to ("namaz" → "prayers"), if any.
 pub fn topic(word: &str) -> Option<&'static str> {
     let word = word.trim().to_lowercase();
@@ -173,9 +185,10 @@ pub fn page(topic: Option<&str>) -> String {
         Some("settings") => SETTINGS.to_string(),
         Some("weather") => WEATHER.to_string(),
         Some("moon") => MOON.to_string(),
+        Some("push") => PUSH.to_string(),
         _ => format!(
             "❓ There's no help page for \"{topic}\". Try `/help shop`, `/help todo`, \
-             `/help prayers`, `/help settings`, `/help weather` or `/help moon`."
+             `/help prayers`, `/help settings`, `/help weather`, `/help moon` or `/help push`."
         ),
     }
 }

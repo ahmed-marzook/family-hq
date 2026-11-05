@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO push_subscriptions (user_id, topic, token, created_at)\n         VALUES (?, ?, ?, ?)\n         ON CONFLICT (user_id) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "ac675486a529973545c65ff5c4dcfbcdcc851101c6605138aadbc814e333f033"
+}

@@ -31,6 +31,9 @@ pub struct Config {
     pub backup_dir: Option<PathBuf>,
     /// How many daily copies to keep (`BACKUP_KEEP`).
     pub backup_keep: usize,
+    /// Push notifications through ntfy (see `crate::push`). `None` unless
+    /// both `NTFY_URL` and `PUBLIC_URL` are set.
+    pub push: Option<PushConfig>,
     /// Settings for every chat that hasn't chosen its own (`DEFAULT_*`).
     /// Chats change theirs with `/settings ...`.
     pub defaults: Settings,
@@ -47,6 +50,9 @@ impl Config {
     /// | `INACTIVE_DAYS` | 14 (0 never clears anything) |
     /// | `BACKUP_DIR` | not set: no daily backup |
     /// | `BACKUP_KEEP` | 7 |
+    /// | `NTFY_URL` / `PUBLIC_URL` | not set: no push notifications |
+    /// | `NTFY_PUBLIC_URL` | the same as `NTFY_URL` |
+    /// | `NTFY_TOKEN` | not set: publish without logging in |
     /// | `DEFAULT_TIMEZONE` | Europe/London |
     /// | `DEFAULT_CITY` / `DEFAULT_COUNTRY` | Milton Keynes / GB |
     /// | `DEFAULT_PRAYER_METHOD` | 3 (Muslim World League) |
@@ -65,6 +71,7 @@ impl Config {
             inactive_days: number_or("INACTIVE_DAYS", 14),
             backup_dir: optional("BACKUP_DIR").map(PathBuf::from),
             backup_keep: number_or("BACKUP_KEEP", 7),
+            push: PushConfig::from_env(),
             defaults: Settings {
                 timezone: timezone_or("DEFAULT_TIMEZONE", chrono_tz::Europe::London),
                 city: text_or("DEFAULT_CITY", "Milton Keynes"),
@@ -78,6 +85,38 @@ impl Config {
                 prayer_ending_minutes: number_or("DEFAULT_PRAYER_ENDING_MINUTES", 20),
             },
         }
+    }
+}
+
+/// Where ntfy is, and where its buttons call back to.
+#[derive(Debug, Clone)]
+pub struct PushConfig {
+    /// Where family-hq publishes (`NTFY_URL`): inside Compose,
+    /// `http://ntfy:80`.
+    pub ntfy_url: String,
+    /// The address phones subscribe at (`NTFY_PUBLIC_URL`), e.g.
+    /// `https://ntfy.example.co.uk`. Shown in `/push on`'s instructions.
+    pub ntfy_public_url: String,
+    /// An ntfy access token allowed to publish (`NTFY_TOKEN`), if ntfy
+    /// requires one.
+    pub ntfy_token: Option<String>,
+    /// family-hq's own public address (`PUBLIC_URL`), e.g.
+    /// `https://fhq.example.co.uk`. A button on a push makes the phone call
+    /// `{PUBLIC_URL}/actions/...`, so only `/actions` needs to be public.
+    pub public_url: String,
+}
+
+impl PushConfig {
+    /// `None` (push off) unless both `NTFY_URL` and `PUBLIC_URL` are set.
+    fn from_env() -> Option<Self> {
+        let ntfy_url = optional("NTFY_URL")?;
+        let public_url = optional("PUBLIC_URL")?;
+        Some(PushConfig {
+            ntfy_public_url: optional("NTFY_PUBLIC_URL").unwrap_or_else(|| ntfy_url.clone()),
+            ntfy_url,
+            ntfy_token: optional("NTFY_TOKEN"),
+            public_url,
+        })
     }
 }
 

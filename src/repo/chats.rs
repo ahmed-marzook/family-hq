@@ -72,6 +72,21 @@ pub async fn add_member(
     Ok(())
 }
 
+/// `user_id`'s DM with the bot: its `chats.id` and WhatsApp ID, if they
+/// have one the bot is still in.
+pub async fn dm_of(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+) -> Result<Option<(i64, String)>, sqlx::Error> {
+    let row = sqlx::query!(
+        "SELECT id, wa_chat_id FROM chats WHERE dm_user_id = ? AND left_at IS NULL",
+        user_id
+    )
+    .fetch_optional(conn)
+    .await?;
+    Ok(row.map(|r| (r.id, r.wa_chat_id)))
+}
+
 /// Records that someone used the bot in this chat at `now` (see
 /// `crate::cleanup`). Any warning that the bot will leave is over.
 pub async fn touch(

@@ -46,6 +46,12 @@ services:
       # How much to log: info, or debug to see every message (including
       # list items). See "Logs" in docs/DEPLOY.md.
       RUST_LOG: ${RUST_LOG:-info}
+      # Push notifications through ntfy: off while PUBLIC_URL is empty. See
+      # "Push notifications" in docs/DEPLOY.md.
+      NTFY_URL: http://ntfy:80
+      NTFY_PUBLIC_URL: ${NTFY_PUBLIC_URL:-}
+      NTFY_TOKEN: ${NTFY_TOKEN:-}
+      PUBLIC_URL: ${PUBLIC_URL:-}
     ports:
       # Only for checking it from the server itself (curl localhost:3000/health).
       # GOWA reaches it over the Compose network, not through this port.
@@ -91,8 +97,47 @@ services:
       - gowa_storages:/app/storages
       - gowa_statics:/app/statics
 
+  # Push notifications. Only started with COMPOSE_PROFILES=push in .env.
+  ntfy:
+    # Pinned, like GOWA: family-hq uses its JSON publish API.
+    image: binwiederhier/ntfy:v2.33.1
+    restart: unless-stopped
+    command: ["serve"]
+    profiles: ["push"]
+    environment:
+      NTFY_BASE_URL: ${NTFY_PUBLIC_URL:-http://localhost}
+      # iPhones only wake for a push that comes through Apple, so ntfy asks
+      # ntfy.sh to send a wake-up for each one: only a message ID goes there,
+      # and the phone then fetches the text from this server.
+      NTFY_UPSTREAM_BASE_URL: https://ntfy.sh
+      NTFY_BEHIND_PROXY: "true"
+      # Keeps a day of pushes, for phones that were offline.
+      NTFY_CACHE_FILE: /var/lib/ntfy/cache.db
+      NTFY_CACHE_DURATION: 24h
+      NTFY_AUTH_FILE: /var/lib/ntfy/auth.db
+      # Anyone may read a topic whose name they know (each person's is long
+      # and random); only logged-in users, i.e. family-hq, may publish.
+      NTFY_AUTH_DEFAULT_ACCESS: read-only
+      NTFY_ENABLE_SIGNUP: "false"
+      TZ: Europe/London
+    volumes:
+      - ntfy_data:/var/lib/ntfy
+
+  # The way in from the internet, for phones away from home: ntfy, and
+  # family-hq's /actions/ (push buttons) only. The routes themselves are set
+  # in Cloudflare's dashboard (docs/DEPLOY.md).
+  cloudflared:
+    image: cloudflare/cloudflared:${CLOUDFLARED_VERSION:-latest}
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARED_TOKEN:-}
+    profiles: ["push"]
+    depends_on:
+      - ntfy
+      - family-hq
+
 volumes:
   family_hq_data:
   family_hq_backups:
+  ntfy_data:
   gowa_storages:
   gowa_statics:

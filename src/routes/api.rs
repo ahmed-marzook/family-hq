@@ -120,6 +120,7 @@ pub(crate) fn test_state(pool: sqlx::SqlitePool, gowa_url: &str) -> Arc<AppState
         inactive_days: 14,
         backup_dir: None,
         backup_keep: 7,
+        push: None,
         defaults: Settings {
             timezone: chrono_tz::Europe::London,
             city: "Milton Keynes".to_string(),

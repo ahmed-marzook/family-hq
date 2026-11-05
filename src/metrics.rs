@@ -10,7 +10,7 @@ use chrono::{DateTime, NaiveDate, Timelike, Utc};
 use chrono_tz::Tz;
 
 use crate::help;
-use crate::parser::{BotCommand, Got, ReplyCommand, SettingsCommand, TodoView};
+use crate::parser::{BotCommand, Got, PushCommand, ReplyCommand, SettingsCommand, TodoView};
 use crate::person::Assignee;
 use crate::reports::Span;
 use crate::weather::When;
@@ -193,6 +193,15 @@ pub fn command(command: &BotCommand) -> Event {
             }),
         ),
         BotCommand::Moon => event("moon", None),
+        BotCommand::Push(command) => event(
+            "push",
+            Some(match command {
+                PushCommand::Status => "status",
+                PushCommand::On => "on",
+                PushCommand::Off => "off",
+                PushCommand::Test => "test",
+            }),
+        ),
         BotCommand::SharedLocation { .. } => event("settings.location", None),
         // The topic as `/help` understood it, so a typo isn't stored.
         BotCommand::Help(topic) => event(
@@ -221,6 +230,13 @@ pub fn list_reply(item_type: &str, reply: &ReplyCommand) -> Event {
 pub fn reaction(removed: bool) -> Event {
     let detail = if removed { "removed" } else { "added" };
     Event::new(Kind::Reaction, "prayers.react", Some(detail))
+}
+
+/// A button tapped on a push (`crate::push`): the same kind of thing as a
+/// reaction, only from the ntfy app. `name` is the action's, e.g.
+/// "prayers.push" or "push.test".
+pub fn push_button(name: &str) -> Event {
+    Event::new(Kind::Reaction, name, None)
 }
 
 // ---- Reading the log, for the admin dashboard ----

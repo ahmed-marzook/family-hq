@@ -1,8 +1,8 @@
 # Reminders & Prayer Coach (Phase 2)
 
 > **Goal:** `+remind`, ntfy pushes, prayer windows, escalation, reflections.
-> **Status:** Prayer reminders and check-ins done early; missed tracking and prayer reports done early (2.4); still to do: ntfy (2.1), `+remind`, the shared reminder engine and ticking off by reaction (2.2), the AlAdhan fallback and BST/GMT test (2.3), the `PrayerStage` state machine (2.4).
-> **Last updated:** 2026-11-03
+> **Status:** Prayer reminders and check-ins done early; missed tracking and prayer reports done early (2.4); ntfy push built, first deploy to do (2.1); still to do: `+remind`, the shared reminder engine and ticking off by reaction (2.2), the AlAdhan fallback and BST/GMT test (2.3), the `PrayerStage` state machine (2.4).
+> **Last updated:** 2026-11-05
 
 ## Phase 2: Reminders & Prayer Coach
 
@@ -26,13 +26,32 @@ Starts after Phase 1 has been in daily use for two weeks.
 > **Also brought forward, at the owner's request (2026-11-02):** habits and
 > group goals, Stage 2.5 below, built as stages H1–H6.
 
-### Stage 2.1: ntfy push notifications
+### Stage 2.1: ntfy push notifications (built; first deploy to do)
 
-- Add the `ntfy` container. Each user subscribes to their own topic.
-- `notify.rs`: send a push with action buttons (Done / Slipped / Snooze).
-- Buttons call back to `POST /api/actions/...` with a per-user token.
-- Done when: a test push arrives on both phones and a button press reaches
-  the server.
+Built (decided 2026-11-05: Android and iPhone, reached through a
+Cloudflare tunnel, push *as well as* WhatsApp, opt-in by anyone):
+
+- An `ntfy` container and a `cloudflared` tunnel (compose profile `push`).
+  The tunnel passes only ntfy and family-hq's `/actions/`. ntfy relays a
+  wake-up through ntfy.sh for iPhones (a message ID only).
+- `/push on|off|test` (DM only). Each person gets a random topic and a
+  separate random token (`push_subscriptions`, migration `0008`).
+- `src/push.rs` is generic: a feature describes a `Notice` (title, message,
+  buttons) and calls `push::send_once`, which claims a `pushes_sent` row
+  first (per feature and key, so a DM and a group never push twice). A
+  button is a `push::Action` with its own path.
+- `POST /actions/{*path}` (`routes::actions`): the phone sends the token in
+  an `Authorization` header (not the URL, so it isn't in proxy logs).
+- Prayer reminders are the first user: a push with a Prayed button
+  (`prayer::reminder_notice`), counted as `prayers.push`.
+- Still to do: Slipped / Snooze buttons, once habits (H3) and `+remind`
+  (2.2) need them; a push count per person on the admin dashboard.
+
+Done when:
+
+- [ ] A test push arrives on both phones (Android and iPhone), away from
+      home WiFi
+- [ ] A button press reaches the server, and Prayed ticks the prayer off
 
 ### Stage 2.2: `+remind` (planned, expanded)
 

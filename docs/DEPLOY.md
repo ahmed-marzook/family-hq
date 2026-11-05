@@ -73,7 +73,7 @@ echo "GOWA_WEBHOOK_SECRET=$(openssl rand -hex 32)"
 ```
 
 Paste those two lines into `.env` (replacing the `change-me` ones) with
-`nano .env`. Leave `FAMILY_HQ_TAG=0.17.0`. Then lock it down, since it holds
+`nano .env`. Leave `FAMILY_HQ_TAG=0.18.0`. Then lock it down, since it holds
 the passwords:
 
 ```sh
@@ -336,6 +336,56 @@ docker compose down                  # stop everything (keeps all data)
 
 `docker compose down -v` also **deletes the volumes**: the database and the
 WhatsApp login. Don't, unless you mean it.
+
+## Push notifications
+
+Optional. People who send `/push on` in their DM with the bot then get
+prayer reminders in the free ntfy app as well as on WhatsApp, with a
+Prayed button. Two things must be reachable from phones away from home:
+ntfy itself, and family-hq's `/actions/` (where the buttons call back).
+A Cloudflare tunnel gives both a public HTTPS address without opening a
+port; everything else (the webhook, `/api`, the dashboard) stays private.
+
+1. **Make a tunnel.** In Cloudflare Zero Trust, Networks → Tunnels →
+   Create a tunnel (Cloudflared). Copy its token.
+2. **Give it two public hostnames**, both on the tunnel:
+   - `ntfy.example.co.uk` → `http://ntfy:80`
+   - `fhq.example.co.uk`, path `^/actions/` → `http://family-hq:3000`
+
+   Only that path: without it, the tunnel would also expose the webhook and
+   `/health`. If Cloudflare's Bot Fight Mode is on for the domain, add a
+   rule to skip it for `fhq.example.co.uk/actions/`, or the phones' button
+   presses get a challenge page instead.
+3. **In `.env`:**
+
+   ```sh
+   COMPOSE_PROFILES=push
+   CLOUDFLARED_TOKEN=<the tunnel's token>
+   NTFY_PUBLIC_URL=https://ntfy.example.co.uk
+   PUBLIC_URL=https://fhq.example.co.uk
+   ```
+
+   then `docker compose up -d`.
+4. **Let family-hq publish.** ntfy lets anyone *read* a topic whose name
+   they know (each person's is long and random) but only logged-in users
+   publish. Make one for family-hq and a token for it:
+
+   ```sh
+   docker compose exec ntfy ntfy user add --role=admin family-hq
+   docker compose exec ntfy ntfy token add family-hq
+   ```
+
+   Put the `tk_...` token in `.env` as `NTFY_TOKEN`, and `docker compose
+   up -d` again.
+5. **Check it.** In your DM with the bot send `/push on`, add the server
+   and topic it gives you in the ntfy app, then `/push test`. The push
+   should arrive, and tapping its button should get a WhatsApp message back
+   ("The button on your test push reached me"). In the log, a button press
+   is a `button{path=... user=...}` line.
+
+iPhones: ntfy sends a wake-up through ntfy.sh for each push (only a message
+ID; the phone then fetches the text from your server), because iOS only
+delivers notifications that come through Apple.
 
 ## Logs
 

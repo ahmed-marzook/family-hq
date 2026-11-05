@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO pushes_sent (user_id, feature, key, sent_at)\n         VALUES (?, ?, ?, ?)\n         ON CONFLICT (user_id, feature, key) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "61521ae9a9b255bde21881e01d5c0c2b6c621da1790f8b33fc7886062694b6d0"
+}

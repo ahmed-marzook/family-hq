@@ -67,8 +67,24 @@ pub enum BotCommand {
     /// A location shared in WhatsApp (📎 → Location). Not typed: the
     /// webhook builds this from a location message in a DM.
     SharedLocation { latitude: f64, longitude: f64 },
+    /// `/push`, `/push on`, `/push off`, `/push test`: the sender's own push
+    /// notifications (ntfy)
+    Push(PushCommand),
     /// `/help` (overview) or `/help shop` (one topic's page)
     Help(Option<String>),
+}
+
+/// What `/push` asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PushCommand {
+    /// `/push`: is it on?
+    Status,
+    /// `/push on`: turn it on, and say how to subscribe.
+    On,
+    /// `/push off`
+    Off,
+    /// `/push test`: send a test push.
+    Test,
 }
 
 /// Which todos `/todo` shows, and how. The numbers are the same in every
@@ -238,6 +254,13 @@ pub fn parse(text: &str) -> Option<BotCommand> {
             _ => None,
         },
         "/moon" if rest.is_empty() => Some(BotCommand::Moon),
+        "/push" => match rest.to_lowercase().as_str() {
+            "" | "status" => Some(BotCommand::Push(PushCommand::Status)),
+            "on" => Some(BotCommand::Push(PushCommand::On)),
+            "off" => Some(BotCommand::Push(PushCommand::Off)),
+            "test" => Some(BotCommand::Push(PushCommand::Test)),
+            _ => None,
+        },
         // Any word after /help is a topic; `help::page` handles unknown ones.
         "/help" => Some(BotCommand::Help(
             (!rest.is_empty()).then(|| rest.to_string()),
@@ -910,6 +933,20 @@ mod tests {
             parse("/todo clear"),
             Some(BotCommand::ClearTodos { done_only: false })
         );
+    }
+
+    #[test]
+    fn push_commands() {
+        let push = |c| Some(BotCommand::Push(c));
+        assert_eq!(parse("/push"), push(PushCommand::Status));
+        assert_eq!(parse("/push status"), push(PushCommand::Status));
+        assert_eq!(parse("/push on"), push(PushCommand::On));
+        assert_eq!(parse("/Push ON"), push(PushCommand::On));
+        assert_eq!(parse("/push off"), push(PushCommand::Off));
+        assert_eq!(parse("/push test"), push(PushCommand::Test));
+        assert_eq!(parse("/push maybe"), None);
+        // Not a `+` command: there's nothing to add.
+        assert_eq!(parse("+push on"), None);
     }
 
     #[test]

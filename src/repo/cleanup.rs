@@ -128,6 +128,14 @@ pub async fn clear(
     sqlx::query!("DELETE FROM command_log WHERE user_id = ?", user_id)
         .execute(&mut *conn)
         .await?;
+    // Their push topic and token go too, so a button on an old push stops
+    // working.
+    sqlx::query!("DELETE FROM push_subscriptions WHERE user_id = ?", user_id)
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query!("DELETE FROM pushes_sent WHERE user_id = ?", user_id)
+        .execute(&mut *conn)
+        .await?;
 
     if delete_if_unnamed(conn, user_id).await? {
         return Ok(Cleared { deleted_user: true });

@@ -11,6 +11,7 @@ use chrono_tz::Tz;
 
 use crate::geo::Coordinates;
 use crate::progress;
+use crate::push::{Action, Button, Notice};
 use crate::settings::Settings;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -406,6 +407,54 @@ pub fn reminder_text(
     format!("{first_line}\nReact to this message once you've prayed.")
 }
 
+/// The same reminder as a push (`crate::push`), with a Prayed button that
+/// ticks it off for `date`.
+pub fn reminder_notice(
+    kind: ReminderKind,
+    window: &Window,
+    date: NaiveDate,
+    now: DateTime<Utc>,
+    settings: &Settings,
+    place: Option<&str>,
+) -> Notice {
+    let prayer = window.prayer;
+    let (start, end) = (settings.clock(window.start), settings.clock(window.end));
+    let place = place.map_or(String::new(), |p| format!(" in {p}"));
+    let (title, message, tag, priority) = match kind {
+        ReminderKind::Start => (
+            format!("{prayer} has started{place}"),
+            format!("Since {start}, until {end}. Tap Prayed once you've prayed."),
+            "mosque",
+            3,
+        ),
+        ReminderKind::Ending => {
+            // Rounded up, as on WhatsApp.
+            let minutes = ((window.end - now).num_seconds().max(0) + 59) / 60;
+            (
+                format!("{prayer} ends in {minutes} min{place}"),
+                format!("It ends at {end}."),
+                "hourglass_flowing_sand",
+                4,
+            )
+        }
+    };
+    Notice {
+        title,
+        message,
+        tags: vec![tag],
+        priority,
+        buttons: vec![Button {
+            label: "Prayed ✅".to_string(),
+            action: Action::Prayed { date, prayer },
+        }],
+    }
+}
+
+/// Which push a reminder is, for `push::send_once`: `2026-11-05 asr start`.
+pub fn push_key(date: NaiveDate, prayer: Prayer, kind: ReminderKind) -> String {
+    format!("{date} {} {}", prayer.as_db_str(), kind.as_db_str())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -638,6 +687,54 @@ mod tests {
                 None
             ),
             "⏳ *Asr* ends in 20 min (16:44).\nReact to this message once you've prayed."
+        );
+    }
+
+    #[test]
+    fn a_start_push_has_a_prayed_button_for_that_day() {
+        let asr = window(Prayer::Asr, "2026-11-05T13:50:00Z", "2026-11-05T16:05:00Z");
+        let day = NaiveDate::from_ymd_opt(2026, 11, 5).unwrap();
+        let notice = reminder_notice(
+            ReminderKind::Start,
+            &asr,
+            day,
+            utc("2026-11-05T13:50:30Z"),
+            &defaults(),
+            None,
+        );
+        assert_eq!(notice.title, "Asr has started");
+        // London is on GMT in November, so the clock reads as UTC.
+        assert_eq!(
+            notice.message,
+            "Since 13:50, until 16:05. Tap Prayed once you've prayed."
+        );
+        assert_eq!(
+            notice.buttons[0].action,
+            Action::Prayed {
+                date: day,
+                prayer: Prayer::Asr
+            }
+        );
+    }
+
+    #[test]
+    fn an_ending_push_is_louder_and_counts_down() {
+        let asr = window(Prayer::Asr, "2026-11-05T13:50:00Z", "2026-11-05T16:05:00Z");
+        let day = NaiveDate::from_ymd_opt(2026, 11, 5).unwrap();
+        let notice = reminder_notice(
+            ReminderKind::Ending,
+            &asr,
+            day,
+            utc("2026-11-05T15:45:10Z"),
+            &defaults(),
+            Some("Colombo"),
+        );
+        assert_eq!(notice.title, "Asr ends in 20 min in Colombo");
+        assert_eq!(notice.message, "It ends at 16:05.");
+        assert_eq!(notice.priority, 4);
+        assert_eq!(
+            push_key(day, Prayer::Asr, ReminderKind::Ending),
+            "2026-11-05 asr ending"
         );
     }
 }
