@@ -250,14 +250,16 @@ pub fn new_subscription() -> Subscription {
 const ANDROID_APP: &str = "https://play.google.com/store/apps/details?id=io.heckel.ntfy";
 const IPHONE_APP: &str = "https://apps.apple.com/app/ntfy/id1625396347";
 
-/// The reply to `/push on`: step by step, from installing the ntfy app to
-/// checking the button works. Sent again by a second `/push on` (same
-/// topic), e.g. for a new phone.
+/// The replies to `/push on`: the steps, from installing the ntfy app to
+/// checking the button works, then the server and the topic as messages of
+/// their own. WhatsApp copies a whole message at a time, so each of those
+/// is exactly what goes in the app, with no formatting. Sent again by a
+/// second `/push on` (same topic), e.g. for a new phone.
 ///
 /// No `ntfy://` link: WhatsApp only makes http(s) links tappable.
-pub fn subscribe_text(config: &PushConfig, topic: &str) -> String {
+pub fn subscribe_messages(config: &PushConfig, topic: &str) -> Vec<String> {
     let server = config.ntfy_public_url.trim_end_matches('/');
-    format!(
+    let steps = format!(
         "{BELL} *Push notifications are on*\n\
          Prayer reminders now also come to your phone through the free *ntfy* app, \
          with a *Prayed ✅* button. WhatsApp reminders carry on as before.\n\n\
@@ -265,9 +267,10 @@ pub fn subscribe_text(config: &PushConfig, topic: &str) -> String {
          Android: {ANDROID_APP}\n\
          iPhone: {IPHONE_APP}\n\n\
          *2. Subscribe to your topic*\n\
-         Open ntfy and tap *+*. Then:\n\
-         • Topic: `{topic}`\n\
-         • Turn on *Use another server* and enter: `{server}`\n\
+         I'll send the server and your topic next, each on its own so you can \
+         copy it (press and hold it, then Copy). In ntfy, tap *+*, then:\n\
+         • Topic: paste your topic (the one starting fhq-)\n\
+         • Turn on *Use another server* and paste the server\n\
          • Tap *Subscribe*, and allow notifications if it asks.\n\
          On Android, also say yes if it asks to ignore battery optimisation, \
          or pushes can arrive late.\n\n\
@@ -277,7 +280,8 @@ pub fn subscribe_text(config: &PushConfig, topic: &str) -> String {
          and I'll reply here.\n\n\
          Keep the topic to yourself: anyone who has it can read your pushes. \
          `/push off` stops them; `/push on` again later gives you a new topic."
-    )
+    );
+    vec![steps, server.to_string(), topic.to_string()]
 }
 
 /// What `/push test` sends: a button that checks the way back.
@@ -379,15 +383,16 @@ mod tests {
 
     #[test]
     fn subscribing_gives_the_app_server_and_topic() {
-        let text = subscribe_text(ntfy().config(), "fhq-topic");
-        assert!(text.contains("Topic: `fhq-topic`\n"), "{text}");
-        // The trailing / is dropped: the app wants the server exactly.
-        assert!(
-            text.contains("enter: `https://ntfy.example.co.uk`\n"),
-            "{text}"
-        );
-        assert!(text.contains(ANDROID_APP) && text.contains(IPHONE_APP));
+        let messages = subscribe_messages(ntfy().config(), "fhq-topic");
+        // A slice pattern: exactly three messages, named in order.
+        let [steps, server, topic] = messages.as_slice() else {
+            panic!("expected 3 messages, got {messages:?}");
+        };
+        assert!(steps.contains(ANDROID_APP) && steps.contains(IPHONE_APP));
         // No run of spaces from a line break that lost its `\`.
-        assert!(!text.contains("  "), "{text}");
+        assert!(!steps.contains("  "), "{steps}");
+        // Exactly what goes in the app: no formatting, and no trailing /.
+        assert_eq!(server, "https://ntfy.example.co.uk");
+        assert_eq!(topic, "fhq-topic");
     }
 }

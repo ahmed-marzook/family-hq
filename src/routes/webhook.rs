@@ -361,6 +361,13 @@ async fn handle_message(
         Outcome::Mentioning { text, mentions } => {
             send(state, &msg, &text, &mentions).await;
         }
+        Outcome::Several(texts) => {
+            // In order, each waiting for the one before, so they arrive
+            // in that order too.
+            for text in &texts {
+                send(state, &msg, text, &[]).await;
+            }
+        }
         Outcome::List {
             text,
             item_type,

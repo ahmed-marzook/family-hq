@@ -85,6 +85,10 @@ pub enum Outcome {
     /// A reply that @mentions people: `mentions` are their phone numbers,
     /// and `text` contains `@<number>` where each should appear.
     Mentioning { text: String, mentions: Vec<String> },
+    /// Several messages, sent one after another: for something worth
+    /// copying on its own, like the server and topic after `/push on`
+    /// (WhatsApp copies a whole message at a time).
+    Several(Vec<String>),
 }
 
 impl Outcome {
@@ -94,6 +98,7 @@ impl Outcome {
             Outcome::Reply(text)
             | Outcome::List { text, .. }
             | Outcome::Mentioning { text, .. } => text,
+            Outcome::Several(texts) => texts.join("\n\n"),
         }
     }
 }
@@ -329,7 +334,7 @@ pub async fn run_command(
             };
             shared_location(conn, ctx, apis, at).await?
         }
-        BotCommand::Push(command) => push_command(conn, ctx, apis, command).await?,
+        BotCommand::Push(command) => return push_command(conn, ctx, apis, command).await,
         BotCommand::Help(topic) => help::page(topic.as_deref()),
     };
     Ok(Outcome::Reply(text))
@@ -343,19 +348,19 @@ async fn push_command(
     ctx: &Context,
     apis: &Apis,
     command: PushCommand,
-) -> Result<String, AppError> {
+) -> Result<Outcome, AppError> {
     let Some(ntfy) = &apis.push else {
-        return Ok(format!(
+        return Ok(Outcome::Reply(format!(
             "{BELL} Push notifications aren't set up on this server yet."
-        ));
+        )));
     };
     if ctx.is_group {
-        return Ok(format!(
+        return Ok(Outcome::Reply(format!(
             "{BELL} Push notifications are personal: send `/push on` in your own chat with me."
-        ));
+        )));
     }
     let user_id = ctx.sender.id;
-    Ok(match command {
+    let text = match command {
         PushCommand::Status => match push_repo::subscription(conn, user_id).await? {
             Some(sub) => format!(
                 "{BELL} Push notifications are on, on the topic `{}`. `/push test` sends one, \
@@ -370,7 +375,12 @@ async fn push_command(
         PushCommand::On => {
             let sub =
                 push_repo::subscribe(conn, user_id, &push::new_subscription(), ctx.now).await?;
-            push::subscribe_text(ntfy.config(), &sub.topic)
+            // The steps, then the server and the topic on their own, so
+            // each can be copied into the app as it is.
+            return Ok(Outcome::Several(push::subscribe_messages(
+                ntfy.config(),
+                &sub.topic,
+            )));
         }
         PushCommand::Off => {
             if push_repo::unsubscribe(conn, user_id).await? {
@@ -400,7 +410,8 @@ async fn push_command(
                 }
             },
         },
-    })
+    };
+    Ok(Outcome::Reply(text))
 }
 
 /// `+got milk, eggs`: ticks each named item off.
