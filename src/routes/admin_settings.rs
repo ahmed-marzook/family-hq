@@ -25,7 +25,7 @@ use crate::prayer;
 use crate::repo::settings as stored;
 use crate::repo::{admin, chats, todo_reminders};
 use crate::routes::admin::{UserDetail, detail};
-use crate::settings_edit::{self, Change, ENDING_MINUTES, Refused};
+use crate::settings_edit::{self, Change, Checked, ENDING_MINUTES, Refused};
 
 /// The body of `PATCH /api/users/{id}/settings`: only the settings to
 /// change. `deny_unknown_fields` turns a misspelt name into a 4xx error
@@ -61,12 +61,20 @@ pub async fn change_settings(
     Path(id): Path<i64>,
     Json(patch): Json<SettingsPatch>,
 ) -> Result<Json<UserDetail>, AppError> {
+    // Checked first, outside any transaction: a new town is looked up over
+    // the network, and that mustn't hold the database's write lock. A
+    // refusal (400) or no such person (404) stops here, with nothing saved.
+    let (changes, checked) = {
+        let mut conn = state.db.acquire().await?;
+        let dm = existing_dm(&mut conn, id).await?;
+        check_patch(&mut conn, &state, dm, patch).await?
+    };
     // A *transaction*: every change below is kept only if `commit` is
-    // reached. Returning early (with `?` or a refusal) drops `tx`, which
-    // rolls everything back, including a DM created for this.
+    // reached. Returning early (with `?`) drops `tx`, which rolls
+    // everything back, including a DM created for this.
     let mut tx = state.db.begin().await?;
     let dm = dm_for(&mut tx, id).await?;
-    let changes = apply_patch(&mut tx, &state, dm, patch).await?;
+    save_patch(&mut tx, &state, dm, checked).await?;
     tx.commit().await?;
     info!("changed user {id}'s settings: {changes:?}");
 
@@ -151,28 +159,57 @@ pub async fn prayer_methods() -> Json<Vec<Method>> {
 
 // ---- helpers ----
 
-/// Saves the patch's changes to chat `chat_id`'s settings (a DM's or a
-/// group's), and returns them for the log. Stops at the first refusal, with
-/// a 400 saying why: run it in a transaction, so that undoes the rest.
-pub(crate) async fn apply_patch(
+/// The first half of a settings PATCH, run *before* the transaction:
+/// turns the patch into changes and checks each one, looking a new town
+/// up over the network (see `settings_edit::check`). Stops at the first
+/// refusal, with a 400 saying why; nothing has been saved by then.
+///
+/// `chat_id` is the chat whose settings these are (a DM's or a group's),
+/// or `None` for a person with no DM yet, who has the defaults. Returns
+/// the changes (for the log) and what to save (for `save_patch`).
+pub(crate) async fn check_patch(
+    conn: &mut SqliteConnection,
+    state: &AppState,
+    chat_id: Option<i64>,
+    patch: SettingsPatch,
+) -> Result<(Vec<Change>, Vec<Checked>), AppError> {
+    let defaults = &state.apis.prayer_times.defaults;
+    let current_country = match chat_id {
+        Some(chat_id) => {
+            stored::get(conn, chat_id)
+                .await?
+                .overrides
+                .apply(defaults)
+                .country
+        }
+        None => defaults.country.clone(),
+    };
+    let changes = changes(patch, &current_country)?;
+    let mut checked = Vec::new();
+    for change in &changes {
+        match settings_edit::check(&state.apis.geo, change).await {
+            Ok(ok) => checked.push(ok),
+            Err(refused) => return Err(AppError::BadRequest(explain(&refused))),
+        }
+    }
+    Ok((changes, checked))
+}
+
+/// The second half, inside the transaction: saves what `check_patch`
+/// checked to chat `chat_id`'s settings, in order. Only the database.
+pub(crate) async fn save_patch(
     conn: &mut SqliteConnection,
     state: &AppState,
     chat_id: i64,
-    patch: SettingsPatch,
-) -> Result<Vec<Change>, AppError> {
+    checked: Vec<Checked>,
+) -> Result<(), AppError> {
     let defaults = &state.apis.prayer_times.defaults;
-    let current = stored::get(conn, chat_id).await?.overrides.apply(defaults);
-    let changes = changes(patch, &current.country)?;
-    for change in &changes {
+    for change in checked {
         // Each change sees the ones before it (a new town's timezone, say).
         let current = stored::get(conn, chat_id).await?.overrides.apply(defaults);
-        if let Err(refused) =
-            settings_edit::apply(conn, &state.apis, chat_id, &current, change).await?
-        {
-            return Err(AppError::BadRequest(explain(&refused)));
-        }
+        settings_edit::save(conn, chat_id, &current, change).await?;
     }
-    Ok(changes)
+    Ok(())
 }
 
 /// The person's DM, created if they don't have one. 404 if there's no such

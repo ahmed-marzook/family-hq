@@ -26,7 +26,7 @@ use crate::routes::admin::{
 };
 use crate::routes::admin_prayers::{SpanView, span_view, today_for};
 use crate::routes::admin_reports::{ReportsView, reports_view};
-use crate::routes::admin_settings::{SettingsPatch, Switch, apply_patch, on_off};
+use crate::routes::admin_settings::{SettingsPatch, Switch, check_patch, on_off, save_patch};
 
 #[derive(Debug, Serialize)]
 pub struct GroupList {
@@ -131,9 +131,16 @@ pub async fn change_settings(
     Path(id): Path<i64>,
     Json(patch): Json<SettingsPatch>,
 ) -> Result<Json<GroupDetail>, AppError> {
+    // Checked (and a new town looked up) before the transaction, as for a
+    // person's settings (`admin_settings::change_settings`).
+    let (changes, checked) = {
+        let mut conn = state.db.acquire().await?;
+        ensure_group(&mut conn, id).await?;
+        check_patch(&mut conn, &state, Some(id), patch).await?
+    };
     let mut tx = state.db.begin().await?;
     ensure_group(&mut tx, id).await?;
-    let changes = apply_patch(&mut tx, &state, id, patch).await?;
+    save_patch(&mut tx, &state, id, checked).await?;
     tx.commit().await?;
     info!("changed group {id}'s settings: {changes:?}");
 

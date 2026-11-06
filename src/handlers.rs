@@ -1,19 +1,26 @@
 //! What the bot does for each command: database changes, then the text to
 //! send back. No GOWA here; the webhook does the sending.
+//!
+//! A command runs in two steps: `prepare` does any lookups it needs from
+//! outside services (prayer times, towns, the weather) before the webhook
+//! opens its write transaction, and `execute` does the database work inside
+//! it, without the network.
 
 use chrono::{DateTime, NaiveDate, Utc};
+use chrono_tz::Tz;
 use sqlx::SqliteConnection;
 use tracing::warn;
 
 use crate::Apis;
-use crate::aladhan::PrayerTimes;
 use crate::calendar;
+use crate::config::PushConfig;
 use crate::error::AppError;
-use crate::geo::Coordinates;
+use crate::geo::{Coordinates, NearestPlace};
 use crate::help;
 use crate::moon::{self, Moon};
 use crate::parser::{
-    BotCommand, Got, PushCommand, ReplyCommand, SettingsCommand, Timing, TodoFilter, TodoView,
+    BotCommand, Checkin, Got, PushCommand, ReplyCommand, SettingsCommand, Timing, TodoFilter,
+    TodoView,
 };
 use crate::person::Assignee;
 use crate::points::{self, Finish, Source};
@@ -24,7 +31,7 @@ use crate::push;
 use crate::repo::messages::{self, ListItem};
 use crate::repo::points as stored_points;
 use crate::repo::prayers;
-use crate::repo::push as push_repo;
+use crate::repo::push::{self as push_repo, Subscription};
 use crate::repo::reports as stored_reports;
 use crate::repo::settings::{self as stored, MemberSettings};
 use crate::repo::shop::{self, ShopItem};
@@ -33,7 +40,7 @@ use crate::repo::todos::{self, Details, ListedTodo};
 use crate::repo::users::{self, User};
 use crate::reports::{Delivery, Feature, Period, Span};
 use crate::settings::Settings;
-use crate::settings_edit::{self, Change, Refused, Saved};
+use crate::settings_edit::{self, Change, Checked, Refused, Saved};
 use crate::todo_flags::{self, Due, Priority};
 use crate::weather::{self, When};
 
@@ -109,25 +116,245 @@ impl Outcome {
     }
 }
 
-/// Runs a command typed as a normal message.
+/// The parts of `Apis` that never use the network: all that `execute`
+/// gets. There's no HTTP client in here at all, so code running inside a
+/// write transaction *can't* call out to a slow service by mistake; the
+/// compiler would refuse.
 ///
-/// `prayer_times` is used by the prayer and settings commands. It answers
-/// from its cache almost always; at most once a day per location it calls
-/// AlAdhan first (and `/settings city` checks the city with AlAdhan).
-pub async fn run_command(
+/// `<'a>` is a *lifetime*: `Offline` only borrows these from an `Apis`,
+/// and `'a` tells the compiler it mustn't outlive the `Apis` it came from.
+pub struct Offline<'a> {
+    /// The server-wide settings (`.env`), for chats that haven't chosen
+    /// their own.
+    pub defaults: &'a Settings,
+    /// How push is set up (`NTFY_URL`), if it is.
+    pub push: Option<&'a PushConfig>,
+}
+
+impl<'a> Offline<'a> {
+    pub fn of(apis: &'a Apis) -> Self {
+        Offline {
+            defaults: &apis.prayer_times.defaults,
+            push: apis.push.as_ref().map(push::Ntfy::config),
+        }
+    }
+}
+
+/// A command with everything it needs from outside services already looked
+/// up: made by `prepare`, run by `execute`.
+///
+/// The field is private, so only `prepare` can make one, and `execute` can
+/// count on each command's lookups having been done.
+pub struct Prepared(Step);
+
+/// What `prepare` found for each kind of command.
+enum Step {
+    /// Needs nothing from outside services.
+    Plain(BotCommand),
+    /// Answered completely by `prepare`, which only read the database:
+    /// `/weather` and `/moon`.
+    Answered(String),
+    /// `/prayers`: the sender's settings and today's times, or why there
+    /// are none.
+    Prayers {
+        settings: Settings,
+        today: Result<DayTimes, AppError>,
+    },
+    /// `+prayed`: the sender's settings, today's times and (when they can
+    /// matter) yesterday's, or why there are none.
+    Prayed {
+        checkin: Checkin,
+        settings: Settings,
+        times: Result<(DayTimes, Option<DayTimes>), AppError>,
+    },
+    /// A location shared in a DM: the nearest town and the timezone there,
+    /// or (`Err`) the reply saying why not.
+    SharedLocation {
+        at: Coordinates,
+        found: Result<(NearestPlace, Tz), String>,
+    },
+    /// `/settings ...`, with any new town already looked up.
+    Settings(SettingsStep),
+    /// `/push ...`. Needs nothing up front; `/push test`'s push is sent
+    /// after the transaction, by `Ran::finish`.
+    Push(PushCommand),
+}
+
+/// What a `/settings` command does.
+enum SettingsStep {
+    Show,
+    Everyone,
+    Methods,
+    /// A change, checked by `settings_edit::check`: what to save, or why
+    /// it's refused.
+    Change(Result<Checked, Refused>),
+}
+
+/// What `execute` did. Almost every command is finished; `/push test`
+/// still has its push to send, which waits until the transaction is saved
+/// (so a retried webhook that's skipped as a duplicate never sends a second
+/// one).
+pub enum Ran {
+    Done(Outcome),
+    /// Send a test push to this subscription.
+    TestPush(Subscription),
+}
+
+impl Ran {
+    /// Does what had to wait for the commit, and gives the reply. Call it
+    /// only once the transaction is committed.
+    pub async fn finish(self, apis: &Apis) -> Outcome {
+        match self {
+            Ran::Done(outcome) => outcome,
+            Ran::TestPush(subscription) => Outcome::Reply(test_push(apis, &subscription).await),
+        }
+    }
+}
+
+/// Step one of running a command: every lookup it needs from outside
+/// services (AlAdhan, the geocoders, Open-Meteo), before the webhook opens
+/// its write transaction. `conn` should be a plain connection, not a
+/// transaction: this only reads from it.
+///
+/// Why: SQLite lets one connection write at a time. A transaction that
+/// has written holds that lock until it ends, so a lookup inside it that
+/// takes 15 seconds would make every other write (other messages, the
+/// reminder loop, the dashboard) wait, and give up after 5 with "database
+/// is locked". Here, nothing is locked while we wait.
+///
+/// Most lookups answer from a cache; at most once a day per place does
+/// one reach AlAdhan. A failed lookup isn't an `Err` here: it's kept, and
+/// `execute` words the reply ("the service isn't answering"). `Err` is
+/// only for the database.
+pub async fn prepare(
+    conn: &mut SqliteConnection,
+    ctx: &Context,
+    apis: &Apis,
+    command: BotCommand,
+) -> Result<Prepared, AppError> {
+    let defaults = &apis.prayer_times.defaults;
+    let step = match command {
+        BotCommand::Prayers => {
+            let settings = my_settings(conn, ctx, defaults).await?;
+            let today = lookup_day(apis, &settings, settings.today(ctx.now)).await;
+            Step::Prayers { settings, today }
+        }
+        BotCommand::Prayed(checkin) => {
+            // For people who didn't catch the reminder: with no timing, the
+            // same as reacting to it. Today (or yesterday) is in the
+            // sender's own timezone.
+            let settings = my_settings(conn, ctx, defaults).await?;
+            let today = settings.today(ctx.now);
+            let yesterday = today.pred_opt().unwrap_or(today);
+            // Every lookup that needs the network happens here, before
+            // anything is saved, so if a service is down nothing is ticked
+            // and the reply says so. An `async` block is like a small
+            // function inline: `?` inside it ends the block, not
+            // `prepare`, so all three lookups share one result.
+            let lookups = async {
+                let location = apis.prayer_location(&settings).await?;
+                let today_times = apis.prayer_times.for_date(&location, today).await?;
+                // Only looked up between midnight and Fajr, when last night's
+                // Isha may still be going (see `prayer::checkin_date`), or
+                // for `yesterday`.
+                let yesterday_times =
+                    if checkin.yesterday || prayer::before_fajr(&today_times, ctx.now) {
+                        Some(apis.prayer_times.for_date(&location, yesterday).await?)
+                    } else {
+                        None
+                    };
+                // `Ok::<_, AppError>` names the error type, which the
+                // compiler can't work out from the `?`s on their own.
+                Ok::<_, AppError>((today_times, yesterday_times))
+            };
+            let times = lookups.await;
+            Step::Prayed {
+                checkin,
+                settings,
+                times,
+            }
+        }
+        BotCommand::Weather(when) => Step::Answered(weather(conn, ctx, apis, when).await?),
+        BotCommand::Moon => Step::Answered(moon_command(conn, ctx, apis).await?),
+        BotCommand::SharedLocation {
+            latitude,
+            longitude,
+        } => {
+            let at = Coordinates {
+                latitude,
+                longitude,
+            };
+            let found = find_place(conn, ctx, apis, at).await?;
+            Step::SharedLocation { at, found }
+        }
+        BotCommand::Settings(command) => {
+            Step::Settings(settings_step(conn, ctx, apis, command).await?)
+        }
+        BotCommand::Push(command) => Step::Push(command),
+        other => Step::Plain(other),
+    };
+    Ok(Prepared(step))
+}
+
+/// Step two: the command's database work and its reply, using what
+/// `prepare` looked up. Runs inside the webhook's transaction, and can't
+/// reach the network (see `Offline`).
+pub async fn execute(
+    conn: &mut SqliteConnection,
+    ctx: &Context,
+    offline: &Offline<'_>,
+    prepared: Prepared,
+) -> Result<Ran, AppError> {
+    let defaults = offline.defaults;
+    let text = match prepared.0 {
+        Step::Plain(command) => {
+            return run_plain(conn, ctx, defaults, command).await.map(Ran::Done);
+        }
+        Step::Answered(text) => text,
+        Step::Prayers { settings, today } => match today {
+            Ok(day) => format_day(conn, ctx, &settings, &day).await?,
+            Err(err) => prayer_service_down(err)?,
+        },
+        Step::Prayed {
+            checkin,
+            settings,
+            times,
+        } => prayed(conn, ctx, checkin, &settings, times).await?,
+        Step::SharedLocation { at, found } => save_place(conn, ctx, defaults, at, found).await?,
+        Step::Settings(step) => settings_command(conn, ctx, defaults, step).await?,
+        Step::Push(command) => return push_command(conn, ctx, offline, command).await,
+    };
+    Ok(Ran::Done(Outcome::Reply(text)))
+}
+
+/// Runs a command in one go, on one connection: `prepare`, `execute`, then
+/// `finish`. For tests only, where there's no transaction to keep short.
+#[cfg(test)]
+pub(crate) async fn run_command(
     conn: &mut SqliteConnection,
     ctx: &Context,
     apis: &Apis,
     command: BotCommand,
 ) -> Result<Outcome, AppError> {
-    let prayer_times = &apis.prayer_times;
+    let prepared = prepare(conn, ctx, apis, command).await?;
+    let ran = execute(conn, ctx, &Offline::of(apis), prepared).await?;
+    Ok(ran.finish(apis).await)
+}
+
+/// The commands that need nothing from outside services.
+async fn run_plain(
+    conn: &mut SqliteConnection,
+    ctx: &Context,
+    defaults: &Settings,
+    command: BotCommand,
+) -> Result<Outcome, AppError> {
     let text = match command {
         BotCommand::AddTodo {
             titles,
             assignee,
             due,
             priority,
-        } => add_todo(conn, ctx, prayer_times, &titles, assignee, due, priority).await?,
+        } => add_todo(conn, ctx, defaults, &titles, assignee, due, priority).await?,
         BotCommand::ListTodos(view) => {
             let layout = match view {
                 TodoView::ByPerson => Layout::ByPerson,
@@ -147,7 +374,7 @@ pub async fn run_command(
                 }
             };
             // The sender's timezone, for the "done at 14:05" times.
-            let settings = my_settings(conn, ctx, prayer_times).await?;
+            let settings = my_settings(conn, ctx, defaults).await?;
             let items = todos::list_all(conn, ctx.chat_id).await?;
             return Ok(Outcome::List {
                 text: format_todo_list(&items, &layout, &settings, ctx.now),
@@ -159,16 +386,16 @@ pub async fn run_command(
         }
         BotCommand::BadTodo(err) => format!("{PROBLEM} {err}"),
         BotCommand::DoneTodo(Got::Numbers(numbers)) => {
-            return close_by_numbers(conn, ctx, prayer_times, &numbers, Action::Tick).await;
+            return close_by_numbers(conn, ctx, defaults, &numbers, Action::Tick).await;
         }
         BotCommand::DoneTodo(Got::Names(names)) => {
-            close_by_name(conn, ctx, prayer_times, &names, Action::Tick).await?
+            close_by_name(conn, ctx, defaults, &names, Action::Tick).await?
         }
         BotCommand::SkipTodo(Got::Numbers(numbers)) => {
-            return close_by_numbers(conn, ctx, prayer_times, &numbers, Action::Skip).await;
+            return close_by_numbers(conn, ctx, defaults, &numbers, Action::Skip).await;
         }
         BotCommand::SkipTodo(Got::Names(names)) => {
-            close_by_name(conn, ctx, prayer_times, &names, Action::Skip).await?
+            close_by_name(conn, ctx, defaults, &names, Action::Skip).await?
         }
         BotCommand::ClearTodos { done_only: false } => {
             match todos::clear_all(conn, ctx.chat_id).await? {
@@ -215,7 +442,8 @@ pub async fn run_command(
             if items.is_empty() {
                 format!("{PROBLEM} No shopping list sent here yet. Send /shop, then `+got 1 3`.")
             } else {
-                return run_list_reply(conn, ctx, apis, &items, ReplyCommand::Tick(numbers)).await;
+                return run_list_reply(conn, ctx, defaults, &items, ReplyCommand::Tick(numbers))
+                    .await;
             }
         }
         BotCommand::GotShop(Got::Names(names)) => return got_by_name(conn, ctx, &names).await,
@@ -233,84 +461,9 @@ pub async fn run_command(
                 n => format!("{CLEARED} Cleared {n} bought items."),
             }
         }
-        BotCommand::Prayers => {
-            let settings = my_settings(conn, ctx, prayer_times).await?;
-            let today = settings.today(ctx.now);
-            match prayer_day(conn, ctx, apis, &settings, today).await {
-                Ok(text) => text,
-                Err(err) => prayer_service_down(err)?,
-            }
-        }
-        BotCommand::Prayed(checkin) => {
-            // For people who didn't catch the reminder: with no timing, the
-            // same as reacting to it. Today (or yesterday) is in the
-            // sender's own timezone.
-            let settings = my_settings(conn, ctx, prayer_times).await?;
-            let today = settings.today(ctx.now);
-            let yesterday = today.pred_opt().unwrap_or(today);
-            // Every lookup that needs the network happens here, before
-            // anything is saved, so if a service is down nothing is ticked
-            // and the reply says so. An `async` block is like a small
-            // function inline: `?` inside it ends the block, not
-            // `run_command`, so all three lookups share one `match`.
-            let lookups = async {
-                let location = apis.prayer_location(&settings).await?;
-                let today_times = prayer_times.for_date(&location, today).await?;
-                // Only looked up between midnight and Fajr, when last night's
-                // Isha may still be going (see `prayer::checkin_date`), or
-                // for `yesterday`, so the reply below finds it cached.
-                let yesterday_times =
-                    if checkin.yesterday || prayer::before_fajr(&today_times, ctx.now) {
-                        Some(prayer_times.for_date(&location, yesterday).await?)
-                    } else {
-                        None
-                    };
-                // `Ok::<_, AppError>` names the error type, which the
-                // compiler can't work out from the `?`s on their own.
-                Ok::<_, AppError>((today_times, yesterday_times))
-            };
-            let (today_times, yesterday_times) = match lookups.await {
-                Ok(times) => times,
-                Err(err) => return prayer_service_down(err).map(Outcome::Reply),
-            };
-            let mut dates = Vec::new();
-            for prayer in checkin.prayers {
-                let date = if checkin.yesterday {
-                    yesterday
-                } else {
-                    prayer::checkin_date(prayer, &today_times, yesterday_times.as_ref(), ctx.now)
-                };
-                if !dates.contains(&date) {
-                    dates.push(date);
-                }
-                let user = ctx.sender.id;
-                match checkin.timing {
-                    Timing::Auto => {
-                        prayers::mark_prayed(conn, user, date, prayer, ctx.now).await?;
-                    }
-                    Timing::OnTime => {
-                        prayers::set_prayed(conn, user, date, prayer, true, ctx.now).await?;
-                    }
-                    Timing::Late => {
-                        prayers::set_prayed(conn, user, date, prayer, false, ctx.now).await?;
-                    }
-                }
-            }
-            // Each day that changed, in order: usually one, but `+prayed
-            // isha fajr` just after midnight ticks last night's Isha and
-            // today's Fajr.
-            // Both days' times were fetched above, so these come from the
-            // cache; an error here is the database's.
-            dates.sort();
-            let mut days = Vec::new();
-            for date in dates {
-                days.push(prayer_day(conn, ctx, apis, &settings, date).await?);
-            }
-            days.join("\n\n")
-        }
         BotCommand::PrayerReminders(on) => {
             stored::set_prayer_reminders(conn, ctx.chat_id, on).await?;
-            let (settings, _) = chat_settings(conn, ctx, prayer_times).await?;
+            let (settings, _) = chat_settings(conn, ctx, defaults).await?;
             if on {
                 if ctx.is_group {
                     format!(
@@ -332,7 +485,7 @@ pub async fn run_command(
             }
         }
         BotCommand::PrayerSummary(span) => {
-            let settings = my_settings(conn, ctx, prayer_times).await?;
+            let settings = my_settings(conn, ctx, defaults).await?;
             let period = Period::of(span, settings.today(ctx.now));
             let log = prayers::log_between(conn, ctx.sender.id, period.first, period.last).await?;
             let summary = Summary::new(period, &log);
@@ -363,10 +516,7 @@ pub async fn run_command(
             stored_reports::set_delivery(conn, ctx.chat_id, Feature::Prayers, delivery).await?;
             format_reports(delivery, ctx.is_group)
         }
-        BotCommand::Settings(command) => settings_command(conn, ctx, apis, command).await?,
-        BotCommand::Weather(when) => weather(conn, ctx, apis, when).await?,
-        BotCommand::Moon => moon_command(conn, ctx, apis).await?,
-        BotCommand::Points => points_command(conn, ctx, prayer_times).await?,
+        BotCommand::Points => points_command(conn, ctx, defaults).await?,
         BotCommand::PointsReports(_) if !ctx.is_group => format!(
             "{CHART} The Sunday points summary is for groups. Here, `/points` shows \
              your own week any time."
@@ -382,17 +532,15 @@ pub async fn run_command(
             };
             format_points_reports(delivery)
         }
-        BotCommand::SharedLocation {
-            latitude,
-            longitude,
-        } => {
-            let at = Coordinates {
-                latitude,
-                longitude,
-            };
-            shared_location(conn, ctx, apis, at).await?
-        }
-        BotCommand::Push(command) => return push_command(conn, ctx, apis, command).await,
+        // `prepare` turns each of these into a step of its own, never into
+        // `Step::Plain`, so they can't arrive here.
+        BotCommand::Prayers
+        | BotCommand::Prayed(_)
+        | BotCommand::Weather(_)
+        | BotCommand::Moon
+        | BotCommand::SharedLocation { .. }
+        | BotCommand::Settings(_)
+        | BotCommand::Push(_) => unreachable!("prepare gives this command its own step"),
         BotCommand::Help(topic) => help::page(topic.as_deref()),
     };
     Ok(Outcome::Reply(text))
@@ -404,18 +552,17 @@ pub async fn run_command(
 async fn push_command(
     conn: &mut SqliteConnection,
     ctx: &Context,
-    apis: &Apis,
+    offline: &Offline<'_>,
     command: PushCommand,
-) -> Result<Outcome, AppError> {
-    let Some(ntfy) = &apis.push else {
-        return Ok(Outcome::Reply(format!(
-            "{BELL} Push notifications aren't set up on this server yet."
-        )));
+) -> Result<Ran, AppError> {
+    let reply = |text: String| Ok(Ran::Done(Outcome::Reply(text)));
+    let Some(config) = offline.push else {
+        return reply(not_set_up());
     };
     if ctx.is_group {
-        return Ok(Outcome::Reply(format!(
+        return reply(format!(
             "{BELL} Push notifications are personal: send `/push on` in your own chat with me."
-        )));
+        ));
     }
     let user_id = ctx.sender.id;
     let text = match command {
@@ -435,10 +582,9 @@ async fn push_command(
                 push_repo::subscribe(conn, user_id, &push::new_subscription(), ctx.now).await?;
             // The steps, then the server and the topic on their own, so
             // each can be copied into the app as it is.
-            return Ok(Outcome::Several(push::subscribe_messages(
-                ntfy.config(),
-                &sub.topic,
-            )));
+            return Ok(Ran::Done(Outcome::Several(push::subscribe_messages(
+                config, &sub.topic,
+            ))));
         }
         PushCommand::Off => {
             if push_repo::unsubscribe(conn, user_id).await? {
@@ -451,25 +597,39 @@ async fn push_command(
         }
         PushCommand::Test => match push_repo::subscription(conn, user_id).await? {
             None => format!("{BELL} Push is off. Send `/push on` first."),
-            Some(sub) => match ntfy
-                .publish(&ntfy.message(&sub, &push::test_notice()))
-                .await
-            {
-                Ok(()) => format!(
-                    "{BELL} Sent a test push. If it hasn't arrived, check the server and topic \
-                     in the ntfy app (`/push on` shows them again). Tap its button to check \
-                     it can reach me too."
-                ),
-                Err(err) => {
-                    warn!("test push failed: {err}");
-                    format!(
-                        "{PROBLEM} Couldn't send it: the push server didn't answer. Try again in a bit."
-                    )
-                }
-            },
+            // Sent by `Ran::finish`, once the transaction is saved.
+            Some(sub) => return Ok(Ran::TestPush(sub)),
         },
     };
-    Ok(Outcome::Reply(text))
+    reply(text)
+}
+
+fn not_set_up() -> String {
+    format!("{BELL} Push notifications aren't set up on this server yet.")
+}
+
+/// `/push test`'s push, and the reply saying whether it went.
+async fn test_push(apis: &Apis, subscription: &Subscription) -> String {
+    // `push_command` only asks for this when push is set up.
+    let Some(ntfy) = &apis.push else {
+        return not_set_up();
+    };
+    match ntfy
+        .publish(&ntfy.message(subscription, &push::test_notice()))
+        .await
+    {
+        Ok(()) => format!(
+            "{BELL} Sent a test push. If it hasn't arrived, check the server and topic \
+             in the ntfy app (`/push on` shows them again). Tap its button to check \
+             it can reach me too."
+        ),
+        Err(err) => {
+            warn!("test push failed: {err}");
+            format!(
+                "{PROBLEM} Couldn't send it: the push server didn't answer. Try again in a bit."
+            )
+        }
+    }
 }
 
 /// `+got milk, eggs`: ticks each named item off.
@@ -555,13 +715,10 @@ async fn add_shop(
 async fn chat_settings(
     conn: &mut SqliteConnection,
     ctx: &Context,
-    prayer_times: &PrayerTimes,
+    defaults: &Settings,
 ) -> Result<(Settings, bool), AppError> {
     let stored = stored::get(conn, ctx.chat_id).await?;
-    Ok((
-        stored.overrides.apply(&prayer_times.defaults),
-        stored.prayer_reminders,
-    ))
+    Ok((stored.overrides.apply(defaults), stored.prayer_reminders))
 }
 
 /// Why a `/settings` change wasn't made, as the bot says it.
@@ -588,46 +745,62 @@ fn format_refused(refused: Refused) -> String {
     }
 }
 
-/// A location shared in a DM: saves the exact point, named after the
-/// nearest town (OpenStreetMap), with the timezone AlAdhan gives for that
-/// point. Prayer times are then fetched for the point itself, so no name
-/// ever has to be looked up.
-async fn shared_location(
+/// A location shared in a DM, step one (in `prepare`): the nearest town
+/// (OpenStreetMap), and the timezone AlAdhan gives for that point. `Err`
+/// is the reply when the town can't be worked out.
+async fn find_place(
     conn: &mut SqliteConnection,
     ctx: &Context,
     apis: &Apis,
     at: Coordinates,
-) -> Result<String, AppError> {
-    let (current, reminders) = chat_settings(conn, ctx, &apis.prayer_times).await?;
+) -> Result<Result<(NearestPlace, Tz), String>, AppError> {
+    let (current, _) = chat_settings(conn, ctx, &apis.prayer_times.defaults).await?;
     // `Geo` means OpenStreetMap answered but found no town there; any
     // other error means it didn't answer properly, which is worth a log
     // line and a different reply ("try again", not "try something else").
     let near = match apis.geo.nearest_place(at).await {
         Ok(near) => near,
         Err(AppError::Geo(_)) => {
-            return Ok(format!(
+            return Ok(Err(format!(
                 "{PROBLEM} I couldn't work out which town that is. \
                  Try `/settings city Leicester, GB` instead."
-            ));
+            )));
         }
         Err(err) => {
             warn!("nearest town lookup failed: {err}");
-            return Ok(format!(
+            return Ok(Err(format!(
                 "{PROBLEM} The map service isn't answering right now, so I couldn't \
                  work out which town that is. Try again in a bit."
-            ));
+            )));
         }
     };
-    // `names[0]` is the most specific: the town or village itself.
-    let name = &near.names[0];
     let timezone = apis
         .prayer_times
         .timezone_at(at, current.today(ctx.now))
         .await
         .unwrap_or(current.timezone);
+    Ok(Ok((near, timezone)))
+}
+
+/// Step two (in `execute`): saves the exact point, named after the nearest
+/// town, with that timezone. Prayer times are then fetched for the point
+/// itself, so no name ever has to be looked up.
+async fn save_place(
+    conn: &mut SqliteConnection,
+    ctx: &Context,
+    defaults: &Settings,
+    at: Coordinates,
+    found: Result<(NearestPlace, Tz), String>,
+) -> Result<String, AppError> {
+    let (near, timezone) = match found {
+        Ok(found) => found,
+        Err(reply) => return Ok(reply),
+    };
+    // `names[0]` is the most specific: the town or village itself.
+    let name = &near.names[0];
     stored::set_location(conn, ctx.chat_id, name, &near.country, at, timezone.name()).await?;
 
-    let (settings, _) = chat_settings(conn, ctx, &apis.prayer_times).await?;
+    let (settings, reminders) = chat_settings(conn, ctx, defaults).await?;
     Ok(format!(
         "{PIN} Got it: you're near *{name}, {}* ({timezone}). Prayer times, \
          reminders and weather now use your exact location.\n\n{}",
@@ -644,7 +817,7 @@ async fn weather(
     apis: &Apis,
     when: When,
 ) -> Result<String, AppError> {
-    let settings = my_settings(conn, ctx, &apis.prayer_times).await?;
+    let settings = my_settings(conn, ctx, &apis.prayer_times.defaults).await?;
     // As in `shared_location`: `Geo` is "no such town", anything else is
     // the town lookup not answering.
     let at = match apis.coordinates(&settings).await {
@@ -684,7 +857,7 @@ async fn moon_command(
     ctx: &Context,
     apis: &Apis,
 ) -> Result<String, AppError> {
-    let settings = my_settings(conn, ctx, &apis.prayer_times).await?;
+    let settings = my_settings(conn, ctx, &apis.prayer_times.defaults).await?;
     let today = settings.today(ctx.now);
 
     // `.ok()` turns each `Result` into an `Option`: a failed lookup is
@@ -728,9 +901,9 @@ async fn moon_command(
 async fn my_settings(
     conn: &mut SqliteConnection,
     ctx: &Context,
-    prayer_times: &PrayerTimes,
+    defaults: &Settings,
 ) -> Result<Settings, AppError> {
-    let (here, _) = chat_settings(conn, ctx, prayer_times).await?;
+    let (here, _) = chat_settings(conn, ctx, defaults).await?;
     if !ctx.is_group {
         return Ok(here);
     }
@@ -740,22 +913,89 @@ async fn my_settings(
     })
 }
 
-/// Today's prayer times for these settings, with the sender's ticks.
-async fn prayer_day(
-    conn: &mut SqliteConnection,
-    ctx: &Context,
+/// The prayer times for these settings on `date`: from the cache, or
+/// AlAdhan (and, for a town without coordinates, the geocoder). Network,
+/// so only ever called from `prepare`.
+async fn lookup_day(
     apis: &Apis,
     settings: &Settings,
     date: NaiveDate,
-) -> Result<String, AppError> {
+) -> Result<DayTimes, AppError> {
     let location = apis.prayer_location(settings).await?;
-    let day = apis.prayer_times.for_date(&location, date).await?;
+    apis.prayer_times.for_date(&location, date).await
+}
+
+/// A day's prayer times, with the sender's ticks.
+async fn format_day(
+    conn: &mut SqliteConnection,
+    ctx: &Context,
+    settings: &Settings,
+    day: &DayTimes,
+) -> Result<String, AppError> {
+    let date = day.date;
     let log: Vec<(Prayer, Status)> = prayers::log_between(conn, ctx.sender.id, date, date)
         .await?
         .into_iter()
         .map(|e| (e.prayer, e.status))
         .collect();
-    Ok(format_prayer_day(&day, settings, &log, Moon::at(ctx.now)))
+    Ok(format_prayer_day(day, settings, &log, Moon::at(ctx.now)))
+}
+
+/// `+prayed`, with the times `prepare` looked up: ticks each prayer, then
+/// shows each day that changed.
+async fn prayed(
+    conn: &mut SqliteConnection,
+    ctx: &Context,
+    checkin: Checkin,
+    settings: &Settings,
+    times: Result<(DayTimes, Option<DayTimes>), AppError>,
+) -> Result<String, AppError> {
+    let (today_times, yesterday_times) = match times {
+        Ok(times) => times,
+        Err(err) => return prayer_service_down(err),
+    };
+    let today = settings.today(ctx.now);
+    let yesterday = today.pred_opt().unwrap_or(today);
+    let mut dates = Vec::new();
+    for prayer in checkin.prayers {
+        let date = if checkin.yesterday {
+            yesterday
+        } else {
+            prayer::checkin_date(prayer, &today_times, yesterday_times.as_ref(), ctx.now)
+        };
+        if !dates.contains(&date) {
+            dates.push(date);
+        }
+        let user = ctx.sender.id;
+        match checkin.timing {
+            Timing::Auto => {
+                prayers::mark_prayed(conn, user, date, prayer, ctx.now).await?;
+            }
+            Timing::OnTime => {
+                prayers::set_prayed(conn, user, date, prayer, true, ctx.now).await?;
+            }
+            Timing::Late => {
+                prayers::set_prayed(conn, user, date, prayer, false, ctx.now).await?;
+            }
+        }
+    }
+    // Each day that changed, in order: usually one, but `+prayed
+    // isha fajr` just after midnight ticks last night's Isha and
+    // today's Fajr.
+    // Each date is today's or yesterday's, and both days' times came
+    // from `prepare` (`checkin_date` only picks yesterday when they're
+    // there), so nothing is looked up here.
+    dates.sort();
+    let mut days = Vec::new();
+    for date in dates {
+        let day = [Some(&today_times), yesterday_times.as_ref()]
+            .into_iter()
+            .flatten()
+            .find(|day| day.date == date)
+            .ok_or_else(|| AppError::PrayerTimes(format!("no times looked up for {date}")))?;
+        days.push(format_day(conn, ctx, settings, day).await?);
+    }
+    Ok(days.join("\n\n"))
 }
 
 /// What to say when a prayer-times lookup fails because a service is down
@@ -779,62 +1019,79 @@ fn prayer_service_down(err: AppError) -> Result<String, AppError> {
     }
 }
 
-/// `/settings ...`. Each change is checked first, then saved, then the
-/// reply shows the chat's full settings so people see the result.
-async fn settings_command(
+/// `/settings ...`, step one (in `prepare`): which kind it is, and for a
+/// change, its checks, including looking a new town up.
+async fn settings_step(
     conn: &mut SqliteConnection,
     ctx: &Context,
     apis: &Apis,
     command: SettingsCommand,
-) -> Result<String, AppError> {
-    let prayer_times = &apis.prayer_times;
-    let (current, _) = chat_settings(conn, ctx, prayer_times).await?;
-    let id = ctx.chat_id;
-
+) -> Result<SettingsStep, AppError> {
     // The changes are checked and saved by `settings_edit`, under the same
     // rules the admin dashboard uses; only the wording here is the bot's.
     let change = match command {
-        SettingsCommand::Show => None,
-        SettingsCommand::Everyone => {
+        SettingsCommand::Show => return Ok(SettingsStep::Show),
+        SettingsCommand::Everyone => return Ok(SettingsStep::Everyone),
+        SettingsCommand::Methods => return Ok(SettingsStep::Methods),
+        SettingsCommand::Reset => Change::Reset,
+        SettingsCommand::City { city, country } => {
+            // No country typed: keep the one already in use.
+            let country = match country {
+                Some(country) => country,
+                None => {
+                    let defaults = &apis.prayer_times.defaults;
+                    chat_settings(conn, ctx, defaults).await?.0.country
+                }
+            };
+            Change::City { city, country }
+        }
+        SettingsCommand::Timezone(name) => Change::Timezone(name),
+        SettingsCommand::PrayerMethod(method) => Change::PrayerMethod(method),
+        SettingsCommand::PrayerSchool(school) => Change::PrayerSchool(school),
+        SettingsCommand::PrayerEnding(minutes) => Change::PrayerEnding(minutes),
+    };
+    Ok(SettingsStep::Change(
+        settings_edit::check(&apis.geo, &change).await,
+    ))
+}
+
+/// Step two (in `execute`): saves a checked change, then the reply shows
+/// the chat's full settings so people see the result.
+async fn settings_command(
+    conn: &mut SqliteConnection,
+    ctx: &Context,
+    defaults: &Settings,
+    step: SettingsStep,
+) -> Result<String, AppError> {
+    let id = ctx.chat_id;
+    // `note` is an extra first line for the reply; most changes have none.
+    let note = match step {
+        SettingsStep::Show => None,
+        SettingsStep::Everyone => {
             if !ctx.is_group {
                 return Ok(format!("{PEOPLE} In a DM there's only you: see /settings."));
             }
             let members = stored::members(conn, id).await?;
-            return Ok(format_everyone(&members, &prayer_times.defaults));
+            return Ok(format_everyone(&members, defaults));
         }
-        SettingsCommand::Methods => return Ok(format_methods()),
-        SettingsCommand::Reset => Some(Change::Reset),
-        SettingsCommand::City { city, country } => {
-            // No country typed: keep the one already in use.
-            let country = country.unwrap_or_else(|| current.country.clone());
-            Some(Change::City { city, country })
-        }
-        SettingsCommand::Timezone(name) => Some(Change::Timezone(name)),
-        SettingsCommand::PrayerMethod(method) => Some(Change::PrayerMethod(method)),
-        SettingsCommand::PrayerSchool(school) => Some(Change::PrayerSchool(school)),
-        SettingsCommand::PrayerEnding(minutes) => Some(Change::PrayerEnding(minutes)),
-    };
-
-    // `note` is an extra first line for the reply; most changes have none.
-    let note = match change {
-        None => None,
-        Some(change) => {
-            match settings_edit::apply(conn, apis, id, &current, &change).await? {
-                Ok(Saved::Town { name, timezone }) => Some(format!(
+        SettingsStep::Methods => return Ok(format_methods()),
+        // Refused: the explanation is the whole reply.
+        SettingsStep::Change(Err(refused)) => return Ok(format_refused(refused)),
+        SettingsStep::Change(Ok(checked)) => {
+            let reset = checked == Checked::Reset;
+            let (current, _) = chat_settings(conn, ctx, defaults).await?;
+            match settings_edit::save(conn, id, &current, checked).await? {
+                Saved::Town { name, timezone } => Some(format!(
                     "Found {name}. Timezone set to {timezone} to match."
                 )),
-                Ok(Saved::Done) if change == Change::Reset => {
-                    Some("Back to the defaults.".to_string())
-                }
-                Ok(Saved::Done) => None,
-                // Refused: the explanation is the whole reply.
-                Err(refused) => return Ok(format_refused(refused)),
+                Saved::Done if reset => Some("Back to the defaults.".to_string()),
+                Saved::Done => None,
             }
         }
     };
 
     // Read back what's now stored, so the reply shows exactly what's saved.
-    let (settings, reminders) = chat_settings(conn, ctx, prayer_times).await?;
+    let (settings, reminders) = chat_settings(conn, ctx, defaults).await?;
     let mut text = note.map(|n| format!("{n}\n\n")).unwrap_or_default();
     text.push_str(&format_settings(&settings, reminders, ctx.is_group));
     Ok(text)
@@ -843,7 +1100,7 @@ async fn settings_command(
 async fn add_todo(
     conn: &mut SqliteConnection,
     ctx: &Context,
-    prayer_times: &PrayerTimes,
+    defaults: &Settings,
     titles: &[String],
     assignee: Option<Assignee>,
     due: Option<Due>,
@@ -865,7 +1122,7 @@ async fn add_todo(
 
     // "fri" → a date, counting from the sender's own today (their
     // timezone, even in a group set to another one).
-    let today = my_settings(conn, ctx, prayer_times).await?.today(ctx.now);
+    let today = my_settings(conn, ctx, defaults).await?.today(ctx.now);
     // `transpose` turns `Option<Result<..>>` into `Result<Option<..>>`, so
     // one `match` covers "no date", "a date" and "a bad date".
     let due = match due.map(|due| due.resolve(today)).transpose() {
@@ -937,11 +1194,11 @@ fn details_line(details: Details, today: NaiveDate) -> Option<String> {
 
 /// Runs a reply to one of the bot's numbered lists. `items` is what that
 /// list showed (never empty: the webhook only calls this for real lists).
-/// `apis` is for the sender's settings (their "today", for `due 2 fri`).
+/// `defaults` is for the sender's settings (their "today", for `due 2 fri`).
 pub async fn run_list_reply(
     conn: &mut SqliteConnection,
     ctx: &Context,
-    apis: &Apis,
+    defaults: &Settings,
     items: &[ListItem],
     reply: ReplyCommand,
 ) -> Result<Outcome, AppError> {
@@ -953,14 +1210,22 @@ pub async fn run_list_reply(
         ReplyCommand::Remove(n) => (vec![n], Action::Remove),
         ReplyCommand::Skip(n) => (vec![n], Action::Skip),
         ReplyCommand::SetDue(n, due) => {
-            return change_todo(conn, ctx, apis, items, n, TodoChange::Due(due)).await;
+            return change_todo(conn, ctx, defaults, items, n, TodoChange::Due(due)).await;
         }
         ReplyCommand::SetPriority(n, priority) => {
-            return change_todo(conn, ctx, apis, items, n, TodoChange::Priority(priority)).await;
+            return change_todo(
+                conn,
+                ctx,
+                defaults,
+                items,
+                n,
+                TodoChange::Priority(priority),
+            )
+            .await;
         }
         ReplyCommand::BadChange(err) => return Ok(Outcome::Reply(format!("{PROBLEM} {err}"))),
     };
-    act_on_list(conn, ctx, &apis.prayer_times, items, &numbers, action).await
+    act_on_list(conn, ctx, defaults, items, &numbers, action).await
 }
 
 /// A change to one todo, from a reply (`due 2 fri`, `priority 2 none`).
@@ -975,7 +1240,7 @@ enum TodoChange {
 async fn change_todo(
     conn: &mut SqliteConnection,
     ctx: &Context,
-    apis: &Apis,
+    defaults: &Settings,
     items: &[ListItem],
     n: usize,
     change: TodoChange,
@@ -997,9 +1262,7 @@ async fn change_todo(
     let text = match change {
         TodoChange::Due(due) => {
             // As with `+todo -d`: counted from the sender's own today.
-            let today = my_settings(conn, ctx, &apis.prayer_times)
-                .await?
-                .today(ctx.now);
+            let today = my_settings(conn, ctx, defaults).await?.today(ctx.now);
             let date = match due.map(|due| due.resolve(today)).transpose() {
                 Ok(date) => date,
                 Err(err) => return reply(format!("{PROBLEM} {err}")),
@@ -1067,7 +1330,7 @@ impl Action {
 async fn act_on_list(
     conn: &mut SqliteConnection,
     ctx: &Context,
-    prayer_times: &PrayerTimes,
+    defaults: &Settings,
     items: &[ListItem],
     numbers: &[usize],
     action: Action,
@@ -1088,7 +1351,7 @@ async fn act_on_list(
     let today = if is_shop {
         ctx.now.date_naive()
     } else {
-        my_settings(conn, ctx, prayer_times).await?.today(ctx.now)
+        my_settings(conn, ctx, defaults).await?.today(ctx.now)
     };
 
     let mut lines = Vec::new();
@@ -1158,7 +1421,7 @@ async fn act_on_list(
 async fn close_by_numbers(
     conn: &mut SqliteConnection,
     ctx: &Context,
-    prayer_times: &PrayerTimes,
+    defaults: &Settings,
     numbers: &[usize],
     action: Action,
 ) -> Result<Outcome, AppError> {
@@ -1169,7 +1432,7 @@ async fn close_by_numbers(
             "{PROBLEM} No todo list sent here yet. Send /todo, then `{command} 2`."
         )));
     }
-    act_on_list(conn, ctx, prayer_times, &items, numbers, action).await
+    act_on_list(conn, ctx, defaults, &items, numbers, action).await
 }
 
 /// Closes todo `id` in this chat as `finish` (done or skipped) and records
@@ -1206,9 +1469,9 @@ async fn close_todo(
 async fn points_command(
     conn: &mut SqliteConnection,
     ctx: &Context,
-    prayer_times: &PrayerTimes,
+    defaults: &Settings,
 ) -> Result<String, AppError> {
-    let today = my_settings(conn, ctx, prayer_times).await?.today(ctx.now);
+    let today = my_settings(conn, ctx, defaults).await?.today(ctx.now);
     let week = Period::of(Span::Week, today);
     let just_today = Period {
         first: today,
@@ -1264,14 +1527,14 @@ fn earned_text(points: Option<i64>) -> String {
 async fn close_by_name(
     conn: &mut SqliteConnection,
     ctx: &Context,
-    prayer_times: &PrayerTimes,
+    defaults: &Settings,
     names: &[String],
     action: Action,
 ) -> Result<String, AppError> {
     // `+done` / `+skip` only ever tick or skip, never remove.
     let finish = action.finish().unwrap_or(Finish::Done);
     // The closer's own today, for "done by its due date?".
-    let today = my_settings(conn, ctx, prayer_times).await?.today(ctx.now);
+    let today = my_settings(conn, ctx, defaults).await?.today(ctx.now);
     let mut lines = Vec::new();
     let mut closed_any = false;
     for name in names {
@@ -1836,8 +2099,8 @@ fn todo_line(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::aladhan::PrayerTimes;
     use crate::db::test_pool;
-    use crate::parser::Checkin;
     use crate::person::Person;
     use crate::prayer::{HijriDate, Window};
     use crate::repo::chats;
@@ -2417,31 +2680,19 @@ mod tests {
             .collect();
 
         // Reply `skip 1`.
-        let reply = run_list_reply(
-            &mut conn,
-            &ctx,
-            &Apis::new(times()),
-            &items,
-            ReplyCommand::Skip(1),
-        )
-        .await
-        .unwrap()
-        .into_text();
+        let reply = run_list_reply(&mut conn, &ctx, &defaults(), &items, ReplyCommand::Skip(1))
+            .await
+            .unwrap()
+            .into_text();
         assert_eq!(
             reply,
             "⏭️ Skipped: *go gym* · −1 ⭐\n□□□□□□□□□□ 0/3 done · 1 skipped"
         );
         // Already closed.
-        let again = run_list_reply(
-            &mut conn,
-            &ctx,
-            &Apis::new(times()),
-            &items,
-            ReplyCommand::Skip(1),
-        )
-        .await
-        .unwrap()
-        .into_text();
+        let again = run_list_reply(&mut conn, &ctx, &defaults(), &items, ReplyCommand::Skip(1))
+            .await
+            .unwrap()
+            .into_text();
         assert!(again.contains("already"), "{again}");
 
         // `+skip 2` uses the latest list, which the webhook saved; here
@@ -2488,7 +2739,7 @@ mod tests {
         let reply = run_list_reply(
             &mut conn,
             &ctx,
-            &Apis::new(times()),
+            &defaults(),
             &shop_list,
             ReplyCommand::Skip(1),
         )
@@ -2572,16 +2823,10 @@ mod tests {
             .zip(1..)
             .map(|(&id, pos)| item(pos, id))
             .collect();
-        let reply = run_list_reply(
-            &mut conn,
-            &ctx,
-            &Apis::new(times()),
-            &items,
-            ReplyCommand::Done(1),
-        )
-        .await
-        .unwrap()
-        .into_text();
+        let reply = run_list_reply(&mut conn, &ctx, &defaults(), &items, ReplyCommand::Done(1))
+            .await
+            .unwrap()
+            .into_text();
         assert!(reply.starts_with("✅ Done: *tax*"), "{reply}");
     }
 
@@ -2657,7 +2902,7 @@ mod tests {
         let apis = Apis::new(times());
         let mut change = async |text: &str| {
             let reply = crate::parser::parse_reply(text).expect("should parse");
-            run_list_reply(&mut conn, &ctx, &apis, &items, reply)
+            run_list_reply(&mut conn, &ctx, &apis.prayer_times.defaults, &items, reply)
                 .await
                 .unwrap()
                 .into_text()
@@ -2716,7 +2961,7 @@ mod tests {
         let reply = run_list_reply(
             &mut conn,
             &ctx,
-            &Apis::new(times()),
+            &defaults(),
             &shop_list,
             ReplyCommand::SetDue(1, None),
         )
@@ -2881,7 +3126,7 @@ mod tests {
         let reply = run_list_reply(
             &mut conn,
             &ctx,
-            &Apis::new(times()),
+            &defaults(),
             &items,
             ReplyCommand::Tick(vec![1, 3]),
         )
@@ -2897,7 +3142,7 @@ mod tests {
         let reply = run_list_reply(
             &mut conn,
             &ctx,
-            &Apis::new(times()),
+            &defaults(),
             &items,
             ReplyCommand::Remove(2),
         )
@@ -2906,28 +3151,16 @@ mod tests {
         .into_text();
         assert_eq!(reply, "🗑️ Removed *fix the tap*");
 
-        let reply = run_list_reply(
-            &mut conn,
-            &ctx,
-            &Apis::new(times()),
-            &items,
-            ReplyCommand::Done(1),
-        )
-        .await
-        .unwrap()
-        .into_text();
+        let reply = run_list_reply(&mut conn, &ctx, &defaults(), &items, ReplyCommand::Done(1))
+            .await
+            .unwrap()
+            .into_text();
         assert!(reply.contains("already ticked off"), "{reply}");
 
-        let reply = run_list_reply(
-            &mut conn,
-            &ctx,
-            &Apis::new(times()),
-            &items,
-            ReplyCommand::Done(5),
-        )
-        .await
-        .unwrap()
-        .into_text();
+        let reply = run_list_reply(&mut conn, &ctx, &defaults(), &items, ReplyCommand::Done(5))
+            .await
+            .unwrap()
+            .into_text();
         assert!(reply.contains("only has 3 items"), "{reply}");
     }
 
@@ -3221,7 +3454,7 @@ Already on the list: milk, Eggs"
         let reply = run_list_reply(
             &mut conn,
             &ctx,
-            &Apis::new(times()),
+            &defaults(),
             &items,
             ReplyCommand::Tick(vec![1, 3]),
         )
@@ -3233,7 +3466,7 @@ Already on the list: milk, Eggs"
         let reply = run_list_reply(
             &mut conn,
             &ctx,
-            &Apis::new(times()),
+            &defaults(),
             &items,
             ReplyCommand::Remove(4),
         )
@@ -3242,16 +3475,10 @@ Already on the list: milk, Eggs"
         .into_text();
         assert_eq!(reply, "🗑️ Removed *rice*");
 
-        let reply = run_list_reply(
-            &mut conn,
-            &ctx,
-            &Apis::new(times()),
-            &items,
-            ReplyCommand::Done(1),
-        )
-        .await
-        .unwrap()
-        .into_text();
+        let reply = run_list_reply(&mut conn, &ctx, &defaults(), &items, ReplyCommand::Done(1))
+            .await
+            .unwrap()
+            .into_text();
         assert!(reply.contains("already ticked off"), "{reply}");
 
         // Eggs still to buy first, then milk and bread, bought.

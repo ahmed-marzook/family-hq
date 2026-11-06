@@ -7,8 +7,8 @@
 use chrono_tz::Tz;
 use sqlx::SqliteConnection;
 
-use crate::Apis;
 use crate::error::AppError;
+use crate::geo::{Geo, Town};
 use crate::prayer::{self, HANAFI, SHAFII};
 use crate::repo::settings as stored;
 use crate::settings::Settings;
@@ -55,30 +55,62 @@ pub enum Saved {
     },
 }
 
-/// Checks `change` and, if it's allowed, saves it for `chat_id`.
+/// A change that passed its checks, ready to save. The town has been
+/// looked up already, so saving it needs no network.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Checked {
+    Town(Town),
+    Timezone(Tz),
+    PrayerMethod(u8),
+    PrayerSchool(u8),
+    PrayerEnding(i64),
+    Reset,
+}
+
+/// Checks `change`: `Ok` with what to save, or `Err` with why it isn't
+/// allowed. Nothing is saved here, and there's no database at all.
 ///
-/// The result is a `Result` inside a `Result`, and the two layers mean
-/// different things: the outer `Err` is "something broke" (the database),
-/// the inner `Err` is "the person asked for something that isn't allowed".
-/// `?` deals with the first; the caller explains the second.
+/// A new town is looked up with `geo`, over the network. That's why this
+/// is a step of its own: callers run it *before* opening their
+/// transaction, so a slow geocoder never holds the database's write lock
+/// (see `routes::webhook`). Any failed lookup, even the geocoder being
+/// down, counts as "couldn't find it".
+pub async fn check(geo: &Geo, change: &Change) -> Result<Checked, Refused> {
+    match change {
+        Change::City { city, country } => match geo.find_town(city, country).await {
+            Ok(town) => Ok(Checked::Town(town)),
+            Err(_) => Err(Refused::UnknownTown {
+                city: city.clone(),
+                country: country.clone(),
+            }),
+        },
+        Change::Timezone(name) => check_timezone(name).map(Checked::Timezone),
+        Change::PrayerMethod(method) => {
+            check_method(*method).map(|()| Checked::PrayerMethod(*method))
+        }
+        Change::PrayerSchool(school) => {
+            check_school(*school).map(|()| Checked::PrayerSchool(*school))
+        }
+        Change::PrayerEnding(minutes) => {
+            check_ending(*minutes).map(|()| Checked::PrayerEnding(*minutes))
+        }
+        Change::Reset => Ok(Checked::Reset),
+    }
+}
+
+/// Saves a checked change for `chat_id`. Only the database: safe inside a
+/// transaction.
 ///
 /// `current` is the chat's settings now: a town whose timezone the
 /// geocoder doesn't know keeps the current timezone.
-pub async fn apply(
+pub async fn save(
     conn: &mut SqliteConnection,
-    apis: &Apis,
     chat_id: i64,
     current: &Settings,
-    change: &Change,
-) -> Result<Result<Saved, Refused>, AppError> {
-    match change {
-        Change::City { city, country } => {
-            let Ok(town) = apis.geo.find_town(city, country).await else {
-                return Ok(Err(Refused::UnknownTown {
-                    city: city.clone(),
-                    country: country.clone(),
-                }));
-            };
+    checked: Checked,
+) -> Result<Saved, AppError> {
+    match checked {
+        Checked::Town(town) => {
             let timezone = town.timezone.unwrap_or(current.timezone);
             stored::set_location(
                 conn,
@@ -89,44 +121,26 @@ pub async fn apply(
                 timezone.name(),
             )
             .await?;
-            Ok(Ok(Saved::Town {
+            return Ok(Saved::Town {
                 name: town.name,
                 timezone,
-            }))
+            });
         }
-        Change::Timezone(name) => match check_timezone(name) {
-            Ok(timezone) => {
-                stored::set_timezone(conn, chat_id, timezone.name()).await?;
-                Ok(Ok(Saved::Done))
-            }
-            Err(refused) => Ok(Err(refused)),
-        },
-        Change::PrayerMethod(method) => match check_method(*method) {
-            Ok(()) => {
-                stored::set_prayer_method(conn, chat_id, *method).await?;
-                Ok(Ok(Saved::Done))
-            }
-            Err(refused) => Ok(Err(refused)),
-        },
-        Change::PrayerSchool(school) => match check_school(*school) {
-            Ok(()) => {
-                stored::set_prayer_school(conn, chat_id, *school).await?;
-                Ok(Ok(Saved::Done))
-            }
-            Err(refused) => Ok(Err(refused)),
-        },
-        Change::PrayerEnding(minutes) => match check_ending(*minutes) {
-            Ok(()) => {
-                stored::set_prayer_ending_minutes(conn, chat_id, *minutes).await?;
-                Ok(Ok(Saved::Done))
-            }
-            Err(refused) => Ok(Err(refused)),
-        },
-        Change::Reset => {
-            stored::reset(conn, chat_id).await?;
-            Ok(Ok(Saved::Done))
+        Checked::Timezone(timezone) => {
+            stored::set_timezone(conn, chat_id, timezone.name()).await?;
         }
+        Checked::PrayerMethod(method) => {
+            stored::set_prayer_method(conn, chat_id, method).await?;
+        }
+        Checked::PrayerSchool(school) => {
+            stored::set_prayer_school(conn, chat_id, school).await?;
+        }
+        Checked::PrayerEnding(minutes) => {
+            stored::set_prayer_ending_minutes(conn, chat_id, minutes).await?;
+        }
+        Checked::Reset => stored::reset(conn, chat_id).await?,
     }
+    Ok(Saved::Done)
 }
 
 // The checks on their own: pure, so they're simple to test.
@@ -166,12 +180,26 @@ pub fn check_ending(minutes: i64) -> Result<(), Refused> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::aladhan::PrayerTimes;
     use crate::db::test_pool;
-    use crate::geo::Geo;
     use crate::repo::chats;
     use crate::settings::tests::defaults;
     use crate::testkit::fake_geocoder;
+
+    /// `check`, then `save` if it passed: what each caller does, with its
+    /// transaction in between. The outer `Result` is "something broke"
+    /// (the database), the inner one "allowed or not".
+    async fn apply(
+        conn: &mut SqliteConnection,
+        geo: &Geo,
+        chat_id: i64,
+        current: &Settings,
+        change: &Change,
+    ) -> Result<Result<Saved, Refused>, AppError> {
+        match check(geo, change).await {
+            Ok(checked) => save(conn, chat_id, current, checked).await.map(Ok),
+            Err(refused) => Ok(Err(refused)),
+        }
+    }
 
     #[test]
     fn checks() {
@@ -202,8 +230,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let mut apis = Apis::new(PrayerTimes::new(defaults()));
-        apis.geo = Geo::with_geocoding_url(&fake_geocoder().await);
+        let geo = Geo::with_geocoding_url(&fake_geocoder().await);
         let now = defaults();
 
         // Refused: nothing stored.
@@ -217,7 +244,7 @@ mod tests {
                 country: "GB".to_string(),
             },
         ] {
-            let result = apply(&mut conn, &apis, chat, &now, &change).await.unwrap();
+            let result = apply(&mut conn, &geo, chat, &now, &change).await.unwrap();
             assert!(result.is_err(), "{change:?} should be refused");
         }
         assert_eq!(
@@ -231,7 +258,7 @@ mod tests {
             country: "GB".to_string(),
         };
         assert_eq!(
-            apply(&mut conn, &apis, chat, &now, &town).await.unwrap(),
+            apply(&mut conn, &geo, chat, &now, &town).await.unwrap(),
             Ok(Saved::Town {
                 name: "Leicester".to_string(),
                 timezone: chrono_tz::Europe::London
@@ -243,7 +270,7 @@ mod tests {
             Change::PrayerSchool(HANAFI),
             Change::PrayerEnding(45),
         ] {
-            let result = apply(&mut conn, &apis, chat, &now, &change).await.unwrap();
+            let result = apply(&mut conn, &geo, chat, &now, &change).await.unwrap();
             assert_eq!(result, Ok(Saved::Done), "{change:?}");
         }
         let own = stored::get(&mut conn, chat).await.unwrap().overrides;
@@ -254,7 +281,7 @@ mod tests {
         assert_eq!(own.prayer_school, Some(i64::from(HANAFI)));
         assert_eq!(own.prayer_ending_minutes, Some(45));
 
-        apply(&mut conn, &apis, chat, &now, &Change::Reset)
+        apply(&mut conn, &geo, chat, &now, &Change::Reset)
             .await
             .unwrap()
             .unwrap();

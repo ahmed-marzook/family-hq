@@ -17,7 +17,7 @@ use tracing::{Span, debug, info, warn};
 
 use crate::AppState;
 use crate::error::AppError;
-use crate::handlers::{self, Context, Outcome};
+use crate::handlers::{self, Context, Offline, Outcome, Prepared, Ran};
 use crate::metrics::{self, Event};
 use crate::parser::{self, BotCommand, ReplyCommand};
 use crate::person::{Assignee, Person};
@@ -180,8 +180,30 @@ enum Action {
     ListReply(Vec<ListItem>, ReplyCommand),
 }
 
+/// An `Action` with its lookups done (`handlers::prepare`), ready to run
+/// inside the transaction.
+///
+/// `Box` keeps the prepared command on the heap. It holds whole days of
+/// prayer times, so without it every `Ready`, even a small list reply,
+/// would take up that much room.
+enum Ready {
+    Command(Box<Prepared>),
+    ListReply(Vec<ListItem>, ReplyCommand),
+}
+
 /// Handles one incoming message: register who sent it and where, work out
 /// whether it's for the bot, act on it, then react and reply.
+///
+/// In three steps, so that nothing slow happens while the database is
+/// locked for writing (`handlers::prepare` says why that matters):
+/// 1. register the sender and the chat, in a short transaction of its own;
+/// 2. look up what the command needs from outside services, with nothing
+///    locked;
+/// 3. run the command and mark the message handled, in one transaction:
+///    if any of it fails, none of it is saved, and GOWA's retry runs it
+///    again.
+///
+/// Replies go out after that, once everything is saved.
 ///
 /// `#[instrument]` runs the whole function inside a *span* named
 /// `message`: every log line from in here, or from anything it calls,
@@ -214,11 +236,19 @@ async fn handle_message(
         return Ok(());
     }
 
-    // Everything below happens in one transaction: if any step fails,
-    // none of it is saved. Dropping `tx` without `commit` rolls it back.
+    // Step 1: who and where. Dropping `tx` without `commit` rolls it back.
     // `&mut tx` works where a `&mut SqliteConnection` is expected, because
     // a transaction derefs to its connection.
-    let mut tx = state.db.begin().await?;
+    //
+    // `BEGIN IMMEDIATE`, rather than SQLx's `begin()` (a plain, "deferred"
+    // `BEGIN`), takes SQLite's write lock as the transaction starts. SQLite
+    // has one writer at a time. A deferred transaction that reads first and
+    // writes later has to upgrade to the write lock part-way, and if another
+    // connection is writing (or has written since we read), SQLite can't
+    // safely wait for it: it fails at once with "database is locked". Taking
+    // the lock up front means a second writer simply waits its turn (up to
+    // SQLx's 5 second busy timeout) and never fails half-way through.
+    let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
 
     let sender = msg.sender();
     let Some(user) = users::find_or_register(&mut tx, &sender, now).await? else {
@@ -245,22 +275,22 @@ async fn handle_message(
         _ => None,
     };
     let is_group = dm_owner.is_none();
-    // Using the bot keeps a person's data (see `crate::cleanup`): anything
-    // in their DM, or a command (even one it didn't know) or list reply in
-    // a group. Ordinary group chat doesn't count.
-    let tried_a_command = msg
-        .body
-        .as_deref()
-        .and_then(metrics::command_word)
-        .is_some();
-    if !is_group || action.is_some() || tried_a_command {
-        users::touch(&mut tx, user.id, now).await?;
-    }
-    // The same in a group keeps the group's data, and the bot in it.
-    if is_group && (action.is_some() || tried_a_command) {
-        chats::touch(&mut tx, chat_id, now).await?;
-    }
     let Some(action) = action else {
+        // Using the bot keeps a person's data (see `crate::cleanup`): anything
+        // in their DM, or a command (even one it didn't know) or list reply in
+        // a group. Ordinary group chat doesn't count.
+        let tried_a_command = msg
+            .body
+            .as_deref()
+            .and_then(metrics::command_word)
+            .is_some();
+        if !is_group || tried_a_command {
+            users::touch(&mut tx, user.id, now).await?;
+        }
+        // The same in a group keeps the group's data, and the bot in it.
+        if is_group && tried_a_command {
+            chats::touch(&mut tx, chat_id, now).await?;
+        }
         // Ordinary chat: keep the registration, nothing else to do. But a
         // `+word` or `/word` the bot didn't understand is worth knowing
         // about: it's what people expect the bot to do.
@@ -280,13 +310,10 @@ async fn handle_message(
         debug!("chat, not a command");
         return Ok(());
     };
-
-    // A retried webhook stops here. Returning drops `tx`, so nothing from
-    // this second delivery is saved.
-    if !messages::mark_processed(&mut tx, &msg.id, now).await? {
-        info!("skipped, already handled (GOWA retried it)");
-        return Ok(());
-    }
+    // A command: the registration is saved now, so step 2 holds no lock.
+    // Every part of it is safe to repeat, so if the command then fails and
+    // GOWA retries, doing it again changes nothing.
+    tx.commit().await?;
 
     let ctx = Context {
         chat_id,
@@ -303,41 +330,82 @@ async fn handle_message(
         Some(text) => event.typed_as(text),
         None => event,
     };
+    // One line for the command log: whether it worked and how long it took.
+    let log_row = |ok: bool, duration_ms: i64| Logged {
+        event: &event,
+        chat_id,
+        user_id: ctx.sender.id,
+        is_group,
+        ok,
+        duration_ms,
+        at: now,
+    };
 
     // `Instant` is a monotonic clock, made for measuring how long
     // something took (unlike `Utc::now()`, it never jumps if the system
     // clock is changed).
     let started = Instant::now();
-    let result = match action {
+    // Step 2: the lookups, on a plain connection from the pool (not a
+    // transaction), which only reads. The block gives it back to the pool
+    // at its end, before step 3 asks for one.
+    let ready = match action {
         Action::Command(command) => {
             // `?command` logs it with `{:?}`. Only at debug level, because
             // it includes the item text (what's on someone's list).
             debug!(?command, "running");
-            handlers::run_command(&mut tx, &ctx, &state.apis, command).await
+            let prepared = {
+                let mut conn = state.db.acquire().await?;
+                handlers::prepare(&mut conn, &ctx, &state.apis, command).await
+            };
+            match prepared {
+                Ok(prepared) => Ready::Command(Box::new(prepared)),
+                // Only the database fails here (a service being down is
+                // an answer, not an error), so this is a 500 and a retry.
+                Err(err) => {
+                    log_failure(state, &log_row(false, elapsed_ms(started))).await;
+                    return Err(err);
+                }
+            }
         }
         Action::ListReply(items, reply) => {
             debug!(?reply, "list reply");
-            handlers::run_list_reply(&mut tx, &ctx, &state.apis, &items, reply).await
+            Ready::ListReply(items, reply)
         }
     };
-    // `try_from` because `as_millis` is a u128; anything that doesn't fit
-    // an i64 (290 million years) is capped.
-    let duration_ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
+
+    // Step 3: one transaction, for the command and the record that this
+    // message was handled.
+    let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
+    // A retried webhook stops here. Returning drops `tx`, so nothing from
+    // this second delivery is saved.
+    if !messages::mark_processed(&mut tx, &msg.id, now).await? {
+        info!("skipped, already handled (GOWA retried it)");
+        return Ok(());
+    }
+    // Using the bot keeps the person's (and the group's) data: see the
+    // ordinary-chat case above.
+    users::touch(&mut tx, ctx.sender.id, now).await?;
+    if is_group {
+        chats::touch(&mut tx, chat_id, now).await?;
+    }
+
+    let offline = Offline::of(&state.apis);
+    let result = match ready {
+        Ready::Command(prepared) => handlers::execute(&mut tx, &ctx, &offline, *prepared).await,
+        Ready::ListReply(items, reply) => {
+            handlers::run_list_reply(&mut tx, &ctx, offline.defaults, &items, reply)
+                .await
+                .map(Ran::Done)
+        }
+    };
+    let duration_ms = elapsed_ms(started);
     // One line per command: which one, whether it worked, how long it took.
     // `%` logs a field with `{}`; a plain name logs it as it is.
     info!(command = %event.name, ok = result.is_ok(), ms = duration_ms, "handled");
-    let row = Logged {
-        event: &event,
-        chat_id,
-        user_id: ctx.sender.id,
-        is_group,
-        ok: result.is_ok(),
-        duration_ms,
-        at: now,
-    };
+    let row = log_row(result.is_ok(), duration_ms);
 
-    let outcome = match result {
-        Ok(outcome) => outcome,
+    let ran = match result {
+        Ok(ran) => ran,
         Err(err) => {
             // The transaction rolls back (nothing saved, GOWA retries), so
             // the failure is logged separately. Only best effort: the
@@ -353,6 +421,9 @@ async fn handle_message(
 
     // Saved. From here on, failures are logged but not returned: a 500
     // would make GOWA retry, and the retry would be skipped as a duplicate.
+    // `finish` sends anything that had to wait for the commit (`/push
+    // test`'s push).
+    let outcome = ran.finish(&state.apis).await;
     react(state, &msg).await;
     match outcome {
         Outcome::Reply(text) => {
@@ -399,6 +470,12 @@ async fn handle_message(
     Ok(())
 }
 
+/// Milliseconds since `started`. `try_from` because `as_millis` is a u128;
+/// anything that doesn't fit an i64 (290 million years) is capped.
+fn elapsed_ms(started: Instant) -> i64 {
+    i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX)
+}
+
 /// Records a failed command outside the (rolled back) transaction. Any
 /// error here is printed, not returned.
 async fn log_failure(state: &AppState, row: &Logged<'_>) {
@@ -429,7 +506,8 @@ async fn handle_reaction(
         return Ok(());
     }
 
-    let mut tx = state.db.begin().await?;
+    // Immediate, as in `handle_message`: this may write later.
+    let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
     let Some((date, prayer)) =
         prayers::find_reminder(&mut tx, &r.reacted_message_id, &r.chat_id).await?
     else {
