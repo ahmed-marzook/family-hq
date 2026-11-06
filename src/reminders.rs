@@ -550,9 +550,9 @@ mod tests {
 
         // 17:25 BST on 15 June: Asr started five minutes ago.
         let now = "2026-06-15T16:25:00Z".parse().unwrap();
-        // Whether the failure is also returned doesn't matter here; what
-        // matters is that Bilal's reminder still went out.
-        let _ = check_chat(&state, &chat, now).await;
+        // The failing place is only logged, so the chat as a whole is fine;
+        // what matters is that Bilal's reminder still went out.
+        check_chat(&state, &chat, now).await.unwrap();
 
         let sent = gowa.sent.lock().unwrap();
         assert_eq!(sent.len(), 1, "{sent:?}");
