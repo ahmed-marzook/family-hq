@@ -271,6 +271,9 @@ fn to_day_times(date: NaiveDate, t: &ApiTimings) -> Result<DayTimes, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
 
     // Trimmed from a real reply for Milton Keynes, method 3, 27-10-2026.
     const REPLY: &str = r#"{"code":200,"status":"OK","data":{"timings":{
@@ -386,5 +389,104 @@ mod tests {
 
         // "Nowhere, ZZ" would fail if it went to the network.
         assert_eq!(source.for_date(&nowhere, day.date).await.unwrap(), day);
+    }
+
+    /// A fake AlAdhan that answers every request with `REPLY`, after
+    /// waiting `delay`. Returns its base URL and a count of the requests
+    /// it has had.
+    ///
+    /// The counter is an `Arc<AtomicUsize>`: `Arc` so the test and the
+    /// server (running in its own task) can both hold it, and an atomic
+    /// number so both can touch it without a lock.
+    async fn fake_aladhan(delay: Duration) -> (String, Arc<AtomicUsize>) {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let counter = requests.clone();
+        // `fallback` answers every path, so `/timings/27-10-2026` and any
+        // other date all get the same reply.
+        let app = axum::Router::new().fallback(move || {
+            let counter = counter.clone();
+            async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(delay).await;
+                REPLY
+            }
+        });
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (format!("http://{address}"), requests)
+    }
+
+    /// The reply's day, moved to `date`.
+    fn day_on(date: NaiveDate) -> DayTimes {
+        let reply: ApiResponse = serde_json::from_str(REPLY).unwrap();
+        DayTimes {
+            date,
+            ..parse(&reply).unwrap()
+        }
+    }
+
+    /// Somewhere far from the test defaults, in another timezone.
+    fn auckland() -> Location {
+        let at = Coordinates {
+            latitude: -36.8485,
+            longitude: 174.7633,
+        };
+        Location::new("Auckland", "NZ", at, 3, 0, chrono_tz::Pacific::Auckland)
+    }
+
+    #[tokio::test]
+    async fn cache_keeps_yesterday_when_another_timezone_asks_for_tomorrow() {
+        let defaults = crate::settings::tests::defaults();
+        let london = defaults.prayer_location(defaults.coordinates.unwrap());
+        let today = NaiveDate::from_ymd_opt(2026, 10, 27).unwrap();
+        let yesterday = today.pred_opt().unwrap();
+        let (url, requests) = fake_aladhan(Duration::ZERO).await;
+        let source = PrayerTimes {
+            base_url: url,
+            ..PrayerTimes::with_cached_days(defaults, vec![day_on(yesterday), day_on(today)])
+        };
+
+        // Auckland is already a day or more ahead; this asks for two days on.
+        let later = today + chrono::Duration::days(2);
+        source.for_date(&auckland(), later).await.unwrap();
+        // The reminder loop asks for London's yesterday every minute.
+        source.for_date(&london, yesterday).await.unwrap();
+
+        assert_eq!(
+            requests.load(Ordering::SeqCst),
+            1,
+            "only Auckland is fetched; London's days stay cached"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_slow_fetch_does_not_block_cached_lookups() {
+        let defaults = crate::settings::tests::defaults();
+        let london = defaults.prayer_location(defaults.coordinates.unwrap());
+        let today = NaiveDate::from_ymd_opt(2026, 10, 27).unwrap();
+        let (url, _) = fake_aladhan(Duration::from_secs(2)).await;
+        // `Arc` so the spawned task and this test can share one source.
+        let source = Arc::new(PrayerTimes {
+            base_url: url,
+            ..PrayerTimes::with_cached(defaults, day_on(today))
+        });
+
+        let slow = {
+            let source = source.clone();
+            tokio::spawn(async move { source.for_date(&auckland(), today).await })
+        };
+        // Give the slow lookup time to start its fetch.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let cached =
+            tokio::time::timeout(Duration::from_millis(200), source.for_date(&london, today)).await;
+        slow.abort();
+        assert!(
+            cached.is_ok(),
+            "a cached lookup waited behind another place's fetch"
+        );
     }
 }
