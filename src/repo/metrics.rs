@@ -362,4 +362,60 @@ mod tests {
         );
         assert!(!rows[1].ok);
     }
+
+    /// A word typed in a DM is the person's own business (`+dentist`), so
+    /// only groups' unknown words are listed.
+    #[tokio::test]
+    async fn unknown_words_leave_out_dms() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let now: DateTime<Utc> = "2026-10-28T18:00:00Z".parse().unwrap();
+        let bilal = Person {
+            name: "Bilal".to_string(),
+            jid: "447700900001@s.whatsapp.net".to_string(),
+            lid: None,
+        };
+        let user = users::find_or_register(&mut conn, &bilal, now)
+            .await
+            .unwrap()
+            .unwrap();
+        let group = chats::find_or_create(&mut conn, "120363000000000001@g.us", None, now)
+            .await
+            .unwrap();
+        let dm = chats::find_or_create(&mut conn, &bilal.jid, Some(user.id), now)
+            .await
+            .unwrap();
+
+        for (text, chat_id, is_group) in
+            [("+remind 5pm", group, true), ("+dentist friday", dm, false)]
+        {
+            let event = metrics::unknown(text).unwrap();
+            let row = Logged {
+                event: &event,
+                chat_id,
+                user_id: user.id,
+                is_group,
+                ok: false,
+                duration_ms: 1,
+                at: now,
+            };
+            record(&mut conn, &row).await.unwrap();
+        }
+
+        let words = unknown_words(&mut conn, Filter::default()).await.unwrap();
+        assert_eq!(
+            words,
+            [Unknown {
+                typed: "+remind".to_string(),
+                times: 1,
+                people: 1,
+            }]
+        );
+        // Asking for the DM itself doesn't show them either.
+        let in_dm = Filter {
+            chat: Some(dm),
+            ..Filter::default()
+        };
+        assert!(unknown_words(&mut conn, in_dm).await.unwrap().is_empty());
+    }
 }

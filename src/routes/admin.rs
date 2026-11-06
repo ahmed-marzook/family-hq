@@ -759,6 +759,81 @@ mod tests {
         }
     }
 
+    /// The same two rules, for every GET route the API has. Anything
+    /// private typed in Bilal's DM has "secret" in it, so one search finds
+    /// it anywhere in any answer.
+    ///
+    /// Adding a GET route to `routes::api::router`? Add it to `paths` here
+    /// too, so it gets checked.
+    #[tokio::test]
+    async fn no_get_route_leaks_dm_contents_or_coordinates() {
+        let pool = test_pool().await;
+        let (bilal, group, dm) = seed(&pool).await;
+        {
+            let mut conn = pool.acquire().await.unwrap();
+            // The group's own town, with exact coordinates of its own.
+            let town = Coordinates {
+                latitude: 52.345678,
+                longitude: -0.987654,
+            };
+            stored::set_location(&mut conn, group, "Bedford", "GB", town, "Europe/London")
+                .await
+                .unwrap();
+            // A `+word` the bot didn't understand, typed in the DM. Its
+            // first word is all the log keeps, but that word is private too.
+            let unknown = crate::metrics::unknown("+secretdmword friday").unwrap();
+            crate::repo::metrics::record(
+                &mut conn,
+                &crate::repo::metrics::Logged {
+                    event: &unknown,
+                    chat_id: dm,
+                    user_id: bilal,
+                    is_group: false,
+                    ok: false,
+                    duration_ms: 1,
+                    at: Utc::now(),
+                },
+            )
+            .await
+            .unwrap();
+        }
+        let server = start_server_with(pool).await;
+
+        let paths = [
+            "/api/health".to_string(),
+            "/api/users".to_string(),
+            format!("/api/users/{bilal}"),
+            "/api/groups".to_string(),
+            format!("/api/groups/{group}"),
+            format!("/api/chats/{group}/todos"),
+            format!("/api/chats/{group}/shop"),
+            format!("/api/chats/{dm}/todos"),
+            format!("/api/chats/{dm}/shop"),
+            "/api/metrics".to_string(),
+            "/api/metrics?days=7".to_string(),
+            format!("/api/metrics?user={bilal}"),
+            format!("/api/metrics?chat={dm}"),
+            format!("/api/metrics?chat={group}"),
+            "/api/prayer-methods".to_string(),
+            format!("/api/users/{bilal}/prayers"),
+            format!("/api/users/{bilal}/prayers?month=2026-11"),
+        ];
+        for path in paths {
+            let (status, body) = get(format!("{server}{path}")).await;
+            // A 404 is fine (the DM's lists), but nothing else may fail,
+            // or a broken route would pass by sending nothing.
+            assert!(
+                status == StatusCode::OK || status == StatusCode::NOT_FOUND,
+                "{path}: {status}"
+            );
+            let text = body.to_lowercase();
+            assert!(!text.contains("secret"), "{path}: {body}");
+            for exact in ["51.12", "0.65", "52.34", "0.98", "latitude", "longitude"] {
+                assert!(!text.contains(exact), "{path} has {exact}: {body}");
+            }
+        }
+    }
+
     #[tokio::test]
     async fn not_a_number_is_a_400() {
         let server = start_server_with(test_pool().await).await;
