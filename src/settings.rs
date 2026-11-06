@@ -148,6 +148,27 @@ impl Overrides {
     }
 }
 
+/// The one rule for "which settings apply here": the person's own
+/// settings (`personal`, from their DM with the bot) on top of the chat's,
+/// on top of the server `defaults`. With no person (a whole group's
+/// reminder or summary), just the chat's on top of the defaults. In a DM
+/// the person's own settings *are* the chat's, so they may be passed as
+/// both: putting the same overrides on twice changes nothing.
+///
+/// Each layer only replaces what it set, field by field (see
+/// `Overrides::apply`; city, country and coordinates count as one). So
+/// someone who set only a timezone keeps the group's town: in a Colombo
+/// group, a person on New York time gets Colombo's prayer times shown on
+/// New York's clock. `/settings city` sets the timezone with the town, so
+/// this only happens when a timezone is set on its own.
+pub fn layered(defaults: &Settings, chat: &Overrides, personal: Option<&Overrides>) -> Settings {
+    let here = chat.apply(defaults);
+    match personal {
+        Some(own) => own.apply(&here),
+        None => here,
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -240,5 +261,99 @@ pub(crate) mod tests {
             NaiveDate::from_ymd_opt(2026, 7, 1).unwrap()
         );
         assert_eq!(new_york.clock(now), "19:30");
+    }
+
+    // ---- layered ----
+
+    /// A group in Colombo: town, coordinates and timezone.
+    fn colombo() -> Overrides {
+        Overrides {
+            timezone: Some("Asia/Colombo".to_string()),
+            city: Some("Colombo".to_string()),
+            country: Some("LK".to_string()),
+            latitude: Some(6.9271),
+            longitude: Some(79.8612),
+            ..Overrides::default()
+        }
+    }
+
+    /// Someone who set only a timezone.
+    fn new_york_time() -> Overrides {
+        Overrides {
+            timezone: Some("America/New_York".to_string()),
+            ..Overrides::default()
+        }
+    }
+
+    #[test]
+    fn layered_with_nothing_set_is_the_defaults() {
+        let none = Overrides::default();
+        assert_eq!(layered(&defaults(), &none, None), defaults());
+        assert_eq!(layered(&defaults(), &none, Some(&none)), defaults());
+    }
+
+    #[test]
+    fn layered_without_a_person_is_the_chats() {
+        let group = layered(&defaults(), &colombo(), None);
+        assert_eq!(group, colombo().apply(&defaults()));
+        assert_eq!(group.timezone, chrono_tz::Asia::Colombo);
+        assert_eq!(group.prayer_method, 3, "not set, so the default's");
+    }
+
+    #[test]
+    fn layered_puts_the_persons_own_over_the_chats() {
+        let own = Overrides {
+            prayer_method: Some(2),
+            ..new_york_time()
+        };
+        let settings = layered(&defaults(), &colombo(), Some(&own));
+        assert_eq!(settings.timezone, chrono_tz::America::New_York);
+        assert_eq!(settings.prayer_method, 2);
+        // Not set by them: the group's, then the default's.
+        assert_eq!(settings.city, "Colombo");
+        assert_eq!(settings.prayer_ending_minutes, 20);
+    }
+
+    #[test]
+    fn layered_timezone_alone_keeps_the_groups_town() {
+        // Documented behaviour (see `layered`): Colombo's town and
+        // coordinates, on New York's clock.
+        let settings = layered(&defaults(), &colombo(), Some(&new_york_time()));
+        assert_eq!(settings.timezone, chrono_tz::America::New_York);
+        assert_eq!(
+            (settings.city.as_str(), settings.country.as_str()),
+            ("Colombo", "LK")
+        );
+        assert_eq!(settings.coordinates.map(|c| c.latitude), Some(6.9271));
+    }
+
+    #[test]
+    fn layered_own_town_replaces_the_groups_town_and_coordinates() {
+        let leicester = Overrides {
+            city: Some("Leicester".to_string()),
+            country: Some("GB".to_string()),
+            ..Overrides::default()
+        };
+        let settings = layered(&defaults(), &colombo(), Some(&leicester));
+        assert_eq!(settings.city, "Leicester");
+        // No coordinates of its own: looked up later, never Colombo's.
+        assert_eq!(settings.coordinates, None);
+        assert_eq!(
+            settings.timezone,
+            chrono_tz::Asia::Colombo,
+            "not set by them"
+        );
+    }
+
+    #[test]
+    fn layered_in_a_dm_the_same_settings_twice_change_nothing() {
+        let dm = Overrides {
+            prayer_school: Some(HANAFI.into()),
+            ..colombo()
+        };
+        assert_eq!(
+            layered(&defaults(), &dm, Some(&dm)),
+            layered(&defaults(), &dm, None)
+        );
     }
 }

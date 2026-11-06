@@ -5,7 +5,7 @@
 use sqlx::SqliteConnection;
 
 use crate::geo::Coordinates;
-use crate::settings::Overrides;
+use crate::settings::{self, Overrides, Settings};
 
 /// A chat's stored settings.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -124,6 +124,53 @@ pub async fn personal(
         }
         None => Ok(None),
     }
+}
+
+/// The settings that apply in chat `chat_id`, for `person` if there is one:
+/// `settings::layered` with what's stored. `None` for things that belong to
+/// the whole chat (a group's reminder or summary). In a DM, pass its owner
+/// (or `None`: the result is the same).
+pub async fn effective(
+    conn: &mut SqliteConnection,
+    defaults: &Settings,
+    chat_id: i64,
+    person: Option<i64>,
+) -> Result<Settings, sqlx::Error> {
+    let chat = get(&mut *conn, chat_id).await?;
+    let own = match person {
+        Some(user_id) => personal(conn, user_id).await?,
+        None => None,
+    };
+    // `.as_ref().map(...)` borrows the overrides inside the `Option`
+    // instead of moving them out.
+    Ok(settings::layered(
+        defaults,
+        &chat.overrides,
+        own.as_ref().map(|own| &own.overrides),
+    ))
+}
+
+/// The one group this person is in that the bot is still in, for the
+/// admin pages, which have a person but no chat. `None` if they're in no
+/// such group, or in several (then no one group's settings are theirs).
+pub async fn home_chat(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+) -> Result<Option<i64>, sqlx::Error> {
+    // `LIMIT 2` is enough to tell "exactly one" from "several".
+    let groups = sqlx::query_scalar!(
+        "SELECT c.id FROM chat_members m
+         JOIN chats c ON c.id = m.chat_id
+         WHERE m.user_id = ? AND c.kind = 'group' AND c.left_at IS NULL
+         ORDER BY c.id LIMIT 2",
+        user_id
+    )
+    .fetch_all(conn)
+    .await?;
+    Ok(match groups.as_slice() {
+        [one] => Some(*one),
+        _ => None,
+    })
 }
 
 // The setters below all "upsert": `INSERT ... ON CONFLICT (chat_id) DO
@@ -362,5 +409,97 @@ mod tests {
         assert_eq!(own.overrides.city.as_deref(), Some("Leicester"));
         assert_eq!(members[1].display_name, "Khadija");
         assert_eq!(members[1].settings, None);
+    }
+
+    #[tokio::test]
+    async fn effective_puts_the_persons_own_over_the_chats() {
+        use crate::settings::tests::defaults;
+        use crate::testkit::{seed_family, utc};
+
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let family = seed_family(&mut conn, utc("2026-11-01T12:00:00Z")).await;
+        set_location(
+            &mut conn,
+            family.group,
+            "Paris",
+            "FR",
+            paris(),
+            "Europe/Paris",
+        )
+        .await
+        .unwrap();
+        set_timezone(&mut conn, family.dm, "America/New_York")
+            .await
+            .unwrap();
+        let (group, dm) = (family.group, family.dm);
+        let bilal = Some(family.bilal.id);
+        let tz = |s: Settings| s.timezone.name().to_string();
+
+        let whole_group = effective(&mut conn, &defaults(), group, None)
+            .await
+            .unwrap();
+        assert_eq!(tz(whole_group), "Europe/Paris");
+        let his = effective(&mut conn, &defaults(), group, bilal)
+            .await
+            .unwrap();
+        assert_eq!(tz(his.clone()), "America/New_York");
+        assert_eq!(
+            his.city, "Paris",
+            "the group's town: he only set a timezone"
+        );
+        let hers = effective(&mut conn, &defaults(), group, Some(family.khadija.id))
+            .await
+            .unwrap();
+        assert_eq!(tz(hers), "Europe/Paris", "no DM: the group's");
+
+        // In a DM, with or without its owner, the DM's settings.
+        let in_dm = effective(&mut conn, &defaults(), dm, bilal).await.unwrap();
+        assert_eq!(
+            in_dm,
+            effective(&mut conn, &defaults(), dm, None).await.unwrap()
+        );
+        assert_eq!(
+            (tz(in_dm.clone()), in_dm.city.as_str()),
+            ("America/New_York".to_string(), "Milton Keynes")
+        );
+    }
+
+    #[tokio::test]
+    async fn home_chat_is_the_one_group_the_bot_is_still_in() {
+        use crate::testkit::{seed_family, utc};
+
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let now = utc("2026-11-01T12:00:00Z");
+        let family = seed_family(&mut conn, now).await;
+        let bilal = family.bilal.id;
+        // His DM doesn't count: it isn't a group.
+        assert_eq!(
+            home_chat(&mut conn, bilal).await.unwrap(),
+            Some(family.group)
+        );
+
+        // A second group: no single one.
+        let other = chats::find_or_create(&mut conn, "120363000000000002@g.us", None, now)
+            .await
+            .unwrap();
+        chats::add_member(&mut conn, other, bilal, now)
+            .await
+            .unwrap();
+        assert_eq!(home_chat(&mut conn, bilal).await.unwrap(), None);
+
+        // The bot has left the second one: back to the first.
+        crate::repo::cleanup::set_left(&mut conn, other, Some(now))
+            .await
+            .unwrap();
+        assert_eq!(
+            home_chat(&mut conn, bilal).await.unwrap(),
+            Some(family.group)
+        );
+
+        // Someone in no group at all.
+        let alone = register(&mut conn, "Yusuf", "447700900003", now).await;
+        assert_eq!(home_chat(&mut conn, alone.id).await.unwrap(), None);
     }
 }
