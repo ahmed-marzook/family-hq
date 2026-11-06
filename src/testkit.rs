@@ -19,6 +19,7 @@ use sqlx::SqliteConnection;
 
 use crate::AppState;
 use crate::person::Person;
+use crate::repo::chats;
 use crate::repo::users::{self, User};
 
 // ---- Times and dates ------------------------------------------------------
@@ -65,6 +66,42 @@ pub(crate) async fn register(
         .await
         .unwrap()
         .unwrap()
+}
+
+/// The group chat `seed_family` makes.
+pub(crate) const GROUP: &str = "120363000000000001@g.us";
+
+/// What `seed_family` made, by name rather than as a tuple, so a test can
+/// take only what it needs (`family.dm`) without counting positions.
+pub(crate) struct Family {
+    pub(crate) bilal: User,
+    pub(crate) khadija: User,
+    /// The id of the group chat `GROUP`, called "Family".
+    pub(crate) group: i64,
+    /// The id of Bilal's DM with the bot. Khadija has none.
+    pub(crate) dm: i64,
+}
+
+/// Bilal (`447700900001`) and Khadija (`447700900002`), both in a group
+/// called "Family", and Bilal's DM. Nothing else: tests that need lists,
+/// settings or a location add them on top.
+pub(crate) async fn seed_family(conn: &mut SqliteConnection, now: DateTime<Utc>) -> Family {
+    let bilal = register(conn, "Bilal", "447700900001", now).await;
+    let khadija = register(conn, "Khadija", "447700900002", now).await;
+    let group = chats::find_or_create(conn, GROUP, None, now).await.unwrap();
+    chats::set_group_name(conn, GROUP, "Family").await.unwrap();
+    for user in [bilal.id, khadija.id] {
+        chats::add_member(conn, group, user, now).await.unwrap();
+    }
+    let dm = chats::find_or_create(conn, &bilal.wa_jid, Some(bilal.id), now)
+        .await
+        .unwrap();
+    Family {
+        bilal,
+        khadija,
+        group,
+        dm,
+    }
 }
 
 // ---- The app on a free port ----------------------------------------------

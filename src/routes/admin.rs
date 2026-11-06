@@ -493,10 +493,9 @@ mod tests {
     use super::*;
     use crate::db::test_pool;
     use crate::geo::Coordinates;
-    use crate::person::Person;
     use crate::settings::Overrides;
     use crate::settings::tests::defaults;
-    use crate::testkit::start_server_with;
+    use crate::testkit::{Family, seed_family, start_server_with};
 
     #[test]
     fn settings_show_defaults_then_own_choices() {
@@ -584,34 +583,14 @@ mod tests {
     async fn seed(pool: &sqlx::SqlitePool) -> (i64, i64, i64) {
         let mut conn = pool.acquire().await.unwrap();
         let now = Utc::now();
-        let mut add_person = async |name: &str, phone: &str| {
-            let person = Person {
-                name: name.to_string(),
-                jid: format!("{phone}@s.whatsapp.net"),
-                lid: None,
-            };
-            crate::repo::users::find_or_register(&mut conn, &person, now)
-                .await
-                .unwrap()
-                .unwrap()
-        };
-        let bilal = add_person("Bilal", "447700900001").await;
-        let khadija = add_person("Khadija", "447700900002").await;
-
-        let group = chats::find_or_create(&mut conn, "120363000000000001@g.us", None, now)
-            .await
-            .unwrap();
-        chats::set_group_name(&mut conn, "120363000000000001@g.us", "Family")
-            .await
-            .unwrap();
-        for user in [bilal.id, khadija.id] {
-            chats::add_member(&mut conn, group, user, now)
-                .await
-                .unwrap();
-        }
-        let dm = chats::find_or_create(&mut conn, &bilal.wa_jid, Some(bilal.id), now)
-            .await
-            .unwrap();
+        // Destructuring: takes the `Family` apart into four local variables
+        // named after its fields.
+        let Family {
+            bilal,
+            khadija,
+            group,
+            dm,
+        } = seed_family(&mut conn, now).await;
 
         let tap = todos::add(
             &mut conn,

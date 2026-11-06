@@ -267,9 +267,8 @@ mod tests {
     use serde_json::{Value, json};
 
     use crate::db::test_pool;
-    use crate::person::Person;
-    use crate::repo::{chats, settings as stored, todo_reminders, users};
-    use crate::testkit::{fake_geocoder, start_server_with_geocoder};
+    use crate::repo::{chats, settings as stored, todo_reminders};
+    use crate::testkit::{fake_geocoder, seed_family, start_server_with_geocoder};
 
     async fn send(method: reqwest::Method, url: String, body: Value) -> (StatusCode, Value) {
         let response = reqwest::Client::new()
@@ -292,37 +291,12 @@ mod tests {
         .await
     }
 
-    /// Bilal (who has a DM) and Khadija (who doesn't), both in a group.
-    /// Returns (Bilal, Khadija, the group, Bilal's DM).
+    /// Bilal (who has a DM) and Khadija (who doesn't), both in a group
+    /// (`testkit::seed_family`). Returns (Bilal, Khadija, the group, Bilal's DM).
     async fn seed(pool: &sqlx::SqlitePool) -> (i64, i64, i64, i64) {
         let mut conn = pool.acquire().await.unwrap();
-        let now = chrono::Utc::now();
-        let mut add = async |name: &str, phone: &str| {
-            let person = Person {
-                name: name.to_string(),
-                jid: format!("{phone}@s.whatsapp.net"),
-                lid: None,
-            };
-            users::find_or_register(&mut conn, &person, now)
-                .await
-                .unwrap()
-                .unwrap()
-                .id
-        };
-        let bilal = add("Bilal", "447700900001").await;
-        let khadija = add("Khadija", "447700900002").await;
-        let group = chats::find_or_create(&mut conn, "120363000000000001@g.us", None, now)
-            .await
-            .unwrap();
-        for user in [bilal, khadija] {
-            chats::add_member(&mut conn, group, user, now)
-                .await
-                .unwrap();
-        }
-        let dm = chats::find_or_create(&mut conn, "447700900001@s.whatsapp.net", Some(bilal), now)
-            .await
-            .unwrap();
-        (bilal, khadija, group, dm)
+        let family = seed_family(&mut conn, chrono::Utc::now()).await;
+        (family.bilal.id, family.khadija.id, family.group, family.dm)
     }
 
     #[tokio::test]

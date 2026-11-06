@@ -219,11 +219,8 @@ mod tests {
 
     use crate::db::test_pool;
     use crate::geo::Coordinates;
-    use crate::person::Person;
-    use crate::repo::{chats, settings as stored, users};
-    use crate::testkit::{fake_geocoder, start_server_with_geocoder};
-
-    const GROUP: &str = "120363000000000001@g.us";
+    use crate::repo::settings as stored;
+    use crate::testkit::{fake_geocoder, seed_family, start_server_with_geocoder};
 
     async fn send(
         method: reqwest::Method,
@@ -249,35 +246,8 @@ mod tests {
     /// Returns (the group, Bilal's DM).
     async fn seed(pool: &sqlx::SqlitePool) -> (i64, i64) {
         let mut conn = pool.acquire().await.unwrap();
-        let now = chrono::Utc::now();
-        let mut add = async |name: &str, phone: &str| {
-            let person = Person {
-                name: name.to_string(),
-                jid: format!("{phone}@s.whatsapp.net"),
-                lid: None,
-            };
-            users::find_or_register(&mut conn, &person, now)
-                .await
-                .unwrap()
-                .unwrap()
-                .id
-        };
-        let bilal = add("Bilal", "447700900001").await;
-        let khadija = add("Khadija", "447700900002").await;
-        let group = chats::find_or_create(&mut conn, GROUP, None, now)
-            .await
-            .unwrap();
-        chats::set_group_name(&mut conn, GROUP, "Family")
-            .await
-            .unwrap();
-        for user in [bilal, khadija] {
-            chats::add_member(&mut conn, group, user, now)
-                .await
-                .unwrap();
-        }
-        let dm = chats::find_or_create(&mut conn, "447700900001@s.whatsapp.net", Some(bilal), now)
-            .await
-            .unwrap();
+        let family = seed_family(&mut conn, chrono::Utc::now()).await;
+        let (group, dm) = (family.group, family.dm);
         let home = Coordinates {
             latitude: 51.123456,
             longitude: -0.654321,

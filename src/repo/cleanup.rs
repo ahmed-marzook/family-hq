@@ -304,12 +304,10 @@ mod tests {
     use crate::db::test_pool;
     use crate::geo::Coordinates;
     use crate::metrics::{Event, Kind};
-    use crate::person::Person as Sender;
     use crate::points::{Award, Reason, Source};
     use crate::repo::metrics::{Logged, record};
     use crate::repo::{chats, points, prayers, settings, shop, todo_reminders, todos, users};
-
-    const GROUP: &str = "120363000000000001@g.us";
+    use crate::testkit::seed_family;
 
     async fn count(conn: &mut SqliteConnection, sql: &'static str, id: i64) -> i64 {
         sqlx::query_scalar(sql)
@@ -322,27 +320,11 @@ mod tests {
     /// Bilal with a full DM (lists, settings, reminders, log) and a group
     /// with Khadija. Returns (Bilal, Khadija, group, Bilal's DM).
     async fn seed(conn: &mut SqliteConnection, now: DateTime<Utc>) -> (i64, i64, i64, i64) {
-        let add = async |conn: &mut SqliteConnection, name: &str, phone: &str| {
-            let sender = Sender {
-                name: name.to_string(),
-                jid: format!("{phone}@s.whatsapp.net"),
-                lid: None,
-            };
-            users::find_or_register(conn, &sender, now)
-                .await
-                .unwrap()
-                .unwrap()
-                .id
-        };
-        let bilal = add(conn, "Bilal", "447700900001").await;
-        let khadija = add(conn, "Khadija", "447700900002").await;
-        let group = chats::find_or_create(conn, GROUP, None, now).await.unwrap();
-        let dm = chats::find_or_create(conn, "447700900001@s.whatsapp.net", Some(bilal), now)
-            .await
-            .unwrap();
-        for (chat, user) in [(group, bilal), (group, khadija), (dm, bilal)] {
-            chats::add_member(conn, chat, user, now).await.unwrap();
-        }
+        let family = seed_family(conn, now).await;
+        let (bilal, khadija) = (family.bilal.id, family.khadija.id);
+        let (group, dm) = (family.group, family.dm);
+        // Both are in the group already; Bilal is a member of his DM too.
+        chats::add_member(conn, dm, bilal, now).await.unwrap();
 
         // Bilal's private things.
         todos::add(
