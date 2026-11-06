@@ -55,9 +55,24 @@ pub enum Event {
     Unticked,
     /// The person says how it went (`+prayed asr on time` / `late`),
     /// whatever was logged before.
-    Corrected { on_time: bool },
+    Corrected(Correction),
     /// The admin dashboard sets it to exactly this, or (`None`) clears it.
     Set(Option<Status>),
+}
+
+/// How someone says a prayer went, when they correct it themselves.
+///
+/// Its own two-value type rather than a `bool` (`on_time: true` reads
+/// fine, but `correct(.., false, ..)` at the call doesn't say what `false`
+/// means), and rather than `Status`, which has a third value, `Missed`,
+/// that nobody can say about a prayer they prayed. With this type, the
+/// compiler won't let anyone pass it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Correction {
+    /// Prayed while its time lasted (✅), just not ticked in time.
+    OnTime,
+    /// Prayed after its time ended: made up (🕐).
+    Late,
 }
 
 /// What to do to the stored entry.
@@ -110,10 +125,10 @@ pub fn next(current: Option<Logged>, event: Event, now: DateTime<Utc>) -> Option
         (Event::Unticked, Some(Status::Prayed)) => Write::Delete,
         (Event::Unticked, None | Some(Status::Missed)) => return None,
 
-        (Event::Corrected { on_time: true } | Event::Set(Some(Status::Prayed)), _) => {
+        (Event::Corrected(Correction::OnTime) | Event::Set(Some(Status::Prayed)), _) => {
             Write::Store(Logged::prayed(prayed_at))
         }
-        (Event::Corrected { on_time: false } | Event::Set(Some(Status::Late)), _) => {
+        (Event::Corrected(Correction::Late) | Event::Set(Some(Status::Late)), _) => {
             Write::Store(Logged::made_up(prayed_at, missed_at))
         }
         (Event::Set(Some(Status::Missed)), _) => Write::Store(Logged::missed(missed_at)),
@@ -228,18 +243,10 @@ pub async fn correct(
     user_id: i64,
     date: NaiveDate,
     prayer: Prayer,
-    on_time: bool,
+    said: Correction,
     now: DateTime<Utc>,
 ) -> Result<(), sqlx::Error> {
-    apply(
-        conn,
-        user_id,
-        date,
-        prayer,
-        Event::Corrected { on_time },
-        now,
-    )
-    .await?;
+    apply(conn, user_id, date, prayer, Event::Corrected(said), now).await?;
     Ok(())
 }
 
@@ -395,17 +402,24 @@ mod tests {
         );
 
         // "I prayed it on time, I just forgot to tick it": ❌ → ✅.
-        correct(&mut conn, user, date(), Prayer::Asr, true, now)
-            .await
-            .unwrap();
+        correct(
+            &mut conn,
+            user,
+            date(),
+            Prayer::Asr,
+            Correction::OnTime,
+            now,
+        )
+        .await
+        .unwrap();
         assert_eq!(log(&mut conn).await, [asr(Status::Prayed)]);
         // And the other way: ✅ → 🕐.
-        correct(&mut conn, user, date(), Prayer::Asr, false, now)
+        correct(&mut conn, user, date(), Prayer::Asr, Correction::Late, now)
             .await
             .unwrap();
         assert_eq!(log(&mut conn).await, [asr(Status::Late)]);
         // With no row yet, either works too.
-        correct(&mut conn, user, date(), Prayer::Isha, false, now)
+        correct(&mut conn, user, date(), Prayer::Isha, Correction::Late, now)
             .await
             .unwrap();
         untick(&mut conn, user, date(), Prayer::Asr, now)
@@ -490,7 +504,7 @@ mod tests {
         let missed = row(Status::Missed, None, Some(m0));
         let prayed = row(Status::Prayed, Some(t0), None);
         let late = row(Status::Late, Some(t0), Some(m0));
-        let (on_time, made_up) = (Corrected { on_time: true }, Corrected { on_time: false });
+        let (on_time, made_up) = (Corrected(Correction::OnTime), Corrected(Correction::Late));
 
         let rows: [(Option<Logged>, Event, Option<Logged>); 36] = [
             // Nothing logged yet.
@@ -584,7 +598,10 @@ mod tests {
         let now = Utc.with_ymd_and_hms(2026, 10, 27, 20, 0, 0).unwrap();
         let prayed = Some(Logged::prayed(now));
         assert_eq!(next(prayed, Event::Ticked, now), None);
-        assert_eq!(next(prayed, Event::Corrected { on_time: true }, now), None);
+        assert_eq!(
+            next(prayed, Event::Corrected(Correction::OnTime), now),
+            None
+        );
         assert_eq!(next(None, Event::Unticked, now), None);
         assert_eq!(next(None, Event::Set(None), now), None);
         assert_eq!(

@@ -576,10 +576,12 @@ mod tests {
             Happens::Tick => {
                 checkin::tick(conn, user, day, asr, now).await.unwrap();
             }
-            Happens::OnTime => checkin::correct(conn, user, day, asr, true, now)
-                .await
-                .unwrap(),
-            Happens::Late => checkin::correct(conn, user, day, asr, false, now)
+            Happens::OnTime => {
+                checkin::correct(conn, user, day, asr, checkin::Correction::OnTime, now)
+                    .await
+                    .unwrap()
+            }
+            Happens::Late => checkin::correct(conn, user, day, asr, checkin::Correction::Late, now)
                 .await
                 .unwrap(),
             Happens::Untick => {

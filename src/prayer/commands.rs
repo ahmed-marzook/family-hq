@@ -16,8 +16,9 @@ use crate::bot::{Context, chat_settings, my_settings};
 use crate::error::AppError;
 use crate::moon::Moon;
 use crate::parser::{Checkin, Timing};
+use crate::prayer::checkin::{self, Correction};
 use crate::prayer::stats::{self, Status, Summary};
-use crate::prayer::{self, DayTimes, Prayer, checkin};
+use crate::prayer::{self, DayTimes, Prayer};
 use crate::repo::prayers;
 use crate::repo::reports as stored_reports;
 use crate::repo::settings as stored;
@@ -257,10 +258,10 @@ async fn prayed(
                 checkin::tick(conn, user, date, prayer, ctx.now).await?;
             }
             Timing::OnTime => {
-                checkin::correct(conn, user, date, prayer, true, ctx.now).await?;
+                checkin::correct(conn, user, date, prayer, Correction::OnTime, ctx.now).await?;
             }
             Timing::Late => {
-                checkin::correct(conn, user, date, prayer, false, ctx.now).await?;
+                checkin::correct(conn, user, date, prayer, Correction::Late, ctx.now).await?;
             }
         }
     }
