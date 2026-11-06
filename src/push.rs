@@ -148,7 +148,7 @@ pub struct Ntfy {
 impl Ntfy {
     pub fn new(config: PushConfig) -> Self {
         Ntfy {
-            http: reqwest::Client::new(),
+            http: crate::http::client(),
             config,
         }
     }

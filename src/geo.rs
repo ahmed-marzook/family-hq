@@ -49,11 +49,9 @@ impl Default for Geo {
 impl Geo {
     pub fn new() -> Self {
         Geo {
-            // Nominatim refuses requests without a real User-Agent.
-            http: reqwest::Client::builder()
-                .user_agent("family-hq (WhatsApp family bot; github.com/ahmed-marzook/family-hq)")
-                .build()
-                .expect("a client with only a user agent always builds"),
+            // Nominatim refuses requests without a real User-Agent; the
+            // shared client sends one.
+            http: crate::http::client(),
             nominatim_url: "https://nominatim.openstreetmap.org".to_string(),
             geocoding_url: "https://geocoding-api.open-meteo.com/v1".to_string(),
             coordinates: Mutex::new(HashMap::new()),

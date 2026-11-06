@@ -129,7 +129,7 @@ impl Default for Weather {
 impl Weather {
     pub fn new() -> Self {
         Weather {
-            http: reqwest::Client::new(),
+            http: crate::http::client(),
             base_url: "https://api.open-meteo.com/v1".to_string(),
             forecasts: TtlCache::new(FORECAST_FOR),
             moon_times: TtlCache::new(MOON_TIMES_FOR),

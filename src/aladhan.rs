@@ -32,7 +32,7 @@ pub struct PrayerTimes {
 impl PrayerTimes {
     pub fn new(defaults: Settings) -> Self {
         PrayerTimes {
-            http: reqwest::Client::new(),
+            http: crate::http::client(),
             base_url: "https://api.aladhan.com/v1".to_string(),
             defaults,
             cache: Mutex::new(HashMap::new()),
