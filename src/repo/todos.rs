@@ -165,7 +165,7 @@ pub async fn list_all(
             closed: r.closed_by.zip(r.closed_at).map(|(by, at)| Closed {
                 by,
                 at,
-                skipped: r.status == SKIPPED,
+                skipped: r.status.parse() == Ok(TodoStatus::Skipped),
             }),
             due: r.due_date,
             // The schema only allows the three words `Priority::parse` knows.
@@ -202,10 +202,6 @@ pub fn sort_for_list(todos: &mut [ListedTodo]) {
         (todo.closed.is_some(), open_key)
     });
 }
-
-/// `todos.status` values (the schema's CHECK allows these and 'pending').
-const COMPLETED: &str = "completed";
-const SKIPPED: &str = "skipped";
 
 /// Where a todo is, as `todos.status` stores it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -338,7 +334,7 @@ pub async fn complete(
     by: i64,
     now: DateTime<Utc>,
 ) -> Result<Option<ClosedTodo>, sqlx::Error> {
-    close(conn, id, chat_id, by, now, COMPLETED).await
+    close(conn, id, chat_id, by, now, TodoStatus::Completed).await
 }
 
 /// Skips a todo: closes it as "won't be done", keeping it on record.
@@ -350,18 +346,20 @@ pub async fn skip(
     by: i64,
     now: DateTime<Utc>,
 ) -> Result<Option<ClosedTodo>, sqlx::Error> {
-    close(conn, id, chat_id, by, now, SKIPPED).await
+    close(conn, id, chat_id, by, now, TodoStatus::Skipped).await
 }
 
-/// Closes a pending todo with `status` (`COMPLETED` or `SKIPPED`).
+/// Closes a pending todo with `status` (`Completed` or `Skipped`; the
+/// schema's CHECK refuses a closed todo that's `Pending`).
 async fn close(
     conn: &mut SqliteConnection,
     id: i64,
     chat_id: i64,
     by: i64,
     now: DateTime<Utc>,
-    status: &str,
+    status: TodoStatus,
 ) -> Result<Option<ClosedTodo>, sqlx::Error> {
+    let status = status.as_db_str();
     // One statement checks and changes, so there's no gap between "is it
     // still pending?" and "close it" for someone else to slip into.
     let row = sqlx::query!(
