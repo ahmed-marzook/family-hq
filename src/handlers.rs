@@ -3523,4 +3523,71 @@ Already on the list: milk, Eggs"
         };
         assert!(text.contains("3. Asr 19:16–21:44"), "{text}");
     }
+
+    // ---- outside services that are down ----
+
+    /// Settings with no saved coordinates, so `/weather` has to look the
+    /// town up by name.
+    fn by_name() -> Settings {
+        Settings {
+            coordinates: None,
+            ..defaults()
+        }
+    }
+
+    /// The reply `command` gives, as text. Panics on anything else, so a
+    /// test fails loudly if the command errors instead of answering.
+    async fn reply_to(
+        conn: &mut SqliteConnection,
+        ctx: &Context,
+        apis: &Apis,
+        command: BotCommand,
+    ) -> String {
+        match run_command(conn, ctx, apis, command).await {
+            Ok(Outcome::Reply(text)) => text,
+            other => panic!("expected a reply, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn prayers_reply_when_the_prayer_times_service_is_down() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let ctx = setup(&mut conn).await;
+        // Nothing cached, and AlAdhan answers 500 to everything.
+        let down = crate::testkit::failing_service().await;
+        let apis = Apis::new(PrayerTimes::new(defaults()).with_base_url(&down));
+
+        let text = reply_to(&mut conn, &ctx, &apis, BotCommand::Prayers).await;
+        assert!(
+            text.contains("prayer-times service isn't answering"),
+            "{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn weather_says_service_down_when_the_geocoder_fails() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let ctx = setup(&mut conn).await;
+        let mut apis = Apis::new(PrayerTimes::new(by_name()));
+        apis.geo = crate::geo::Geo::with_geocoding_url(&crate::testkit::failing_service().await);
+
+        let text = reply_to(&mut conn, &ctx, &apis, BotCommand::Weather(When::Now)).await;
+        assert!(text.contains("isn't answering"), "{text}");
+        assert!(!text.contains("couldn't find"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn weather_says_not_found_for_an_unknown_town() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let ctx = setup(&mut conn).await;
+        // The fake geocoder only knows Leicester, not Milton Keynes.
+        let mut apis = Apis::new(PrayerTimes::new(by_name()));
+        apis.geo = crate::geo::Geo::with_geocoding_url(&crate::testkit::fake_geocoder().await);
+
+        let text = reply_to(&mut conn, &ctx, &apis, BotCommand::Weather(When::Now)).await;
+        assert!(text.contains("couldn't find Milton Keynes, GB"), "{text}");
+    }
 }

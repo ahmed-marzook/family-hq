@@ -68,6 +68,17 @@ impl PrayerTimes {
         }
     }
 
+    /// For tests: the same source, but asking a fake AlAdhan at `url`.
+    /// Takes `self` and gives it back changed, so it chains on to the other
+    /// constructors: `PrayerTimes::new(..).with_base_url(..)`.
+    #[cfg(test)]
+    pub(crate) fn with_base_url(self, url: &str) -> Self {
+        PrayerTimes {
+            base_url: url.to_string(),
+            ..self
+        }
+    }
+
     /// The times at `location` for `date` (a day in the location's
     /// timezone), fetched only if they aren't cached yet.
     pub async fn for_date(

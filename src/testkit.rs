@@ -174,7 +174,7 @@ async fn serve_for_test(pool: sqlx::SqlitePool, geocoding_url: Option<&str>) -> 
 }
 
 /// Serves any router on a free port in the background; returns its address.
-async fn serve(app: Router) -> String {
+pub(crate) async fn serve(app: Router) -> String {
     // Port 0 asks the operating system for any free port.
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
@@ -326,4 +326,13 @@ pub(crate) async fn fake_geocoder() -> String {
         }
     }
     serve(Router::new().route("/search", get(search))).await
+}
+
+/// A fake outside service that's down: every path answers 500. For tests
+/// of what the bot says when AlAdhan, a geocoder or the weather can't help.
+/// Returns its base URL.
+pub(crate) async fn failing_service() -> String {
+    // `fallback` catches every path the router has no route for, which
+    // here is all of them.
+    serve(Router::new().fallback(|| async { StatusCode::INTERNAL_SERVER_ERROR })).await
 }

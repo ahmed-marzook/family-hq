@@ -788,4 +788,44 @@ mod tests {
         let body = r#"{"event":"group.participants","payload":{"anything":1}}"#;
         assert!(serde_json::from_str::<WebhookEvent>(body).is_err());
     }
+
+    /// Posts a text message from Bilal in a group to the real app,
+    /// signed with `test_state`'s secret; returns the status.
+    async fn post_text(server: &str, id: &str, text: &str) -> reqwest::StatusCode {
+        let body = serde_json::json!({
+            "event": "message",
+            "payload": {
+                "id": id, "chat_id": crate::testkit::GROUP,
+                "from": "447700900001@s.whatsapp.net", "from_name": "Bilal",
+                "body": text, "is_from_me": false, "timestamp": "2026-11-02T09:00:00Z"
+            }
+        })
+        .to_string();
+        reqwest::Client::new()
+            .post(format!("{server}/webhook/whatsapp"))
+            .header("x-hub-signature-256", sign(b"test", body.as_bytes()))
+            .header("content-type", "application/json")
+            .body(body)
+            .send()
+            .await
+            .unwrap()
+            .status()
+    }
+
+    #[tokio::test]
+    async fn a_list_that_cant_be_remembered_still_answers_ok() {
+        use crate::testkit::{fake_gowa, serve_state, test_state};
+
+        let pool = crate::db::test_pool().await;
+        let gowa = fake_gowa().await;
+        let server = serve_state(test_state(pool, &gowa.url)).await;
+        assert_eq!(post_text(&server, "M1", "+shop milk").await, 200);
+        assert_eq!(post_text(&server, "M2", "/shop").await, 200);
+
+        // The fake GOWA gives every message the same ID, so saving this
+        // second list's numbers clashes with the first one's. That happens
+        // after the command is saved and the list sent, so it's only
+        // logged: a 500 would make GOWA retry, and the retry is skipped.
+        assert_eq!(post_text(&server, "M3", "/shop").await, 200);
+    }
 }
