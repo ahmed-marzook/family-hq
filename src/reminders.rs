@@ -16,8 +16,8 @@ use tracing::{error, info, warn};
 
 use crate::AppState;
 use crate::error::AppError;
+use crate::prayer::tracking;
 use crate::prayer::{self, ReminderKind};
-use crate::prayer_tracking;
 use crate::push::{self, Feature};
 use crate::repo::prayers::{self, NewReminder, ReminderChat};
 use crate::repo::settings::{self as stored, MemberSettings};
@@ -146,7 +146,7 @@ async fn check_place(
     send_due(state, chat, place, name_place, now).await?;
     // After the reminders: prayers whose time has ended are marked
     // missed, then the day's, week's and month's reports go out.
-    prayer_tracking::check(state, chat, place, now).await
+    tracking::check(state, chat, place, now).await
 }
 
 /// Splits a group's members by their own settings. Members who never set
@@ -212,7 +212,7 @@ async fn send_due(
     // Isha ends at Islamic midnight, often after midnight on the clock
     // (about 01:00 in a UK summer), so its "ending soon" can fall on the
     // next day: yesterday's times are checked too, as in
-    // `prayer_tracking::check`. Each reminder keeps the date it's *for*,
+    // `prayer::tracking::check`. Each reminder keeps the date it's *for*,
     // which is part of its claim, so yesterday's Isha and today's are
     // never mixed up. (`pred_opt` is `None` only on the first day chrono
     // knows; `flatten` skips it.)

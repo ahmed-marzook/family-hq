@@ -32,8 +32,6 @@ mod person;
 mod points;
 mod points_reports;
 mod prayer;
-mod prayer_stats;
-mod prayer_tracking;
 mod progress;
 mod push;
 pub mod reminders;

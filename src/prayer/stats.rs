@@ -4,7 +4,7 @@
 //!
 //! Pure functions only, like `prayer.rs`: someone's log comes in as a
 //! list, and the text goes out. Reading the log and sending the reports is
-//! `prayer_tracking`'s job.
+//! `prayer::tracking`'s job.
 
 use std::str::FromStr;
 

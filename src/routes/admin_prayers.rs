@@ -3,7 +3,7 @@
 //! month's calendar, and corrections to a day's prayers. Where the reports
 //! go is `admin_reports`.
 //!
-//! Dates and statuses only, worked out by `prayer_stats` exactly as the
+//! Dates and statuses only, worked out by `prayer::stats` exactly as the
 //! WhatsApp reports are; never a check-in's time.
 
 use std::sync::Arc;
@@ -18,7 +18,7 @@ use tracing::info;
 use crate::AppState;
 use crate::error::AppError;
 use crate::prayer::Prayer;
-use crate::prayer_stats::{Entry, Status, Summary};
+use crate::prayer::stats::{Entry, Status, Summary};
 use crate::repo::settings as stored;
 use crate::repo::{admin, prayers};
 use crate::reports::{Period, Span};

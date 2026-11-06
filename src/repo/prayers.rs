@@ -5,8 +5,8 @@ use chrono::{DateTime, NaiveDate, Utc};
 use sqlx::SqliteConnection;
 use tracing::warn;
 
+use crate::prayer::stats::{Entry, Status};
 use crate::prayer::{Prayer, ReminderKind};
-use crate::prayer_stats::{Entry, Status};
 use crate::reports::Delivery;
 use crate::settings::Overrides;
 

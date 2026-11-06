@@ -1,6 +1,6 @@
 //! Points: what closing a todo is worth, and how `/points` shows them.
 //!
-//! Pure functions only, like `parser.rs` and `prayer_stats.rs`: the facts
+//! Pure functions only, like `parser.rs` and `prayer/stats.rs`: the facts
 //! come in, a number or the text goes out. Saving and reading the points is
 //! `repo::points`'s job.
 //!

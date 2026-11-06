@@ -18,7 +18,7 @@ use tracing::info;
 use crate::AppState;
 use crate::error::AppError;
 use crate::prayer::DayTimes;
-use crate::prayer_stats::{self, Entry, Summary};
+use crate::prayer::stats::{self, Entry, Summary};
 use crate::reminders::{Place, Recipient};
 use crate::repo::prayers::{self, ReminderChat};
 use crate::reports::{self, Delivery, Feature, Outgoing, Period, Report, ReportKind, To};
@@ -45,7 +45,7 @@ pub async fn check(
     for date in [today.pred_opt(), Some(today)].into_iter().flatten() {
         let day = state.apis.prayer_times.for_date(&location, date).await?;
         mark_missed(state, chat, place, &place_key, &day, now).await?;
-        for kind in reports::due(date, prayer_stats::day_over(&day), now) {
+        for kind in reports::due(date, stats::day_over(&day), now) {
             send_report(state, chat, place, &place_key, date, kind, now).await?;
         }
     }
@@ -61,7 +61,7 @@ async fn mark_missed(
     now: DateTime<Utc>,
 ) -> Result<(), AppError> {
     let mut conn = state.db.acquire().await?;
-    for prayer in prayer_stats::ended(day, now) {
+    for prayer in stats::ended(day, now) {
         if !prayers::was_reminded(&mut conn, chat.id, day.date, prayer, place_key).await? {
             continue;
         }
@@ -105,7 +105,7 @@ pub fn messages(
         ReportKind::Day => {
             let done: Vec<&Recipient> = people
                 .iter()
-                .filter(|(_, log)| prayer_stats::prayed_all(log, date))
+                .filter(|(_, log)| stats::prayed_all(log, date))
                 .map(|(r, _)| r)
                 .collect();
             if is_group && !privately {
@@ -115,14 +115,14 @@ pub fn messages(
                 let mentions: Vec<String> = done.iter().map(|r| r.phone.clone()).collect();
                 return vec![Outgoing {
                     to: To::Chat,
-                    text: prayer_stats::day_text(date, &mentions),
+                    text: stats::day_text(date, &mentions),
                     mentions,
                 }];
             }
             done.iter()
                 .map(|r| Outgoing {
                     to: to(r),
-                    text: prayer_stats::day_text(date, &[]),
+                    text: stats::day_text(date, &[]),
                     mentions: Vec::new(),
                 })
                 .collect()
@@ -145,7 +145,7 @@ pub fn messages(
                     .collect();
                 return vec![Outgoing {
                     to: To::Chat,
-                    text: prayer_stats::summary_text(span, period, &named),
+                    text: stats::summary_text(span, period, &named),
                     mentions: Vec::new(),
                 }];
             }
@@ -153,7 +153,7 @@ pub fn messages(
                 .into_iter()
                 .map(|(r, summary)| Outgoing {
                     to: to(r),
-                    text: prayer_stats::summary_text(span, period, &[(None, summary)]),
+                    text: stats::summary_text(span, period, &[(None, summary)]),
                     mentions: Vec::new(),
                 })
                 .collect()
@@ -210,7 +210,7 @@ async fn send_report(
 mod tests {
     use super::*;
     use crate::prayer::Prayer;
-    use crate::prayer_stats::Status;
+    use crate::prayer::stats::Status;
     use crate::reports::Span;
     use crate::testkit::date;
 

@@ -24,8 +24,8 @@ use crate::parser::{
 };
 use crate::person::Assignee;
 use crate::points::{self, Finish, Source};
+use crate::prayer::stats::{Status, Summary};
 use crate::prayer::{self, DayTimes, Prayer};
-use crate::prayer_stats::{self, Status, Summary};
 use crate::progress;
 use crate::push;
 use crate::repo::messages::{self, ListItem, ListKind, SentList};
@@ -497,7 +497,7 @@ async fn run_plain(
                      `/prayers on`, then react to each one once you've prayed."
                 )
             } else {
-                prayer_stats::summary_text(span, period, &[(None, summary)])
+                prayer::stats::summary_text(span, period, &[(None, summary)])
             }
         }
         BotCommand::PrayerReports(None) => {

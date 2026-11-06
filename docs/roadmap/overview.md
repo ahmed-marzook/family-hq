@@ -107,7 +107,7 @@ family-hq/
     ├── help.rs             # /help pages
     ├── person.rs           # Person and Assignee
     ├── settings.rs         # per-chat settings and defaults
-    ├── prayer.rs           # prayers, windows, "what's due" (pure)
+    ├── prayer/             # prayers, windows, "what's due" (pure); stats, tracking
     ├── reminders.rs        # the prayer reminder loop
     ├── aladhan.rs          # prayer times API
     ├── geo.rs              # location → nearest town, town → coordinates

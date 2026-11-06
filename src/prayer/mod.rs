@@ -2,6 +2,18 @@
 //!
 //! Pure functions only: no clock, no network, no database. The current
 //! time is always passed in, so every rule can be tested with any time.
+//!
+//! The rest of the prayer feature is in this folder too:
+//!
+//! * `stats`: completion, streaks and report text from a prayer log (pure).
+//! * `tracking`: marking missed prayers and sending reports, on the
+//!   reminder loop's clock.
+
+// This file is the `prayer` module itself (`mod.rs` is what `mod prayer;`
+// loads for a folder), so the folder's other files are its submodules,
+// declared here. Other code reaches them as `crate::prayer::stats`.
+pub mod stats;
+pub mod tracking;
 
 use std::fmt;
 use std::str::FromStr;
