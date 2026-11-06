@@ -111,26 +111,23 @@ impl PrayerTimes {
     /// seen before. Coordinates need no lookup.
     async fn fetch(&self, loc: &Location, date: NaiveDate) -> Result<DayTimes, AppError> {
         let at = loc.coordinates();
-        let response: ApiResponse = self
-            .http
-            .get(format!(
-                "{}/timings/{}",
-                self.base_url,
-                date.format("%d-%m-%Y")
-            ))
-            .query(&[
-                ("latitude", at.latitude.to_string()),
-                ("longitude", at.longitude.to_string()),
-                ("method", loc.method.to_string()),
-                ("school", loc.school.to_string()),
-                ("timezonestring", loc.timezone.name().to_string()),
-                ("iso8601", "true".to_string()),
-            ])
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
+        let response: ApiResponse = crate::http::get_json(
+            self.http
+                .get(format!(
+                    "{}/timings/{}",
+                    self.base_url,
+                    date.format("%d-%m-%Y")
+                ))
+                .query(&[
+                    ("latitude", at.latitude.to_string()),
+                    ("longitude", at.longitude.to_string()),
+                    ("method", loc.method.to_string()),
+                    ("school", loc.school.to_string()),
+                    ("timezonestring", loc.timezone.name().to_string()),
+                    ("iso8601", "true".to_string()),
+                ]),
+        )
+        .await?;
 
         let mut day = to_day_times(date, &response.data.timings).map_err(AppError::PrayerTimes)?;
         day.hijri = response.data.date.as_ref().and_then(ApiDate::hijri);
@@ -142,23 +139,20 @@ impl PrayerTimes {
     ///
     /// `date` only has to be a real day; today is the natural choice.
     pub async fn timezone_at(&self, at: Coordinates, date: NaiveDate) -> Result<Tz, AppError> {
-        let response: ApiResponse = self
-            .http
-            .get(format!(
-                "{}/timings/{}",
-                self.base_url,
-                date.format("%d-%m-%Y")
-            ))
-            // No `timezonestring`: AlAdhan then works it out from the point.
-            .query(&[
-                ("latitude", at.latitude.to_string()),
-                ("longitude", at.longitude.to_string()),
-            ])
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
+        let response: ApiResponse = crate::http::get_json(
+            self.http
+                .get(format!(
+                    "{}/timings/{}",
+                    self.base_url,
+                    date.format("%d-%m-%Y")
+                ))
+                // No `timezonestring`: AlAdhan then works it out from the point.
+                .query(&[
+                    ("latitude", at.latitude.to_string()),
+                    ("longitude", at.longitude.to_string()),
+                ]),
+        )
+        .await?;
 
         let name = response.data.meta.timezone;
         name.parse().map_err(|_| {

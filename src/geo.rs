@@ -70,25 +70,22 @@ impl Geo {
 
     /// The town (and the bigger places around it) nearest to a point.
     pub async fn nearest_place(&self, at: Coordinates) -> Result<NearestPlace, AppError> {
-        let reply: ReverseReply = self
-            .http
-            .get(format!("{}/reverse", self.nominatim_url))
-            .query(&[
-                ("lat", at.latitude.to_string()),
-                ("lon", at.longitude.to_string()),
-                ("format", "jsonv2".to_string()),
-                // 12 = town level: "Olney" rather than a street, or just
-                // the county (which is what city level gives for villages).
-                ("zoom", "12".to_string()),
-                ("addressdetails", "1".to_string()),
-                // English names ("Colombo", not "කොළඹ").
-                ("accept-language", "en".to_string()),
-            ])
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
+        let reply: ReverseReply = crate::http::get_json(
+            self.http
+                .get(format!("{}/reverse", self.nominatim_url))
+                .query(&[
+                    ("lat", at.latitude.to_string()),
+                    ("lon", at.longitude.to_string()),
+                    ("format", "jsonv2".to_string()),
+                    // 12 = town level: "Olney" rather than a street, or just
+                    // the county (which is what city level gives for villages).
+                    ("zoom", "12".to_string()),
+                    ("addressdetails", "1".to_string()),
+                    // English names ("Colombo", not "කොළඹ").
+                    ("accept-language", "en".to_string()),
+                ]),
+        )
+        .await?;
         nearest_from_reply(reply)
             .ok_or_else(|| AppError::Geo("no town or country near that location".to_string()))
     }
@@ -109,21 +106,18 @@ impl Geo {
     /// and timezone. Used for `/settings city …`, so a typo is caught and
     /// the timezone comes for free.
     pub async fn find_town(&self, city: &str, country: &str) -> Result<Town, AppError> {
-        let reply: GeocodingReply = self
-            .http
-            .get(format!("{}/search", self.geocoding_url))
-            .query(&[
-                ("name", city),
-                ("count", "1"),
-                // Only a 2-letter code narrows the search; a full country
-                // name ("United Kingdom") isn't understood, so leave it out.
-                ("countryCode", if country.len() == 2 { country } else { "" }),
-            ])
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
+        let reply: GeocodingReply = crate::http::get_json(
+            self.http
+                .get(format!("{}/search", self.geocoding_url))
+                .query(&[
+                    ("name", city),
+                    ("count", "1"),
+                    // Only a 2-letter code narrows the search; a full country
+                    // name ("United Kingdom") isn't understood, so leave it out.
+                    ("countryCode", if country.len() == 2 { country } else { "" }),
+                ]),
+        )
+        .await?;
         reply
             .results
             .and_then(|r| r.into_iter().next())

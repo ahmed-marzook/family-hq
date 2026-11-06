@@ -180,60 +180,54 @@ impl Weather {
             return Ok(normals);
         }
         let first_year = this_year - HISTORY_YEARS;
-        let reply: ArchiveReply = self
-            .http
-            .get(format!("{}/archive", self.archive_url))
-            .query(&[
-                ("latitude", at.latitude.to_string()),
-                ("longitude", at.longitude.to_string()),
-                ("start_date", format!("{first_year}-01-01")),
-                ("end_date", format!("{}-12-31", this_year - 1)),
-                ("daily", "precipitation_sum,temperature_2m_mean".to_string()),
-                ("timezone", "UTC".to_string()),
-            ])
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
+        let reply: ArchiveReply = crate::http::get_json(
+            self.http
+                .get(format!("{}/archive", self.archive_url))
+                .query(&[
+                    ("latitude", at.latitude.to_string()),
+                    ("longitude", at.longitude.to_string()),
+                    ("start_date", format!("{first_year}-01-01")),
+                    ("end_date", format!("{}-12-31", this_year - 1)),
+                    ("daily", "precipitation_sum,temperature_2m_mean".to_string()),
+                    ("timezone", "UTC".to_string()),
+                ]),
+        )
+        .await?;
         let normals = to_normals(&reply.daily).map_err(AppError::Weather)?;
         self.normals.insert(key, normals.clone(), Instant::now());
         Ok(normals)
     }
 
     async fn fetch_forecast(&self, at: Coordinates, timezone: Tz) -> Result<Forecast, AppError> {
-        let reply: Reply = self
-            .http
-            .get(format!("{}/forecast", self.base_url))
-            .query(&[
-                ("latitude", at.latitude.to_string()),
-                ("longitude", at.longitude.to_string()),
-                (
-                    "current",
-                    "temperature_2m,apparent_temperature,weather_code,wind_speed_10m,\
+        let reply: Reply = crate::http::get_json(
+            self.http
+                .get(format!("{}/forecast", self.base_url))
+                .query(&[
+                    ("latitude", at.latitude.to_string()),
+                    ("longitude", at.longitude.to_string()),
+                    (
+                        "current",
+                        "temperature_2m,apparent_temperature,weather_code,wind_speed_10m,\
                      wind_direction_10m"
-                        .to_string(),
-                ),
-                (
-                    "daily",
-                    "weather_code,temperature_2m_max,temperature_2m_min,\
+                            .to_string(),
+                    ),
+                    (
+                        "daily",
+                        "weather_code,temperature_2m_max,temperature_2m_min,\
                      precipitation_probability_max,sunrise,sunset,daylight_duration"
-                        .to_string(),
-                ),
-                (
-                    "hourly",
-                    "temperature_2m,weather_code,precipitation_probability,is_day".to_string(),
-                ),
-                ("timezone", timezone.name().to_string()),
-                ("forecast_days", "7".to_string()),
-                // Yesterday as well, as the first day.
-                ("past_days", "1".to_string()),
-            ])
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
+                            .to_string(),
+                    ),
+                    (
+                        "hourly",
+                        "temperature_2m,weather_code,precipitation_probability,is_day".to_string(),
+                    ),
+                    ("timezone", timezone.name().to_string()),
+                    ("forecast_days", "7".to_string()),
+                    // Yesterday as well, as the first day.
+                    ("past_days", "1".to_string()),
+                ]),
+        )
+        .await?;
         to_forecast(reply).map_err(AppError::Weather)
     }
 
@@ -262,22 +256,19 @@ impl Weather {
         date: NaiveDate,
     ) -> Result<RiseSet, AppError> {
         let day = date.format("%Y-%m-%d").to_string();
-        let reply: MoonReply = self
-            .http
-            .get(format!("{}/forecast", self.base_url))
-            .query(&[
-                ("latitude", at.latitude.to_string()),
-                ("longitude", at.longitude.to_string()),
-                ("daily", "moonrise,moonset".to_string()),
-                ("timezone", timezone.name().to_string()),
-                ("start_date", day.clone()),
-                ("end_date", day),
-            ])
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
+        let reply: MoonReply = crate::http::get_json(
+            self.http
+                .get(format!("{}/forecast", self.base_url))
+                .query(&[
+                    ("latitude", at.latitude.to_string()),
+                    ("longitude", at.longitude.to_string()),
+                    ("daily", "moonrise,moonset".to_string()),
+                    ("timezone", timezone.name().to_string()),
+                    ("start_date", day.clone()),
+                    ("end_date", day),
+                ]),
+        )
+        .await?;
         to_rise_set(reply).map_err(AppError::Weather)
     }
 }
