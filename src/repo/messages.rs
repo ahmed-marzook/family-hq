@@ -63,9 +63,48 @@ pub async fn mark_processed(
 #[derive(Debug, Clone, PartialEq)]
 pub struct ListItem {
     pub position: i64,
-    /// `"todo"` or `"shop"`.
-    pub item_type: String,
     pub item_id: i64,
+}
+
+/// A numbered list message the bot sent: which kind of list it was, and
+/// what each number showed (never empty). The kind belongs to the whole
+/// list rather than to each item, so nothing has to peek at the first item
+/// to find out what the list is.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SentList {
+    pub kind: ListKind,
+    pub items: Vec<ListItem>,
+}
+
+/// One row of `wa_message_context`, as the queries below read it.
+struct Row {
+    position: i64,
+    item_type: String,
+    item_id: i64,
+}
+
+/// Turns a list message's rows into a `SentList`, or `None` if there are
+/// none (it isn't a list).
+fn into_list(rows: Vec<Row>) -> Result<Option<SentList>, sqlx::Error> {
+    // A list is saved all at once with one kind, so every row has the same
+    // `item_type`; the first says which.
+    let Some(first) = rows.first() else {
+        return Ok(None);
+    };
+    // `sqlx::Error::Decode` is sqlx's own "a stored value couldn't be
+    // read" error; `.into()` boxes our `String` message to fit it.
+    let kind = first
+        .item_type
+        .parse()
+        .map_err(|err: String| sqlx::Error::Decode(err.into()))?;
+    let items = rows
+        .into_iter()
+        .map(|r| ListItem {
+            position: r.position,
+            item_id: r.item_id,
+        })
+        .collect();
+    Ok(Some(SentList { kind, items }))
 }
 
 /// Saves the rows a list message showed, numbered from 1 in the order
@@ -74,10 +113,11 @@ pub async fn save_list(
     conn: &mut SqliteConnection,
     wa_message_id: &str,
     chat_id: i64,
-    item_type: &str,
+    kind: ListKind,
     item_ids: &[i64],
     now: DateTime<Utc>,
 ) -> Result<(), sqlx::Error> {
+    let item_type = kind.as_db_str();
     // `zip(1..)` pairs each id with 1, 2, 3, ...
     for (item_id, position) in item_ids.iter().zip(1_i64..) {
         sqlx::query!(
@@ -97,15 +137,15 @@ pub async fn save_list(
     Ok(())
 }
 
-/// Everything a list message showed, in order. Empty if `wa_message_id`
+/// Everything a list message showed, in order. `None` if `wa_message_id`
 /// isn't one of the bot's lists in this chat.
 pub async fn list_items(
     conn: &mut SqliteConnection,
     wa_message_id: &str,
     chat_id: i64,
-) -> Result<Vec<ListItem>, sqlx::Error> {
-    sqlx::query_as!(
-        ListItem,
+) -> Result<Option<SentList>, sqlx::Error> {
+    let rows = sqlx::query_as!(
+        Row,
         "SELECT position, item_type, item_id FROM wa_message_context
          WHERE wa_message_id = ? AND chat_id = ?
          ORDER BY position",
@@ -113,21 +153,23 @@ pub async fn list_items(
         chat_id
     )
     .fetch_all(conn)
-    .await
+    .await?;
+    into_list(rows)
 }
 
-/// What the most recent list of `item_type` sent in this chat showed, for
-/// commands like `+got 1 3` that use numbers without replying. Empty if
+/// What the most recent list of `kind` sent in this chat showed, for
+/// commands like `+got 1 3` that use numbers without replying. `None` if
 /// no such list has been sent.
 pub async fn latest_list_items(
     conn: &mut SqliteConnection,
     chat_id: i64,
-    item_type: &str,
-) -> Result<Vec<ListItem>, sqlx::Error> {
+    kind: ListKind,
+) -> Result<Option<SentList>, sqlx::Error> {
+    let item_type = kind.as_db_str();
     // The inner SELECT finds the newest list message; the outer one reads
     // all its rows. `rowid` breaks ties when two lists share a timestamp.
-    sqlx::query_as!(
-        ListItem,
+    let rows = sqlx::query_as!(
+        Row,
         "SELECT position, item_type, item_id FROM wa_message_context
          WHERE wa_message_id = (
              SELECT wa_message_id FROM wa_message_context
@@ -140,7 +182,8 @@ pub async fn latest_list_items(
         item_type
     )
     .fetch_all(conn)
-    .await
+    .await?;
+    into_list(rows)
 }
 
 #[cfg(test)]
@@ -168,17 +211,17 @@ mod tests {
             .unwrap();
 
         assert!(
-            latest_list_items(&mut conn, chat, "shop")
+            latest_list_items(&mut conn, chat, ListKind::Shop)
                 .await
                 .unwrap()
-                .is_empty()
+                .is_none()
         );
 
         save_list(
             &mut conn,
             "OLD",
             chat,
-            "shop",
+            ListKind::Shop,
             &[1, 2],
             t("2026-10-27T10:00:00Z"),
         )
@@ -188,7 +231,7 @@ mod tests {
             &mut conn,
             "NEW",
             chat,
-            "shop",
+            ListKind::Shop,
             &[5],
             t("2026-10-27T11:00:00Z"),
         )
@@ -198,15 +241,19 @@ mod tests {
             &mut conn,
             "TODO",
             chat,
-            "todo",
+            ListKind::Todo,
             &[9],
             t("2026-10-27T12:00:00Z"),
         )
         .await
         .unwrap();
 
-        let items = latest_list_items(&mut conn, chat, "shop").await.unwrap();
-        let ids: Vec<i64> = items.iter().map(|i| i.item_id).collect();
+        let list = latest_list_items(&mut conn, chat, ListKind::Shop)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(list.kind, ListKind::Shop);
+        let ids: Vec<i64> = list.items.iter().map(|i| i.item_id).collect();
         assert_eq!(ids, [5], "newest shop list, not the newer todo list");
     }
 
@@ -231,25 +278,25 @@ mod tests {
             .await
             .unwrap();
 
-        save_list(&mut conn, "3EB0AA", chat, "todo", &[7, 3], now)
+        save_list(&mut conn, "3EB0AA", chat, ListKind::Todo, &[7, 3], now)
             .await
             .unwrap();
 
-        let items = list_items(&mut conn, "3EB0AA", chat).await.unwrap();
-        let positions: Vec<(i64, i64)> = items.iter().map(|i| (i.position, i.item_id)).collect();
+        let list = list_items(&mut conn, "3EB0AA", chat)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(list.kind, ListKind::Todo);
+        let positions: Vec<(i64, i64)> =
+            list.items.iter().map(|i| (i.position, i.item_id)).collect();
         assert_eq!(positions, [(1, 7), (2, 3)]);
 
         assert!(
             list_items(&mut conn, "3EB0AA", other)
                 .await
                 .unwrap()
-                .is_empty()
+                .is_none()
         );
-        assert!(
-            list_items(&mut conn, "NOPE", chat)
-                .await
-                .unwrap()
-                .is_empty()
-        );
+        assert!(list_items(&mut conn, "NOPE", chat).await.unwrap().is_none());
     }
 }

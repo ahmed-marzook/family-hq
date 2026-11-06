@@ -28,7 +28,7 @@ use crate::prayer::{self, DayTimes, Prayer};
 use crate::prayer_stats::{self, Status, Summary};
 use crate::progress;
 use crate::push;
-use crate::repo::messages::{self, ListItem};
+use crate::repo::messages::{self, ListItem, ListKind, SentList};
 use crate::repo::points as stored_points;
 use crate::repo::prayers;
 use crate::repo::push::{self as push_repo, Subscription};
@@ -66,11 +66,6 @@ const PEOPLE: &str = "👥";
 const MOON: &str = "🌙";
 const CHART: &str = "📊";
 
-/// `item_type` values in `wa_message_context` (the schema's CHECK allows
-/// exactly these two).
-pub const TODO_ITEM: &str = "todo";
-pub const SHOP_ITEM: &str = "shop";
-
 /// Who is asking, and where.
 pub struct Context {
     /// `chats.id` of the chat the message came from.
@@ -87,12 +82,11 @@ pub enum Outcome {
     /// A normal reply.
     Reply(String),
     /// A numbered list. `item_ids[0]` is item 1, and so on; the webhook
-    /// saves them, with `item_type`, against the sent message's ID so
-    /// replies can find them.
+    /// saves them, with `kind`, against the sent message's ID so replies
+    /// can find them.
     List {
         text: String,
-        /// `TODO_ITEM` or `SHOP_ITEM`.
-        item_type: &'static str,
+        kind: ListKind,
         item_ids: Vec<i64>,
     },
     /// A reply that @mentions people: `mentions` are their phone numbers,
@@ -380,7 +374,7 @@ async fn run_plain(
             let items = todos::list_all(conn, ctx.chat_id).await?;
             return Ok(Outcome::List {
                 text: format_todo_list(&items, &layout, &settings, ctx.now),
-                item_type: TODO_ITEM,
+                kind: ListKind::Todo,
                 // Every todo, even in one person's view, so the numbers
                 // mean the same todo in every view.
                 item_ids: items.iter().map(|t| t.id).collect(),
@@ -434,18 +428,20 @@ async fn run_plain(
             let items = shop::list_all(conn, ctx.chat_id).await?;
             return Ok(Outcome::List {
                 text: format_shop_list(&items),
-                item_type: SHOP_ITEM,
+                kind: ListKind::Shop,
                 item_ids: items.iter().map(|i| i.id).collect(),
             });
         }
         BotCommand::GotShop(Got::Numbers(numbers)) => {
             // Same as replying `1 3` to the newest `/shop` list here.
-            let items = messages::latest_list_items(conn, ctx.chat_id, SHOP_ITEM).await?;
-            if items.is_empty() {
-                format!("{PROBLEM} No shopping list sent here yet. Send /shop, then `+got 1 3`.")
-            } else {
-                return run_list_reply(conn, ctx, defaults, &items, ReplyCommand::Tick(numbers))
-                    .await;
+            match messages::latest_list_items(conn, ctx.chat_id, ListKind::Shop).await? {
+                None => format!(
+                    "{PROBLEM} No shopping list sent here yet. Send /shop, then `+got 1 3`."
+                ),
+                Some(list) => {
+                    return run_list_reply(conn, ctx, defaults, &list, ReplyCommand::Tick(numbers))
+                        .await;
+                }
             }
         }
         BotCommand::GotShop(Got::Names(names)) => return got_by_name(conn, ctx, &names).await,
@@ -1191,14 +1187,14 @@ fn details_line(details: Details, today: NaiveDate) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
-/// Runs a reply to one of the bot's numbered lists. `items` is what that
-/// list showed (never empty: the webhook only calls this for real lists).
-/// `defaults` is for the sender's settings (their "today", for `due 2 fri`).
+/// Runs a reply to one of the bot's numbered lists. `list` is what that
+/// list was and showed. `defaults` is for the sender's settings (their
+/// "today", for `due 2 fri`).
 pub async fn run_list_reply(
     conn: &mut SqliteConnection,
     ctx: &Context,
     defaults: &Settings,
-    items: &[ListItem],
+    list: &SentList,
     reply: ReplyCommand,
 ) -> Result<Outcome, AppError> {
     // `done 2` and `1 3` both tick off; `remove` deletes; `skip` closes a
@@ -1209,22 +1205,14 @@ pub async fn run_list_reply(
         ReplyCommand::Remove(n) => (vec![n], Action::Remove),
         ReplyCommand::Skip(n) => (vec![n], Action::Skip),
         ReplyCommand::SetDue(n, due) => {
-            return change_todo(conn, ctx, defaults, items, n, TodoChange::Due(due)).await;
+            return change_todo(conn, ctx, defaults, list, n, TodoChange::Due(due)).await;
         }
         ReplyCommand::SetPriority(n, priority) => {
-            return change_todo(
-                conn,
-                ctx,
-                defaults,
-                items,
-                n,
-                TodoChange::Priority(priority),
-            )
-            .await;
+            return change_todo(conn, ctx, defaults, list, n, TodoChange::Priority(priority)).await;
         }
         ReplyCommand::BadChange(err) => return Ok(Outcome::Reply(format!("{PROBLEM} {err}"))),
     };
-    act_on_list(conn, ctx, defaults, items, &numbers, action).await
+    act_on_list(conn, ctx, defaults, list, &numbers, action).await
 }
 
 /// A change to one todo, from a reply (`due 2 fri`, `priority 2 none`).
@@ -1240,20 +1228,17 @@ async fn change_todo(
     conn: &mut SqliteConnection,
     ctx: &Context,
     defaults: &Settings,
-    items: &[ListItem],
+    list: &SentList,
     n: usize,
     change: TodoChange,
 ) -> Result<Outcome, AppError> {
     let reply = |text: String| Ok(Outcome::Reply(text));
-    if items
-        .first()
-        .is_some_and(|item| item.item_type == SHOP_ITEM)
-    {
+    if list.kind == ListKind::Shop {
         return reply(format!(
             "{PROBLEM} Due dates and priorities are for todos, not the shopping list."
         ));
     }
-    let id = match item_at(items, n) {
+    let id = match item_at(&list.items, n) {
         Ok(id) => id,
         Err(problem) => return reply(problem),
     };
@@ -1325,19 +1310,16 @@ impl Action {
     }
 }
 
-/// Does `action` to the items at `numbers` in a list that showed `items`.
+/// Does `action` to the items at `numbers` in `list`.
 async fn act_on_list(
     conn: &mut SqliteConnection,
     ctx: &Context,
     defaults: &Settings,
-    items: &[ListItem],
+    list: &SentList,
     numbers: &[usize],
     action: Action,
 ) -> Result<Outcome, AppError> {
-    // Every row of one list has the same type; the first one says which.
-    let is_shop = items
-        .first()
-        .is_some_and(|item| item.item_type == SHOP_ITEM);
+    let is_shop = list.kind == ListKind::Shop;
     if is_shop && action == Action::Skip {
         return Ok(Outcome::Reply(format!(
             "{PROBLEM} `skip` is for todos. To take something off the shopping \
@@ -1359,7 +1341,7 @@ async fn act_on_list(
     // Any todo done or skipped: the reply ends with the updated progress bar.
     let mut closed_any = false;
     for &n in numbers {
-        let id = match item_at(items, n) {
+        let id = match item_at(&list.items, n) {
             Ok(id) => id,
             Err(problem) => {
                 lines.push(problem);
@@ -1424,14 +1406,13 @@ async fn close_by_numbers(
     numbers: &[usize],
     action: Action,
 ) -> Result<Outcome, AppError> {
-    let items = messages::latest_list_items(conn, ctx.chat_id, TODO_ITEM).await?;
-    if items.is_empty() {
+    let Some(list) = messages::latest_list_items(conn, ctx.chat_id, ListKind::Todo).await? else {
         let command = action.command();
         return Ok(Outcome::Reply(format!(
             "{PROBLEM} No todo list sent here yet. Send /todo, then `{command} 2`."
         )));
-    }
-    act_on_list(conn, ctx, defaults, &items, numbers, action).await
+    };
+    act_on_list(conn, ctx, defaults, &list, numbers, action).await
 }
 
 /// Closes todo `id` in this chat as `finish` (done or skipped) and records
@@ -2146,11 +2127,18 @@ mod tests {
     }
 
     fn item(position: i64, item_id: i64) -> ListItem {
-        ListItem {
-            position,
-            item_type: TODO_ITEM.to_string(),
-            item_id,
-        }
+        ListItem { position, item_id }
+    }
+
+    /// A list of `kind` showing `item_ids`, numbered from 1, as a reply to
+    /// it would see it.
+    fn sent(kind: ListKind, item_ids: &[i64]) -> SentList {
+        let items = item_ids
+            .iter()
+            .zip(1..)
+            .map(|(&id, pos)| item(pos, id))
+            .collect();
+        SentList { kind, items }
     }
 
     // ---- pure text ----
@@ -2672,11 +2660,7 @@ mod tests {
         let Outcome::List { item_ids, .. } = typed(&mut conn, &ctx, "/todo all").await else {
             panic!("expected a list");
         };
-        let items: Vec<ListItem> = item_ids
-            .iter()
-            .zip(1..)
-            .map(|(&id, pos)| item(pos, id))
-            .collect();
+        let items = sent(ListKind::Todo, &item_ids);
 
         // Reply `skip 1`.
         let reply = run_list_reply(&mut conn, &ctx, &defaults(), &items, ReplyCommand::Skip(1))
@@ -2730,11 +2714,7 @@ mod tests {
         let pool = test_pool().await;
         let mut conn = pool.acquire().await.unwrap();
         let ctx = setup(&mut conn).await;
-        let shop_list = [ListItem {
-            position: 1,
-            item_type: SHOP_ITEM.to_string(),
-            item_id: 1,
-        }];
+        let shop_list = sent(ListKind::Shop, &[1]);
         let reply = run_list_reply(
             &mut conn,
             &ctx,
@@ -2817,11 +2797,7 @@ mod tests {
         // The numbers saved for replies follow the same order, so `done 1`
         // is the overdue one.
         assert_eq!(item_ids[0], tax);
-        let items: Vec<ListItem> = item_ids
-            .iter()
-            .zip(1..)
-            .map(|(&id, pos)| item(pos, id))
-            .collect();
+        let items = sent(ListKind::Todo, &item_ids);
         let reply = run_list_reply(&mut conn, &ctx, &defaults(), &items, ReplyCommand::Done(1))
             .await
             .unwrap()
@@ -2833,7 +2809,7 @@ mod tests {
     /// priority), "bins" is due today, "hoover" has no date, "passport" is
     /// high priority with no date. Returns the context and the list items
     /// from `/todo`, as a reply would see them.
-    async fn dated_todos(conn: &mut SqliteConnection) -> (Context, Vec<ListItem>) {
+    async fn dated_todos(conn: &mut SqliteConnection) -> (Context, SentList) {
         let mut ctx = setup(conn).await;
         ctx.now = "2026-11-06T12:00:00Z".parse().unwrap();
         let late = Details {
@@ -2850,12 +2826,7 @@ mod tests {
         let Outcome::List { item_ids, .. } = typed(conn, &ctx, "/todo").await else {
             panic!("expected a list");
         };
-        let items = item_ids
-            .iter()
-            .zip(1..)
-            .map(|(&id, pos)| item(pos, id))
-            .collect();
-        (ctx, items)
+        (ctx, sent(ListKind::Todo, &item_ids))
     }
 
     #[tokio::test]
@@ -2952,11 +2923,7 @@ mod tests {
         let pool = test_pool().await;
         let mut conn = pool.acquire().await.unwrap();
         let ctx = setup(&mut conn).await;
-        let shop_list = [ListItem {
-            position: 1,
-            item_type: SHOP_ITEM.to_string(),
-            item_id: 1,
-        }];
+        let shop_list = sent(ListKind::Shop, &[1]);
         let reply = run_list_reply(
             &mut conn,
             &ctx,
@@ -3116,11 +3083,7 @@ mod tests {
         .unwrap() else {
             panic!("expected a list");
         };
-        let items: Vec<ListItem> = item_ids
-            .iter()
-            .zip(1..)
-            .map(|(&id, pos)| item(pos, id))
-            .collect();
+        let items = sent(ListKind::Todo, &item_ids);
 
         let reply = run_list_reply(
             &mut conn,
@@ -3328,11 +3291,11 @@ mod tests {
         BotCommand::AddShop(items.iter().map(|i| i.to_string()).collect())
     }
 
-    /// Runs `/shop` and returns (text, the ListItems a reply would see).
-    async fn shop_list(conn: &mut SqliteConnection, ctx: &Context) -> (String, Vec<ListItem>) {
+    /// Runs `/shop` and returns (text, the list a reply would see).
+    async fn shop_list(conn: &mut SqliteConnection, ctx: &Context) -> (String, SentList) {
         let Outcome::List {
             text,
-            item_type,
+            kind,
             item_ids,
         } = run_command(conn, ctx, &Apis::new(times()), BotCommand::ListShop)
             .await
@@ -3340,17 +3303,8 @@ mod tests {
         else {
             panic!("expected a list");
         };
-        assert_eq!(item_type, SHOP_ITEM);
-        let items = item_ids
-            .iter()
-            .zip(1..)
-            .map(|(&item_id, position)| ListItem {
-                position,
-                item_type: SHOP_ITEM.to_string(),
-                item_id,
-            })
-            .collect();
-        (text, items)
+        assert_eq!(kind, ListKind::Shop);
+        (text, sent(kind, &item_ids))
     }
 
     #[test]
@@ -3431,7 +3385,7 @@ Already on the list: milk, Eggs"
         );
 
         let (text, items) = shop_list(&mut conn, &ctx).await;
-        assert_eq!(items.len(), 2);
+        assert_eq!(items.items.len(), 2);
         assert!(text.contains("1. ⬜ Milk\n2. ⬜ eggs\n"), "{text}");
     }
 
@@ -3482,7 +3436,7 @@ Already on the list: milk, Eggs"
 
         // Eggs still to buy first, then milk and bread, bought.
         let (text, items) = shop_list(&mut conn, &ctx).await;
-        assert_eq!(items.len(), 3);
+        assert_eq!(items.items.len(), 3);
         assert!(
             text.contains("1. ⬜ eggs\n2. ✅ ~milk~\n3. ✅ ~bread~\n"),
             "{text}"
@@ -3529,7 +3483,7 @@ Already on the list: milk, Eggs"
             Outcome::Reply("🧹 Cleared the shopping list (3 items).".to_string())
         );
         let (_, left) = shop_list(&mut conn, &ctx).await;
-        assert!(left.is_empty());
+        assert!(left.items.is_empty());
 
         let again = run_command(&mut conn, &ctx, &Apis::new(times()), clear())
             .await
@@ -3576,7 +3530,7 @@ Already on the list: milk, Eggs"
             .await
             .unwrap();
         let (_, theirs) = shop_list(&mut conn, &other).await;
-        assert!(theirs.is_empty());
+        assert!(theirs.items.is_empty());
 
         // "milk" isn't a duplicate in the other group.
         let reply = run_command(&mut conn, &other, &Apis::new(times()), shop_cmd(&["milk"]))
@@ -3642,11 +3596,18 @@ Already on the list: milk, Eggs"
         .await
         .unwrap();
         // What the webhook does after sending a /shop list.
-        let (_, items) = shop_list(&mut conn, &ctx).await;
-        let ids: Vec<i64> = items.iter().map(|i| i.item_id).collect();
-        messages::save_list(&mut conn, "3EB0LIST", ctx.chat_id, SHOP_ITEM, &ids, ctx.now)
-            .await
-            .unwrap();
+        let (_, list) = shop_list(&mut conn, &ctx).await;
+        let ids: Vec<i64> = list.items.iter().map(|i| i.item_id).collect();
+        messages::save_list(
+            &mut conn,
+            "3EB0LIST",
+            ctx.chat_id,
+            ListKind::Shop,
+            &ids,
+            ctx.now,
+        )
+        .await
+        .unwrap();
 
         let reply = run_command(&mut conn, &ctx, &Apis::new(times()), got())
             .await
@@ -3667,12 +3628,19 @@ Already on the list: milk, Eggs"
         let Outcome::List { item_ids, .. } = typed(conn, ctx, "/todo all").await else {
             panic!("expected a list");
         };
-        messages::save_list(conn, "TODOLIST", ctx.chat_id, TODO_ITEM, &item_ids, ctx.now)
-            .await
-            .unwrap();
-        let (_, items) = shop_list(conn, ctx).await;
-        let ids: Vec<i64> = items.iter().map(|i| i.item_id).collect();
-        messages::save_list(conn, "SHOPLIST", ctx.chat_id, SHOP_ITEM, &ids, ctx.now)
+        messages::save_list(
+            conn,
+            "TODOLIST",
+            ctx.chat_id,
+            ListKind::Todo,
+            &item_ids,
+            ctx.now,
+        )
+        .await
+        .unwrap();
+        let (_, list) = shop_list(conn, ctx).await;
+        let ids: Vec<i64> = list.items.iter().map(|i| i.item_id).collect();
+        messages::save_list(conn, "SHOPLIST", ctx.chat_id, ListKind::Shop, &ids, ctx.now)
             .await
             .unwrap();
     }
@@ -3710,10 +3678,12 @@ Already on the list: milk, Eggs"
         // What the webhook does with a reply: read back the quoted list.
         let todo = messages::list_items(&mut conn, "TODOLIST", ctx.chat_id)
             .await
-            .unwrap();
+            .unwrap()
+            .expect("a saved list");
         let shop = messages::list_items(&mut conn, "SHOPLIST", ctx.chat_id)
             .await
-            .unwrap();
+            .unwrap()
+            .expect("a saved list");
 
         let reply = run_list_reply(&mut conn, &ctx, &defaults(), &todo, ReplyCommand::Done(1))
             .await

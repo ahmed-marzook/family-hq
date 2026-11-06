@@ -10,8 +10,7 @@ use tracing::warn;
 
 use crate::AppState;
 use crate::error::AppError;
-use crate::handlers::TODO_ITEM;
-use crate::repo::messages;
+use crate::repo::messages::{self, ListKind};
 use crate::repo::settings as stored;
 use crate::repo::todo_reminders::{self, Subscriber};
 use crate::repo::todos::{self, ListedTodo};
@@ -153,7 +152,7 @@ async fn check_subscriber(
         // both work. Every todo is saved, to keep `/todo`'s numbers.
         Ok(message_id) => {
             let ids: Vec<i64> = items.iter().map(|t| t.id).collect();
-            messages::save_list(&mut conn, &message_id, chat_id, TODO_ITEM, &ids, now).await?;
+            messages::save_list(&mut conn, &message_id, chat_id, ListKind::Todo, &ids, now).await?;
         }
         Err(err) => warn!("couldn't send to {}: {err}", subscriber.display_name),
     }

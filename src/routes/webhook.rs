@@ -23,7 +23,7 @@ use crate::parser::{self, BotCommand, ReplyCommand};
 use crate::person::{Assignee, Person};
 use crate::prayer::{self, Tick};
 use crate::prayer_stats::Status;
-use crate::repo::messages::{self, ListItem};
+use crate::repo::messages::{self, SentList};
 use crate::repo::metrics::Logged;
 use crate::repo::{self, chats, prayers, users};
 use crate::whatsapp;
@@ -180,8 +180,9 @@ pub async fn whatsapp(
 /// What a message asks the bot to do.
 enum Action {
     Command(BotCommand),
-    /// A reply to one of the bot's lists: what the list showed, and the reply.
-    ListReply(Vec<ListItem>, ReplyCommand),
+    /// A reply to one of the bot's lists: what the list was and showed, and
+    /// the reply.
+    ListReply(SentList, ReplyCommand),
 }
 
 /// An `Action` with its lookups done (`handlers::prepare`), ready to run
@@ -192,7 +193,7 @@ enum Action {
 /// would take up that much room.
 enum Ready {
     Command(Box<Prepared>),
-    ListReply(Vec<ListItem>, ReplyCommand),
+    ListReply(SentList, ReplyCommand),
 }
 
 /// Handles one incoming message: register who sent it and where, work out
@@ -328,7 +329,7 @@ async fn handle_message(
     // Named before running, because running uses the command up.
     let event = match &action {
         Action::Command(command) => metrics::command(command),
-        Action::ListReply(items, reply) => metrics::list_reply(&items[0].item_type, reply),
+        Action::ListReply(list, reply) => metrics::list_reply(list.kind, reply),
     };
     let event = match msg.body.as_deref() {
         Some(text) => event.typed_as(text),
@@ -371,9 +372,9 @@ async fn handle_message(
                 }
             }
         }
-        Action::ListReply(items, reply) => {
+        Action::ListReply(list, reply) => {
             debug!(?reply, "list reply");
-            Ready::ListReply(items, reply)
+            Ready::ListReply(list, reply)
         }
     };
 
@@ -396,8 +397,8 @@ async fn handle_message(
     let offline = Offline::of(&state.apis);
     let result = match ready {
         Ready::Command(prepared) => handlers::execute(&mut tx, &ctx, &offline, *prepared).await,
-        Ready::ListReply(items, reply) => {
-            handlers::run_list_reply(&mut tx, &ctx, offline.defaults, &items, reply)
+        Ready::ListReply(list, reply) => {
+            handlers::run_list_reply(&mut tx, &ctx, offline.defaults, &list, reply)
                 .await
                 .map(Ran::Done)
         }
@@ -445,7 +446,7 @@ async fn handle_message(
         }
         Outcome::List {
             text,
-            item_type,
+            kind,
             item_ids,
         } => {
             // Remember what each number in this list means, so replies like
@@ -455,7 +456,7 @@ async fn handle_message(
                 // end up as the same `Err`, so one `if let` logs either.
                 let saved = match state.db.acquire().await {
                     Ok(mut conn) => {
-                        messages::save_list(&mut conn, &list_id, chat_id, item_type, &item_ids, now)
+                        messages::save_list(&mut conn, &list_id, chat_id, kind, &item_ids, now)
                             .await
                     }
                     Err(err) => Err(err),
@@ -610,14 +611,13 @@ async fn action_for(
     chat_id: i64,
     sender: Person,
 ) -> Result<Option<Action>, AppError> {
-    // `if let ... && let ...` (let chains): both must match to enter.
+    // `if let ... && let ...` (let chains): all must match to enter. The
+    // list is only looked up once the first two have matched.
     if let Some(quoted) = &msg.replied_to_id
         && let Some(reply) = parser::parse_reply(text)
+        && let Some(list) = messages::list_items(conn, quoted, chat_id).await?
     {
-        let items = messages::list_items(conn, quoted, chat_id).await?;
-        if !items.is_empty() {
-            return Ok(Some(Action::ListReply(items, reply)));
-        }
+        return Ok(Some(Action::ListReply(list, reply)));
     }
 
     Ok(parser::parse(text).map(|command| Action::Command(assign_to_sender(command, sender))))

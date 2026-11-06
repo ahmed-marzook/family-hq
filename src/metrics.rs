@@ -14,6 +14,7 @@ use crate::parser::{
     BotCommand, Got, PushCommand, ReplyCommand, SettingsCommand, TodoFilter, TodoView,
 };
 use crate::person::Assignee;
+use crate::repo::messages::ListKind;
 use crate::reports::Span;
 use crate::weather::When;
 
@@ -228,9 +229,9 @@ pub fn command(command: &BotCommand) -> Event {
     }
 }
 
-/// The name for a reply to a list: `item_type` is the list's ("todo" or
-/// "shop"), so `done 2` on a todo list is "todo.reply_done".
-pub fn list_reply(item_type: &str, reply: &ReplyCommand) -> Event {
+/// The name for a reply to a list of `kind`: `done 2` on a todo list is
+/// "todo.reply_done".
+pub fn list_reply(kind: ListKind, reply: &ReplyCommand) -> Event {
     let action = match reply {
         ReplyCommand::Tick(_) => "tick",
         ReplyCommand::Done(_) => "done",
@@ -240,7 +241,10 @@ pub fn list_reply(item_type: &str, reply: &ReplyCommand) -> Event {
         ReplyCommand::SetPriority(..) => "priority",
         ReplyCommand::BadChange(_) => "bad_change",
     };
-    let list = if item_type == "shop" { "shop" } else { "todo" };
+    let list = match kind {
+        ListKind::Todo => "todo",
+        ListKind::Shop => "shop",
+    };
     Event::new(Kind::ListReply, &format!("{list}.reply_{action}"), None)
 }
 
@@ -404,12 +408,12 @@ mod tests {
 
     #[test]
     fn list_replies_and_reactions() {
-        let tick = list_reply("shop", &ReplyCommand::Tick(vec![1, 3]));
+        let tick = list_reply(ListKind::Shop, &ReplyCommand::Tick(vec![1, 3]));
         assert_eq!(
             (tick.kind, tick.name.as_str()),
             (Kind::ListReply, "shop.reply_tick")
         );
-        let done = list_reply("todo", &ReplyCommand::Done(2));
+        let done = list_reply(ListKind::Todo, &ReplyCommand::Done(2));
         assert_eq!(done.name, "todo.reply_done");
         let undo = reaction(true);
         assert_eq!(
