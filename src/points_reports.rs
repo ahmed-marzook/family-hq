@@ -223,32 +223,6 @@ mod tests {
         );
     }
 
-    /// A fake GOWA that remembers each message sent, as (to, text).
-    async fn fake_gowa() -> (
-        String,
-        std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
-    ) {
-        use axum::Json;
-        use serde_json::{Value, json};
-        let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let log = sent.clone();
-        let app = axum::Router::new().route(
-            "/send/message",
-            axum::routing::post(move |Json(body): Json<Value>| async move {
-                let to = body["phone"].as_str().unwrap_or_default().to_string();
-                let text = body["message"].as_str().unwrap_or_default().to_string();
-                log.lock().unwrap().push((to, text));
-                Json(json!({ "code": "SUCCESS", "results": { "message_id": "FAKE1" } }))
-            }),
-        );
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-            .await
-            .unwrap();
-        let address = listener.local_addr().unwrap();
-        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        (format!("http://{address}"), sent)
-    }
-
     #[tokio::test]
     async fn the_summary_goes_once_on_sunday_evening() {
         use crate::db::test_pool;
@@ -258,8 +232,10 @@ mod tests {
 
         const GROUP: &str = "120363000000000001@g.us";
         let pool = test_pool().await;
-        let (url, sent) = fake_gowa().await;
-        let state = crate::routes::api::test_state(pool.clone(), &url);
+        // The shared fake GOWA; `sent` is what it was asked to send.
+        let gowa = crate::routes::api::fake_gowa().await;
+        let sent = gowa.sent.clone();
+        let state = crate::routes::api::test_state(pool.clone(), &gowa.url);
         {
             let mut conn = pool.acquire().await.unwrap();
             let now = Utc::now();
