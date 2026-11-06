@@ -63,7 +63,7 @@ cargo run                      # start the server
 cargo test                     # all tests
 cargo clippy --all-targets     # lints, should be warning-free
 cargo fmt                      # format before every commit
-cargo sqlx prepare             # refresh .sqlx/ after changing a query (commit it)
+cargo sqlx prepare -- --all-targets  # refresh .sqlx/ after changing a query, test queries too (commit it)
 docker compose up --build      # run the full stack
 npm run dev                    # in web/: the dashboard, with /api proxied to :3000
 npm run build                  # in web/: type-check and build

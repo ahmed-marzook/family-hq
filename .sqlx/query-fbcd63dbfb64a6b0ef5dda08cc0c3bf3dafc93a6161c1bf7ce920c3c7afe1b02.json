@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT title, due_date, priority FROM todos ORDER BY id",
+  "describe": {
+    "columns": [
+      {
+        "name": "title",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "todos",
+            "name": "title"
+          }
+        }
+      },
+      {
+        "name": "due_date",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "todos",
+            "name": "due_date"
+          }
+        }
+      },
+      {
+        "name": "priority",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "todos",
+            "name": "priority"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "fbcd63dbfb64a6b0ef5dda08cc0c3bf3dafc93a6161c1bf7ce920c3c7afe1b02"
+}
