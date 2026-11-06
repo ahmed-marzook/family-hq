@@ -3,6 +3,7 @@
 
 use chrono::{DateTime, NaiveDate, Utc};
 use sqlx::SqliteConnection;
+use tracing::warn;
 
 use crate::prayer::{Prayer, ReminderKind};
 use crate::prayer_stats::{Entry, Status};
@@ -145,8 +146,16 @@ pub async fn find_reminder(
 
     // The CHECK constraint only allows the five names, so this parse can
     // only fail if the code and the schema disagree. `.ok()` drops such a
-    // row rather than crashing.
-    Ok(row.and_then(|r| Some((r.prayer_date, r.prayer.parse().ok()?))))
+    // row rather than crashing; the warning says which one, since that
+    // would be a bug worth finding.
+    Ok(row.and_then(|r| {
+        let prayer = r
+            .prayer
+            .parse()
+            .inspect_err(|err| warn!("reminder {wa_message_id} dropped: {err}"))
+            .ok()?;
+        Some((r.prayer_date, prayer))
+    }))
 }
 
 /// Marks a prayer as prayed. If the bot had already marked it missed, it
@@ -178,7 +187,11 @@ pub async fn mark_prayed(
     )
     .fetch_optional(conn)
     .await?;
-    Ok(status.and_then(|s| s.parse().ok()))
+    Ok(status.and_then(|s| {
+        s.parse()
+            .inspect_err(|err| warn!("prayer_log of user {user_id} on {date}: {err}"))
+            .ok()
+    }))
 }
 
 /// Sets how a prayer went when the person says so themselves (`+prayed
@@ -343,7 +356,16 @@ pub async fn prayed_on(
     )
     .fetch_all(conn)
     .await?;
-    Ok(names.iter().filter_map(|n| n.parse().ok()).collect())
+    Ok(names
+        .iter()
+        .filter_map(|n| {
+            n.parse()
+                .inspect_err(|err| {
+                    warn!("prayer_log row of user {user_id} on {date} dropped: {err}")
+                })
+                .ok()
+        })
+        .collect())
 }
 
 /// Everything in `user_id`'s log from `first` to `last` (both included),
@@ -367,15 +389,27 @@ pub async fn log_between(
     )
     .fetch_all(conn)
     .await?;
-    // As in `find_reminder`: a row the code can't read is dropped.
+    // As in `find_reminder`: a row the code can't read is dropped, with a
+    // warning. The closure gives a `Result` so one `inspect_err` covers
+    // both parses; `?` on either ends it early with that error.
     Ok(rows
         .into_iter()
         .filter_map(|r| {
-            Some(Entry {
-                date: r.prayer_date,
-                prayer: r.prayer.parse().ok()?,
-                status: r.status.parse().ok()?,
-            })
+            let read = || -> Result<Entry, String> {
+                Ok(Entry {
+                    date: r.prayer_date,
+                    prayer: r.prayer.parse()?,
+                    status: r.status.parse()?,
+                })
+            };
+            read()
+                .inspect_err(|err| {
+                    warn!(
+                        "prayer_log row of user {user_id} on {} dropped: {err}",
+                        r.prayer_date
+                    )
+                })
+                .ok()
         })
         .collect())
 }

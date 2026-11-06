@@ -6,6 +6,7 @@
 
 use chrono::{DateTime, NaiveDate, Utc};
 use chrono_tz::Tz;
+use tracing::warn;
 
 use crate::geo::Coordinates;
 use crate::prayer::Location;
@@ -121,7 +122,11 @@ impl Overrides {
             timezone: self
                 .timezone
                 .as_deref()
-                .and_then(|name| name.parse().ok())
+                .and_then(|name| {
+                    name.parse()
+                        .inspect_err(|err| warn!("stored timezone {name:?} unusable: {err}"))
+                        .ok()
+                })
                 .unwrap_or(defaults.timezone),
             city,
             country,
