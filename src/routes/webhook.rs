@@ -806,15 +806,18 @@ mod tests {
     /// Posts a text message from Bilal in a group to the real app,
     /// signed with `test_state`'s secret; returns the status.
     async fn post_text(server: &str, id: &str, text: &str) -> reqwest::StatusCode {
-        let body = serde_json::json!({
-            "event": "message",
-            "payload": {
-                "id": id, "chat_id": crate::testkit::GROUP,
-                "from": "447700900001@s.whatsapp.net", "from_name": "Bilal",
-                "body": text, "is_from_me": false, "timestamp": "2026-11-02T09:00:00Z"
-            }
-        })
-        .to_string();
+        let payload = serde_json::json!({
+            "id": id, "chat_id": crate::testkit::GROUP,
+            "from": "447700900001@s.whatsapp.net", "from_name": "Bilal",
+            "body": text, "is_from_me": false, "timestamp": "2026-11-02T09:00:00Z"
+        });
+        post_message(server, payload).await
+    }
+
+    /// Posts any message `payload` (the part GOWA puts under `"payload"`),
+    /// signed; returns the status.
+    async fn post_message(server: &str, payload: serde_json::Value) -> reqwest::StatusCode {
+        let body = serde_json::json!({ "event": "message", "payload": payload }).to_string();
         reqwest::Client::new()
             .post(format!("{server}/webhook/whatsapp"))
             .header("x-hub-signature-256", sign(b"test", body.as_bytes()))
@@ -841,5 +844,132 @@ mod tests {
         // after the command is saved and the list sent, so it's only
         // logged: a 500 would make GOWA retry, and the retry is skipped.
         assert_eq!(post_text(&server, "M3", "/shop").await, 200);
+    }
+
+    /// How many rows `table` has. `query_scalar` without the `!` is checked
+    /// at run time rather than compile time, so it can be used for any
+    /// table here without adding to `.sqlx`.
+    async fn count(pool: &sqlx::SqlitePool, sql: &'static str) -> i64 {
+        sqlx::query_scalar(sql).fetch_one(pool).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn same_message_id_twice_adds_one_todo() {
+        use crate::testkit::{fake_gowa, serve_state, test_state};
+
+        let pool = crate::db::test_pool().await;
+        let gowa = fake_gowa().await;
+        let server = serve_state(test_state(pool.clone(), &gowa.url)).await;
+        // GOWA retrying: the same message ID again. Both answered 200 (the
+        // second is skipped as a duplicate), and the todo is added once.
+        assert_eq!(post_text(&server, "T1", "+todo fix the tap").await, 200);
+        assert_eq!(post_text(&server, "T1", "+todo fix the tap").await, 200);
+        assert_eq!(count(&pool, "SELECT COUNT(*) FROM todos").await, 1);
+        assert_eq!(count(&pool, "SELECT COUNT(*) FROM points").await, 0);
+        // One reply, to the first delivery only.
+        assert_eq!(gowa.sent.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn bot_own_message_is_ignored() {
+        use crate::testkit::{GROUP, fake_gowa, serve_state, test_state};
+
+        let pool = crate::db::test_pool().await;
+        let gowa = fake_gowa().await;
+        let server = serve_state(test_state(pool.clone(), &gowa.url)).await;
+        let own = serde_json::json!({
+            "id": "OWN1", "chat_id": GROUP,
+            "from": "447700900009@s.whatsapp.net", "from_name": "Family HQ",
+            "body": "+todo fix the tap", "is_from_me": true,
+            "timestamp": "2026-11-02T09:00:00Z"
+        });
+        assert_eq!(post_message(&server, own).await, 200);
+        // Nobody registered, nothing added, nothing sent.
+        assert_eq!(count(&pool, "SELECT COUNT(*) FROM users").await, 0);
+        assert_eq!(count(&pool, "SELECT COUNT(*) FROM todos").await, 0);
+        assert_eq!(
+            count(&pool, "SELECT COUNT(*) FROM processed_messages").await,
+            0
+        );
+        assert!(gowa.sent.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn slow_lookup_does_not_block_other_writers() {
+        use std::time::Duration;
+
+        use crate::testkit::{fake_gowa, serve_state, slow_service, test_state};
+
+        // A real file, so several connections share it as in production.
+        let db = crate::db::test_file("slow-lookup").await;
+        let gowa = fake_gowa().await;
+        let mut state = test_state(db.pool.clone(), &gowa.url);
+        // `/weather` looks the town up first; this geocoder takes 2 s.
+        let slow = slow_service(Duration::from_secs(2)).await;
+        Arc::get_mut(&mut state).expect("not shared yet").apis.geo =
+            crate::geo::Geo::with_geocoding_url(&slow);
+        let server = serve_state(state).await;
+
+        // `tokio::spawn` runs the slow request in the background, so the
+        // test carries on while it waits on the geocoder.
+        let weather = tokio::spawn({
+            let server = server.clone();
+            async move { post_text(&server, "W1", "/weather").await }
+        });
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // Meanwhile Khadija, in her own DM, adds to her shopping list. That
+        // write mustn't wait for Bilal's weather.
+        let shop = serde_json::json!({
+            "id": "S1", "chat_id": "447700900002@s.whatsapp.net",
+            "from": "447700900002@s.whatsapp.net", "from_name": "Khadija",
+            "body": "+shop milk", "is_from_me": false,
+            "timestamp": "2026-11-02T09:00:00Z"
+        });
+        let started = std::time::Instant::now();
+        let status =
+            tokio::time::timeout(Duration::from_secs(1), post_message(&server, shop)).await;
+        let waited = started.elapsed();
+
+        // Let the weather finish before the file is deleted.
+        assert_eq!(weather.await.unwrap(), 200);
+        let items = count(&db.pool, "SELECT COUNT(*) FROM shopping_items").await;
+        db.remove().await;
+        assert_eq!(
+            status.ok(),
+            Some(reqwest::StatusCode::OK),
+            "+shop waited {waited:?} behind /weather's lookup"
+        );
+        assert_eq!(items, 1);
+    }
+
+    // `multi_thread`: a runtime with several threads, so the two requests
+    // really run at the same time (the default test runtime has one).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_duplicate_deliveries_add_one_todo() {
+        use crate::testkit::{fake_gowa, seed_family, serve_state, test_state, utc};
+
+        let db = crate::db::test_file("duplicates").await;
+        {
+            let mut conn = db.pool.acquire().await.unwrap();
+            seed_family(&mut conn, utc("2026-11-01T09:00:00Z")).await;
+        }
+        let gowa = fake_gowa().await;
+        let server = serve_state(test_state(db.pool.clone(), &gowa.url)).await;
+        // GOWA delivering the same message twice at once. `join!` runs both
+        // requests together and waits for both.
+        let (first, second) = tokio::join!(
+            post_text(&server, "D1", "+todo fix the tap"),
+            post_text(&server, "D1", "+todo fix the tap"),
+        );
+        let todos = count(&db.pool, "SELECT COUNT(*) FROM todos").await;
+        db.remove().await;
+        // Both answered 200: one ran it, the other was skipped as a
+        // duplicate. Neither is a 500 (which would make GOWA retry again).
+        assert_eq!(
+            (first, second),
+            (reqwest::StatusCode::OK, reqwest::StatusCode::OK)
+        );
+        assert_eq!(todos, 1);
     }
 }

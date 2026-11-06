@@ -336,3 +336,14 @@ pub(crate) async fn failing_service() -> String {
     // here is all of them.
     serve(Router::new().fallback(|| async { StatusCode::INTERNAL_SERVER_ERROR })).await
 }
+
+/// A fake outside service that's slow: every path waits `delay`, then
+/// answers `{}` (to a geocoder, "no such town"). For tests that a slow
+/// service doesn't hold anything else up. Returns its base URL.
+pub(crate) async fn slow_service(delay: std::time::Duration) -> String {
+    serve(Router::new().fallback(move || async move {
+        tokio::time::sleep(delay).await;
+        Json(json!({}))
+    }))
+    .await
+}

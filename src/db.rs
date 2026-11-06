@@ -60,6 +60,52 @@ pub(crate) async fn test_pool() -> SqlitePool {
     pool
 }
 
+/// A database in a real file, opened by `connect` exactly as the app opens
+/// its own (WAL, a pool of several connections). For tests about several
+/// requests at once, which `test_pool`'s single in-memory connection can't
+/// show: there everyone simply queues for the one connection.
+#[cfg(test)]
+pub(crate) struct TestFile {
+    pub(crate) pool: SqlitePool,
+    path: std::path::PathBuf,
+}
+
+/// Creates a `TestFile` in the system's temp folder. `name` and the time
+/// make the file name unique, so tests running side by side never share
+/// one. Call `remove` at the end of the test.
+#[cfg(test)]
+pub(crate) async fn test_file(name: &str) -> TestFile {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "family-hq-test-{name}-{}-{nanos}.db",
+        std::process::id()
+    ));
+    let pool = connect(&format!("sqlite:{}", path.display()))
+        .await
+        .unwrap();
+    TestFile { pool, path }
+}
+
+#[cfg(test)]
+impl TestFile {
+    /// Closes every connection, then deletes the file and the two that WAL
+    /// keeps next to it (`-wal`, `-shm`). Taking `self` by value means the
+    /// pool can't be used after this. If a test panics before getting
+    /// here, the files are left in the temp folder; that's harmless.
+    pub(crate) async fn remove(self) {
+        self.pool.close().await;
+        for suffix in ["", "-wal", "-shm"] {
+            let mut name = self.path.clone().into_os_string();
+            name.push(suffix);
+            // Already gone is fine, so the result is ignored.
+            let _ = std::fs::remove_file(name);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! Tests for the schema's constraints: each one tries a good row and
