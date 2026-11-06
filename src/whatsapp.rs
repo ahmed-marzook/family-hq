@@ -23,11 +23,28 @@ pub struct Gowa {
 impl Gowa {
     /// `basic_auth` is GOWA's `user:password`, the same as `GOWA_BASIC_AUTH`.
     pub fn new(base_url: &str, basic_auth: &str) -> Self {
+        Gowa::with_client(base_url, basic_auth, reqwest::Client::new())
+    }
+
+    /// For tests: the same, but giving up on a request after `timeout`, so
+    /// a test of a GOWA that never answers doesn't wait the full 15 seconds.
+    #[cfg(test)]
+    pub(crate) fn with_timeout(
+        base_url: &str,
+        basic_auth: &str,
+        _timeout: std::time::Duration,
+    ) -> Self {
+        Gowa::with_client(base_url, basic_auth, reqwest::Client::new())
+    }
+
+    /// Builds a `Gowa` around an HTTP client made elsewhere, so `new` and
+    /// the test constructor share the rest.
+    fn with_client(base_url: &str, basic_auth: &str, http: reqwest::Client) -> Self {
         // "admin:pa:ss" → ("admin", "pa:ss"): only the first `:` splits.
         let (user, password) = basic_auth.split_once(':').unwrap_or((basic_auth, ""));
 
         Gowa {
-            http: reqwest::Client::new(),
+            http,
             base_url: base_url.trim_end_matches('/').to_string(),
             user: user.to_string(),
             password: password.to_string(),
@@ -181,5 +198,38 @@ mod tests {
                 name: "Family".to_string(),
             }]
         );
+    }
+
+    /// A GOWA that accepts the connection but never replies (hung, or
+    /// stuck behind a dead proxy) must not stall the caller forever: the
+    /// reminder loop awaits every send in turn, so one hang stops them all.
+    #[tokio::test]
+    async fn gives_up_on_a_gowa_that_never_answers() {
+        use std::time::Duration;
+
+        // Port 0 asks the OS for any free port.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        // Accept connections and keep them open without ever answering.
+        // The sockets are kept in a `Vec` so they aren't closed (dropping a
+        // socket closes it, which reqwest would see as an error at once).
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((socket, _)) = listener.accept().await {
+                held.push(socket);
+            }
+        });
+
+        let gowa = Gowa::with_timeout(&url, "user:pass", Duration::from_millis(300));
+        // The outer timeout only stops the test hanging if the client has
+        // none of its own; it should never be the one that fires.
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            gowa.send_text("447700900001@s.whatsapp.net", "hi", None, &[]),
+        )
+        .await
+        .expect("send_text should give up on its own, long before 10 seconds");
+        let err = result.expect_err("a GOWA that never answers is an error");
+        assert!(err.is_timeout(), "expected a timeout, got {err:?}");
     }
 }
