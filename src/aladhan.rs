@@ -295,6 +295,7 @@ fn to_day_times(date: NaiveDate, t: &ApiTimings) -> Result<DayTimes, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testkit::utc;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
@@ -309,10 +310,6 @@ mod tests {
         "date":{"hijri":{"date":"16-05-1448","day":"16","year":"1448",
             "month":{"number":5,"en":"Jumādá al-ūlá","days":30}}},
         "meta":{"timezone":"Europe/London"}}}"#;
-
-    fn utc(s: &str) -> DateTime<Utc> {
-        s.parse().unwrap()
-    }
 
     fn parse(reply: &ApiResponse) -> Result<DayTimes, String> {
         let date = NaiveDate::from_ymd_opt(2026, 10, 27).unwrap();

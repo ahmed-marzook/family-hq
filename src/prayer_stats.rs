@@ -334,14 +334,8 @@ fn breakdown(entries: &[Entry], with_days: bool) -> String {
 mod tests {
     use super::*;
     use crate::prayer::Window;
-
-    fn date(s: &str) -> NaiveDate {
-        s.parse().unwrap()
-    }
-
-    fn utc(s: &str) -> DateTime<Utc> {
-        s.parse().unwrap()
-    }
+    use crate::testkit::date;
+    use crate::testkit::utc;
 
     fn entry(day: &str, prayer: Prayer, status: Status) -> Entry {
         Entry {

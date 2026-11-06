@@ -419,10 +419,7 @@ pub fn own_week_text(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn date(s: &str) -> NaiveDate {
-        s.parse().unwrap()
-    }
+    use crate::testkit::date;
 
     const DUE: &str = "2026-11-13";
 

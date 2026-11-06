@@ -212,10 +212,7 @@ mod tests {
     use crate::prayer::Prayer;
     use crate::prayer_stats::Status;
     use crate::reports::Span;
-
-    fn date(s: &str) -> NaiveDate {
-        s.parse().unwrap()
-    }
+    use crate::testkit::date;
 
     fn person(id: i64, name: &str) -> Recipient {
         Recipient {

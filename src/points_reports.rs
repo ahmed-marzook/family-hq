@@ -145,10 +145,7 @@ pub fn messages(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn date(s: &str) -> NaiveDate {
-        s.parse().unwrap()
-    }
+    use crate::testkit::date;
 
     fn week() -> Period {
         Period::of(Span::Week, date("2026-11-08"))

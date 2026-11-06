@@ -170,10 +170,7 @@ async fn check_subscriber(
 mod tests {
     use super::*;
     use crate::repo::todos::Closed;
-
-    fn utc(s: &str) -> DateTime<Utc> {
-        s.parse().unwrap()
-    }
+    use crate::testkit::utc;
 
     const LONDON: Tz = chrono_tz::Europe::London;
 

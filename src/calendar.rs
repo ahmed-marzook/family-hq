@@ -413,6 +413,7 @@ pub fn day_line(now: DateTime<Utc>, timezone: Tz) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testkit::utc;
 
     fn date(y: i32, m: u32, d: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(y, m, d).unwrap()
@@ -625,10 +626,6 @@ mod tests {
         );
         assert_eq!(year(date(2028, 12, 31)).length, 366, "leap year");
         assert_eq!(year(date(2026, 12, 31)).days_left, 1);
-    }
-
-    fn utc(s: &str) -> DateTime<Utc> {
-        s.parse().unwrap()
     }
 
     #[test]

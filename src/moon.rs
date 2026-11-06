@@ -290,10 +290,7 @@ pub fn format(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn utc(s: &str) -> DateTime<Utc> {
-        s.parse().unwrap()
-    }
+    use crate::testkit::utc;
 
     /// Minutes between two times, either way round.
     fn minutes_apart(a: DateTime<Utc>, b: DateTime<Utc>) -> i64 {

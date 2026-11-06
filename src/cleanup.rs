@@ -375,15 +375,12 @@ async fn check_person(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn at(text: &str) -> DateTime<Utc> {
-        text.parse().unwrap()
-    }
+    use crate::testkit::utc;
 
     fn activity(last_active: &str, warned_at: Option<&str>, can_warn: bool) -> Activity {
         Activity {
-            last_active: at(last_active),
-            warned_at: warned_at.map(at),
+            last_active: utc(last_active),
+            warned_at: warned_at.map(utc),
             cleared_at: None,
             can_warn,
         }
@@ -394,26 +391,32 @@ mod tests {
     #[test]
     fn off_means_nothing_ever() {
         let long_ago = activity("2020-01-01T00:00:00Z", None, true);
-        assert_eq!(due(&long_ago, at("2026-11-02T12:00:00Z"), 0), Due::Nothing);
-        assert_eq!(clears_on(&long_ago, 0, at("2026-11-02T12:00:00Z")), None);
+        assert_eq!(due(&long_ago, utc("2026-11-02T12:00:00Z"), 0), Due::Nothing);
+        assert_eq!(clears_on(&long_ago, 0, utc("2026-11-02T12:00:00Z")), None);
     }
 
     #[test]
     fn warned_three_days_before_then_cleared() {
         // Last active 1 Nov at noon: warned from 12 Nov, cleared from 15 Nov.
         let quiet = activity("2026-11-01T12:00:00Z", None, true);
-        assert_eq!(due(&quiet, at("2026-11-12T11:59:00Z"), DAYS), Due::Nothing);
-        assert_eq!(due(&quiet, at("2026-11-12T12:00:00Z"), DAYS), Due::Warn);
+        assert_eq!(due(&quiet, utc("2026-11-12T11:59:00Z"), DAYS), Due::Nothing);
+        assert_eq!(due(&quiet, utc("2026-11-12T12:00:00Z"), DAYS), Due::Warn);
         assert_eq!(
-            clears_on(&quiet, DAYS, at("2026-11-02T00:00:00Z")),
-            Some(at("2026-11-15T12:00:00Z"))
+            clears_on(&quiet, DAYS, utc("2026-11-02T00:00:00Z")),
+            Some(utc("2026-11-15T12:00:00Z"))
         );
 
         let warned = activity("2026-11-01T12:00:00Z", Some("2026-11-12T12:05:00Z"), true);
         // Not warned twice, and not cleared before 3 days after the warning.
-        assert_eq!(due(&warned, at("2026-11-14T00:00:00Z"), DAYS), Due::Nothing);
-        assert_eq!(due(&warned, at("2026-11-15T12:00:00Z"), DAYS), Due::Nothing);
-        assert_eq!(due(&warned, at("2026-11-15T12:05:00Z"), DAYS), Due::Clear);
+        assert_eq!(
+            due(&warned, utc("2026-11-14T00:00:00Z"), DAYS),
+            Due::Nothing
+        );
+        assert_eq!(
+            due(&warned, utc("2026-11-15T12:00:00Z"), DAYS),
+            Due::Nothing
+        );
+        assert_eq!(due(&warned, utc("2026-11-15T12:05:00Z"), DAYS), Due::Clear);
     }
 
     #[test]
@@ -421,7 +424,7 @@ mod tests {
         // Inactive for months, never warned (it was off): warn now, clear 3
         // days later, never straight away.
         let months = activity("2026-06-01T00:00:00Z", None, true);
-        let now = at("2026-11-02T09:00:00Z");
+        let now = utc("2026-11-02T09:00:00Z");
         assert_eq!(due(&months, now, DAYS), Due::Warn);
         // Before the warning goes, the dashboard already says "3 days from now".
         assert_eq!(clears_on(&months, DAYS, now), Some(now + Duration::days(3)));
@@ -436,50 +439,50 @@ mod tests {
     #[test]
     fn without_a_dm_there_is_no_warning() {
         let no_dm = activity("2026-11-01T12:00:00Z", None, false);
-        assert_eq!(due(&no_dm, at("2026-11-12T12:00:00Z"), DAYS), Due::Nothing);
-        assert_eq!(due(&no_dm, at("2026-11-15T12:00:00Z"), DAYS), Due::Clear);
+        assert_eq!(due(&no_dm, utc("2026-11-12T12:00:00Z"), DAYS), Due::Nothing);
+        assert_eq!(due(&no_dm, utc("2026-11-15T12:00:00Z"), DAYS), Due::Clear);
         assert_eq!(
-            clears_on(&no_dm, DAYS, at("2026-11-02T00:00:00Z")),
-            Some(at("2026-11-15T12:00:00Z"))
+            clears_on(&no_dm, DAYS, utc("2026-11-02T00:00:00Z")),
+            Some(utc("2026-11-15T12:00:00Z"))
         );
     }
 
     #[test]
     fn a_period_shorter_than_the_warning_still_warns_first() {
         let quiet = activity("2026-11-01T12:00:00Z", None, true);
-        assert_eq!(due(&quiet, at("2026-11-01T12:00:00Z"), 1), Due::Warn);
+        assert_eq!(due(&quiet, utc("2026-11-01T12:00:00Z"), 1), Due::Warn);
         assert_eq!(
-            clears_on(&quiet, 1, at("2026-11-01T12:00:00Z")),
-            Some(at("2026-11-04T12:00:00Z"))
+            clears_on(&quiet, 1, utc("2026-11-01T12:00:00Z")),
+            Some(utc("2026-11-04T12:00:00Z"))
         );
     }
 
     #[test]
     fn already_cleared_means_nothing_more() {
         let cleared = Activity {
-            cleared_at: Some(at("2026-10-01T00:00:00Z")),
+            cleared_at: Some(utc("2026-10-01T00:00:00Z")),
             ..activity("2026-09-01T00:00:00Z", Some("2026-09-28T00:00:00Z"), true)
         };
         assert_eq!(
-            due(&cleared, at("2026-11-02T00:00:00Z"), DAYS),
+            due(&cleared, utc("2026-11-02T00:00:00Z"), DAYS),
             Due::Nothing
         );
-        assert_eq!(clears_on(&cleared, DAYS, at("2026-11-02T00:00:00Z")), None);
+        assert_eq!(clears_on(&cleared, DAYS, utc("2026-11-02T00:00:00Z")), None);
     }
 
     #[test]
     fn a_group_goes_a_day_after_it_disappears() {
-        let now = at("2026-11-02T12:00:00Z");
+        let now = utc("2026-11-02T12:00:00Z");
         assert_eq!(group_step(true, None, now), GroupStep::Keep);
         assert_eq!(group_step(false, None, now), GroupStep::Missing);
-        let missing_since = Some(at("2026-11-01T13:00:00Z"));
+        let missing_since = Some(utc("2026-11-01T13:00:00Z"));
         assert_eq!(
             group_step(false, missing_since, now),
             GroupStep::Keep,
             "23 hours"
         );
         assert_eq!(group_step(true, missing_since, now), GroupStep::Back);
-        let a_day_ago = Some(at("2026-11-01T12:00:00Z"));
+        let a_day_ago = Some(utc("2026-11-01T12:00:00Z"));
         assert_eq!(group_step(false, a_day_ago, now), GroupStep::Delete);
     }
 

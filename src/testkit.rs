@@ -13,9 +13,23 @@ use std::sync::{Arc, Mutex};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use chrono::{DateTime, NaiveDate, Utc};
 use serde_json::{Value, json};
 
 use crate::AppState;
+
+// ---- Times and dates ------------------------------------------------------
+
+/// A UTC time from text such as `"2026-11-02T12:00:00Z"`. `parse` works
+/// out which type to build from the return type, `DateTime<Utc>`.
+pub(crate) fn utc(s: &str) -> DateTime<Utc> {
+    s.parse().unwrap()
+}
+
+/// A calendar date from text such as `"2026-11-02"`.
+pub(crate) fn date(s: &str) -> NaiveDate {
+    s.parse().unwrap()
+}
 
 // ---- The app on a free port ----------------------------------------------
 

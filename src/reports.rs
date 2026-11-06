@@ -299,14 +299,8 @@ pub async fn send(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn date(s: &str) -> NaiveDate {
-        s.parse().unwrap()
-    }
-
-    fn utc(s: &str) -> DateTime<Utc> {
-        s.parse().unwrap()
-    }
+    use crate::testkit::date;
+    use crate::testkit::utc;
 
     #[test]
     fn delivery_round_trips_and_defaults_to_here() {

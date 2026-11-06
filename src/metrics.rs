@@ -318,6 +318,7 @@ pub fn by_hour(uses: &[(DateTime<Utc>, i64)], timezone: Tz) -> [i64; 24] {
 mod tests {
     use super::*;
     use crate::parser::parse;
+    use crate::testkit::utc;
 
     /// `(name, detail)` for a typed message, via the real parser.
     fn logged(text: &str) -> (String, Option<String>) {
@@ -421,10 +422,6 @@ mod tests {
 
     use chrono_tz::Europe::London;
 
-    fn at(text: &str) -> DateTime<Utc> {
-        text.parse().unwrap()
-    }
-
     fn day(text: &str) -> NaiveDate {
         text.parse().unwrap()
     }
@@ -432,12 +429,12 @@ mod tests {
     #[test]
     fn every_day_is_there_even_quiet_ones() {
         let uses = [
-            (at("2026-10-20T09:00:00Z"), 1),
-            (at("2026-10-20T10:00:00Z"), 1),
-            (at("2026-10-20T11:00:00Z"), 2),
-            (at("2026-10-22T09:00:00Z"), 2),
+            (utc("2026-10-20T09:00:00Z"), 1),
+            (utc("2026-10-20T10:00:00Z"), 1),
+            (utc("2026-10-20T11:00:00Z"), 2),
+            (utc("2026-10-22T09:00:00Z"), 2),
             // Outside the range: left out.
-            (at("2026-10-10T09:00:00Z"), 1),
+            (utc("2026-10-10T09:00:00Z"), 1),
         ];
         let days = per_day(&uses, London, day("2026-10-20"), day("2026-10-22"));
         assert_eq!(
@@ -466,11 +463,11 @@ mod tests {
     fn days_are_on_the_uk_clock() {
         // 23:30 UTC in summer (BST) is 00:30 the next day in London; in
         // winter (GMT) it's still the same day.
-        let summer = [(at("2026-07-01T23:30:00Z"), 1)];
+        let summer = [(utc("2026-07-01T23:30:00Z"), 1)];
         let days = per_day(&summer, London, day("2026-07-01"), day("2026-07-02"));
         assert_eq!((days[0].uses, days[1].uses), (0, 1));
 
-        let winter = [(at("2026-12-01T23:30:00Z"), 1)];
+        let winter = [(utc("2026-12-01T23:30:00Z"), 1)];
         let days = per_day(&winter, London, day("2026-12-01"), day("2026-12-02"));
         assert_eq!((days[0].uses, days[1].uses), (1, 0));
     }
@@ -479,15 +476,15 @@ mod tests {
     fn hours_follow_bst_and_gmt() {
         let uses = [
             // BST (UTC+1): 17:30 UTC is 18:30 in London.
-            (at("2026-07-01T17:30:00Z"), 1),
+            (utc("2026-07-01T17:30:00Z"), 1),
             // GMT (UTC+0): 17:30 UTC is 17:30.
-            (at("2026-12-01T17:30:00Z"), 1),
+            (utc("2026-12-01T17:30:00Z"), 1),
             // The clocks went back at 01:00 UTC on 25 Oct 2026: 00:30 UTC
             // is 01:30 BST, and 01:30 UTC is 01:30 GMT. Both hour 1.
-            (at("2026-10-25T00:30:00Z"), 1),
-            (at("2026-10-25T01:30:00Z"), 1),
+            (utc("2026-10-25T00:30:00Z"), 1),
+            (utc("2026-10-25T01:30:00Z"), 1),
             // 23:30 UTC in summer is 00:30 the next day.
-            (at("2026-07-01T23:30:00Z"), 1),
+            (utc("2026-07-01T23:30:00Z"), 1),
         ];
         let hours = by_hour(&uses, London);
         assert_eq!(hours[18], 1);

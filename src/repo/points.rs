@@ -169,10 +169,7 @@ mod tests {
     use crate::person::Person;
     use crate::points::Reason;
     use crate::repo::{chats, users};
-
-    fn date(s: &str) -> NaiveDate {
-        s.parse().unwrap()
-    }
+    use crate::testkit::date;
 
     fn period(first: &str, last: &str) -> Period {
         Period {

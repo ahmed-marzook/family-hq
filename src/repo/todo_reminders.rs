@@ -108,14 +108,11 @@ mod tests {
     use crate::db::test_pool;
     use crate::person::Person;
     use crate::repo::{chats, users};
-
-    fn at(s: &str) -> DateTime<Utc> {
-        s.parse().unwrap()
-    }
+    use crate::testkit::utc;
 
     /// A user and a group they're in.
     async fn setup(conn: &mut SqliteConnection) -> (i64, i64) {
-        let now = at("2026-10-31T09:00:00Z");
+        let now = utc("2026-10-31T09:00:00Z");
         let bilal = Person {
             name: "Bilal".to_string(),
             jid: "447700900001@s.whatsapp.net".to_string(),
@@ -136,7 +133,7 @@ mod tests {
         let pool = test_pool().await;
         let mut conn = pool.acquire().await.unwrap();
         let (chat, user) = setup(&mut conn).await;
-        let now = at("2026-10-31T09:00:00Z");
+        let now = utc("2026-10-31T09:00:00Z");
 
         assert!(!is_on(&mut conn, chat, user).await.unwrap());
         assert!(subscribers(&mut conn).await.unwrap().is_empty());
@@ -157,14 +154,14 @@ mod tests {
         let mut conn = pool.acquire().await.unwrap();
         let (chat, user) = setup(&mut conn).await;
         // Turned on at 13:10.
-        enable(&mut conn, chat, user, at("2026-10-31T13:10:00Z"))
+        enable(&mut conn, chat, user, utc("2026-10-31T13:10:00Z"))
             .await
             .unwrap();
 
-        let earlier = at("2026-10-31T13:00:00Z");
+        let earlier = utc("2026-10-31T13:00:00Z");
         assert!(!claim(&mut conn, chat, user, earlier).await.unwrap());
 
-        let next = at("2026-10-31T18:00:00Z");
+        let next = utc("2026-10-31T18:00:00Z");
         assert!(claim(&mut conn, chat, user, next).await.unwrap());
         assert!(!claim(&mut conn, chat, user, next).await.unwrap(), "once");
     }

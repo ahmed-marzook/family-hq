@@ -459,10 +459,7 @@ pub fn push_key(date: NaiveDate, prayer: Prayer, kind: ReminderKind) -> String {
 mod tests {
     use super::*;
     use crate::settings::tests::defaults;
-
-    fn utc(s: &str) -> DateTime<Utc> {
-        s.parse().unwrap()
-    }
+    use crate::testkit::utc;
 
     fn window(prayer: Prayer, start: &str, end: &str) -> Window {
         Window {
