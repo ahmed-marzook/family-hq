@@ -53,7 +53,8 @@ pub async fn action(
         warn!("no token");
         return Ok((StatusCode::UNAUTHORIZED, "Not allowed"));
     };
-    let mut tx = state.db.begin().await?;
+    // `BEGIN IMMEDIATE`: see `routes::webhook::handle_message`.
+    let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
     let Some(user_id) = push_repo::user_for_token(&mut tx, token).await? else {
         // A wrong token, or one from before `/push off`.
         warn!("unknown token");

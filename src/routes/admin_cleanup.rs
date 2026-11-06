@@ -28,7 +28,8 @@ pub async fn clear(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
 ) -> Result<Json<ClearResult>, AppError> {
-    let mut tx = state.db.begin().await?;
+    // `BEGIN IMMEDIATE`: see `routes::webhook::handle_message`.
+    let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
     if admin::user_jid(&mut tx, id).await?.is_none() {
         return Err(AppError::NotFound);
     }

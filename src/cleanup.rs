@@ -226,7 +226,8 @@ pub async fn check_groups(state: &AppState, now: DateTime<Utc>) -> Result<(), Ap
                 // On the connection already held: asking the pool for a
                 // second one while holding this would tie up two (and
                 // wait forever with a pool of one).
-                let mut tx = conn.begin().await?;
+                // `BEGIN IMMEDIATE`: see `routes::webhook::handle_message`.
+                let mut tx = conn.begin_with("BEGIN IMMEDIATE").await?;
                 repo::delete_chat(&mut tx, group.id).await?;
                 tx.commit().await?;
                 info!("deleted {name} and its lists (the bot left it)");
@@ -302,7 +303,7 @@ pub async fn leave_and_delete(
     wa_chat_id: &str,
     only_if_inactive_since: Option<DateTime<Utc>>,
 ) -> Result<bool, AppError> {
-    let mut tx = state.db.begin().await?;
+    let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
     // A "let chain": the second test only runs if the first matched.
     if let Some(since) = only_if_inactive_since
         && !repo::group_still_inactive(&mut tx, chat_id, since).await?
@@ -346,7 +347,7 @@ async fn check_person(
             info!("warned {}", person.name);
         }
         Due::Clear => {
-            let mut tx = state.db.begin().await?;
+            let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
             // `Some` only if they're still as inactive as when `people` read
             // them: a message in the meantime keeps their data.
             let cleared =

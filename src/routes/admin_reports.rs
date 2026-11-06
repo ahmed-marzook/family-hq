@@ -90,7 +90,7 @@ pub async fn user_reports(
     if feature == Feature::Points {
         return Err(AppError::NotFound);
     }
-    let mut tx = state.db.begin().await?;
+    let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
     let dm = dm_for(&mut tx, id).await?;
     reports::set_delivery(&mut tx, dm, feature, delivery).await?;
     tx.commit().await?;

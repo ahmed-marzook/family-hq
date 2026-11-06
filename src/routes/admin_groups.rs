@@ -138,7 +138,7 @@ pub async fn change_settings(
         ensure_group(&mut conn, id).await?;
         check_patch(&mut conn, &state, Some(id), patch).await?
     };
-    let mut tx = state.db.begin().await?;
+    let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
     ensure_group(&mut tx, id).await?;
     save_patch(&mut tx, &state, id, checked).await?;
     tx.commit().await?;

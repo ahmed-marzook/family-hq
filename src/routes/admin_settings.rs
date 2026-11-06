@@ -72,7 +72,9 @@ pub async fn change_settings(
     // A *transaction*: every change below is kept only if `commit` is
     // reached. Returning early (with `?`) drops `tx`, which rolls
     // everything back, including a DM created for this.
-    let mut tx = state.db.begin().await?;
+    // `BEGIN IMMEDIATE` takes the write lock at once (see
+    // `routes::webhook::handle_message`).
+    let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
     let dm = dm_for(&mut tx, id).await?;
     save_patch(&mut tx, &state, dm, checked).await?;
     tx.commit().await?;
@@ -104,7 +106,7 @@ pub async fn prayer_reminders(
     Path(id): Path<i64>,
     Json(switch): Json<Switch>,
 ) -> Result<Json<UserDetail>, AppError> {
-    let mut tx = state.db.begin().await?;
+    let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
     let dm = dm_for(&mut tx, id).await?;
     stored::set_prayer_reminders(&mut tx, dm, switch.on).await?;
     tx.commit().await?;
