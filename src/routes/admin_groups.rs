@@ -220,7 +220,7 @@ mod tests {
     use crate::db::test_pool;
     use crate::geo::Coordinates;
     use crate::repo::settings as stored;
-    use crate::testkit::{fake_geocoder, seed_family, start_server_with_geocoder};
+    use crate::testkit::{admin_get, fake_geocoder, seed_family, start_server_with_geocoder};
 
     async fn send(
         method: reqwest::Method,
@@ -236,10 +236,6 @@ mod tests {
         let response = request.send().await.unwrap();
         let status = response.status();
         (status, response.json().await.unwrap_or(Value::Null))
-    }
-
-    async fn get(url: String) -> (StatusCode, Value) {
-        send(reqwest::Method::GET, url, None).await
     }
 
     /// Bilal (with a DM and a home location) and Khadija in "Family".
@@ -264,7 +260,7 @@ mod tests {
         let (group, dm) = seed(&pool).await;
         let server = start_server_with_geocoder(pool, &fake_geocoder().await).await;
 
-        let (status, list) = get(format!("{server}/api/groups")).await;
+        let (status, list) = admin_get(&server, "/api/groups").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(list["recent_days"], 30);
         let groups = list["groups"].as_array().unwrap();
@@ -276,7 +272,7 @@ mod tests {
             "clearing is on in tests"
         );
 
-        let (status, page) = get(format!("{server}/api/groups/{group}")).await;
+        let (status, page) = admin_get(&server, &format!("/api/groups/{group}")).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(page["group"]["id"], group);
         assert_eq!(page["settings"]["place"]["own"], false);
@@ -293,7 +289,7 @@ mod tests {
         assert!(!text.contains("51.12"), "{text}");
 
         for path in [format!("/api/groups/{dm}"), "/api/groups/999".to_string()] {
-            let (status, _) = get(format!("{server}{path}")).await;
+            let (status, _) = admin_get(&server, &path).await;
             assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
         }
     }

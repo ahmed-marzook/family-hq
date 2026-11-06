@@ -282,17 +282,7 @@ mod tests {
     use crate::metrics::{Event, Kind};
     use crate::repo::chats;
     use crate::repo::metrics::{Logged, record};
-    use crate::testkit::{register, start_server_with};
-
-    async fn get(url: String) -> (StatusCode, String) {
-        let response = reqwest::Client::new()
-            .get(url)
-            .basic_auth("test", Some("test"))
-            .send()
-            .await
-            .unwrap();
-        (response.status(), response.text().await.unwrap())
-    }
+    use crate::testkit::{admin_get_text, register, start_server_with};
 
     #[allow(clippy::too_many_arguments)]
     async fn log_row(
@@ -406,7 +396,8 @@ mod tests {
         drop(conn);
         let server = start_server_with(pool).await;
         let metrics = async |query: String| -> Value {
-            let (status, body) = get(format!("{server}/api/metrics?days=7&{query}")).await;
+            let (status, body) =
+                admin_get_text(&server, &format!("/api/metrics?days=7&{query}")).await;
             assert_eq!(status, StatusCode::OK, "{query}: {body}");
             serde_json::from_str(&body).unwrap()
         };
@@ -449,7 +440,7 @@ mod tests {
         assert_eq!(m["totals"]["uses"], 0);
 
         for query in ["user=999", "chat=999"] {
-            let (status, _) = get(format!("{server}/api/metrics?{query}")).await;
+            let (status, _) = admin_get_text(&server, &format!("/api/metrics?{query}")).await;
             assert_eq!(status, StatusCode::NOT_FOUND, "{query}");
         }
     }
@@ -460,7 +451,7 @@ mod tests {
         seed(&pool).await;
         let server = start_server_with(pool.clone()).await;
 
-        let (status, body) = get(format!("{server}/api/metrics?days=7")).await;
+        let (status, body) = admin_get_text(&server, "/api/metrics?days=7").await;
         assert_eq!(status, StatusCode::OK);
         let m: Value = serde_json::from_str(&body).unwrap();
         assert_eq!(m["days"], 7);
@@ -525,7 +516,7 @@ mod tests {
             ("?days=30", "-30 days"),
             ("", "-100 years"),
         ] {
-            let (_, body) = get(format!("{server}/api/metrics{query}")).await;
+            let (_, body) = admin_get_text(&server, &format!("/api/metrics{query}")).await;
             let m: Value = serde_json::from_str(&body).unwrap();
 
             // "Most used commands this week" from docs/METRICS.md, summed,
@@ -561,7 +552,7 @@ mod tests {
         seed(&pool).await;
         let server = start_server_with(pool).await;
 
-        let (_, body) = get(format!("{server}/api/metrics")).await;
+        let (_, body) = admin_get_text(&server, "/api/metrics").await;
         let m: Value = serde_json::from_str(&body).unwrap();
         assert_eq!(m["days"], Value::Null);
         assert_eq!(m["totals"]["uses"], 6);
@@ -574,16 +565,16 @@ mod tests {
         let days = (london(now) - london(now - Duration::days(40))).num_days() + 1;
         assert_eq!(m["per_day"].as_array().unwrap().len() as i64, days);
 
-        let (status, _) = get(format!("{server}/api/metrics?days=abc")).await;
+        let (status, _) = admin_get_text(&server, "/api/metrics?days=abc").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        let (status, _) = get(format!("{server}/api/metrics?days=-1")).await;
+        let (status, _) = admin_get_text(&server, "/api/metrics?days=-1").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
     async fn no_uses_at_all() {
         let server = start_server_with(test_pool().await).await;
-        let (status, body) = get(format!("{server}/api/metrics?days=30")).await;
+        let (status, body) = admin_get_text(&server, "/api/metrics?days=30").await;
         assert_eq!(status, StatusCode::OK);
         let m: Value = serde_json::from_str(&body).unwrap();
         assert_eq!(m["totals"]["uses"], 0);

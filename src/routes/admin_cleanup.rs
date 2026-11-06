@@ -89,7 +89,7 @@ mod tests {
     use crate::cleanup;
     use crate::db::test_pool;
     use crate::repo::{chats, todos};
-    use crate::testkit::{fake_gowa, serve_state, test_state};
+    use crate::testkit::{admin_get, fake_gowa, serve_state, test_state};
 
     const GROUP: &str = "120363000000000001@g.us";
     const BILAL: &str = "447700900001@s.whatsapp.net";
@@ -251,17 +251,6 @@ mod tests {
         (status, response.json().await.unwrap_or(Value::Null))
     }
 
-    async fn get(server: &str, path: &str) -> (StatusCode, Value) {
-        let response = reqwest::Client::new()
-            .get(format!("{server}{path}"))
-            .basic_auth("test", Some("test"))
-            .send()
-            .await
-            .unwrap();
-        let status = response.status();
-        (status, response.json().await.unwrap_or(Value::Null))
-    }
-
     #[tokio::test]
     async fn the_dashboard_shows_when_and_can_clear_now() {
         let pool = test_pool().await;
@@ -274,7 +263,7 @@ mod tests {
             .await
             .unwrap();
 
-        let (_, list) = get(&server, "/api/users").await;
+        let (_, list) = admin_get(&server, "/api/users").await;
         assert_eq!(
             list["cleanup"],
             json!({ "inactive_days": 14, "warn_days": 3 })
@@ -287,7 +276,7 @@ mod tests {
         let (status, answer) = post_clear(&server, id).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(answer, json!({ "deleted": false }));
-        let (status, page) = get(&server, &format!("/api/users/{id}")).await;
+        let (status, page) = admin_get(&server, &format!("/api/users/{id}")).await;
         assert_eq!(status, StatusCode::OK);
         assert!(page["user"]["cleared_at"].is_string());
         assert_eq!(page["user"]["clears_on"], Value::Null);
@@ -308,7 +297,7 @@ mod tests {
         drop(conn);
         let (_, answer) = post_clear(&server, id).await;
         assert_eq!(answer, json!({ "deleted": true }));
-        let (status, _) = get(&server, &format!("/api/users/{id}")).await;
+        let (status, _) = admin_get(&server, &format!("/api/users/{id}")).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
 
         let (status, _) = post_clear(&server, 999).await;
@@ -476,7 +465,7 @@ mod tests {
         };
 
         // The user page says when the bot would leave.
-        let (_, page) = get(&server, "/api/users/1").await;
+        let (_, page) = admin_get(&server, "/api/users/1").await;
         let card = page["chats"]
             .as_array()
             .unwrap()

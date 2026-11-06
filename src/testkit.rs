@@ -132,7 +132,7 @@ pub(crate) fn test_state(pool: sqlx::SqlitePool, gowa_url: &str) -> Arc<AppState
         port: 0,
         webhook_secret: "test".to_string(),
         gowa_url: gowa_url.to_string(),
-        gowa_basic_auth: "test:test".to_string(),
+        gowa_basic_auth: format!("{ADMIN_USER}:{ADMIN_PASSWORD}"),
         database_url: "sqlite::memory:".to_string(),
         inactive_days: 14,
         backup_dir: None,
@@ -182,6 +182,37 @@ async fn serve(app: Router) -> String {
     let address = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     format!("http://{address}")
+}
+
+// ---- The admin API --------------------------------------------------------
+
+/// The login `test_state` gives the server (its `GOWA_BASIC_AUTH`).
+pub(crate) const ADMIN_USER: &str = "test";
+pub(crate) const ADMIN_PASSWORD: &str = "test";
+
+/// `GET {server}{path}` with the admin login; the status and the body as
+/// JSON (`Value::Null` if it wasn't JSON).
+pub(crate) async fn admin_get(server: &str, path: &str) -> (StatusCode, Value) {
+    let response = admin_request(server, path).await;
+    let status = response.status();
+    (status, response.json().await.unwrap_or(Value::Null))
+}
+
+/// The same, with the body as plain text, exactly as it was sent. The
+/// privacy tests use this: a search of the raw text can't miss anything,
+/// even in an answer that isn't valid JSON.
+pub(crate) async fn admin_get_text(server: &str, path: &str) -> (StatusCode, String) {
+    let response = admin_request(server, path).await;
+    (response.status(), response.text().await.unwrap())
+}
+
+async fn admin_request(server: &str, path: &str) -> reqwest::Response {
+    reqwest::Client::new()
+        .get(format!("{server}{path}"))
+        .basic_auth(ADMIN_USER, Some(ADMIN_PASSWORD))
+        .send()
+        .await
+        .unwrap()
 }
 
 // ---- Fake outside services ------------------------------------------------

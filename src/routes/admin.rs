@@ -495,7 +495,7 @@ mod tests {
     use crate::geo::Coordinates;
     use crate::settings::Overrides;
     use crate::settings::tests::defaults;
-    use crate::testkit::{Family, seed_family, start_server_with};
+    use crate::testkit::{Family, admin_get_text, seed_family, start_server_with};
 
     #[test]
     fn settings_show_defaults_then_own_choices() {
@@ -563,19 +563,6 @@ mod tests {
         );
         assert!(!view.timezone.own);
         assert!(view.prayer_reminders);
-    }
-
-    /// The login `start_server_with` gives the server.
-    const LOGIN: (&str, &str) = ("test", "test");
-
-    async fn get(url: String) -> (StatusCode, String) {
-        let response = reqwest::Client::new()
-            .get(url)
-            .basic_auth(LOGIN.0, Some(LOGIN.1))
-            .send()
-            .await
-            .unwrap();
-        (response.status(), response.text().await.unwrap())
     }
 
     /// Bilal (with a DM, its private lists and a location) and Khadija, in a
@@ -652,7 +639,7 @@ mod tests {
         let (bilal, group, dm) = seed(&pool).await;
         let server = start_server_with(pool).await;
 
-        let (status, body) = get(format!("{server}/api/users")).await;
+        let (status, body) = admin_get_text(&server, "/api/users").await;
         assert_eq!(status, StatusCode::OK);
         let list: Value = serde_json::from_str(&body).unwrap();
         assert_eq!(list["recent_days"], 30);
@@ -664,7 +651,7 @@ mod tests {
             .collect();
         assert_eq!(names, ["Bilal", "Khadija"]);
 
-        let (status, body) = get(format!("{server}/api/users/{bilal}")).await;
+        let (status, body) = admin_get_text(&server, &format!("/api/users/{bilal}")).await;
         assert_eq!(status, StatusCode::OK);
         let detail: Value = serde_json::from_str(&body).unwrap();
         assert_eq!(detail["user"]["name"], "Bilal");
@@ -681,7 +668,7 @@ mod tests {
         assert_eq!(chats[1]["name"], "Family");
         assert_eq!(chats[1]["done_todos"], 1);
 
-        let (status, body) = get(format!("{server}/api/users/999")).await;
+        let (status, body) = admin_get_text(&server, "/api/users/999").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body, r#"{"error":"not found"}"#);
     }
@@ -692,7 +679,7 @@ mod tests {
         let (_, group, _) = seed(&pool).await;
         let server = start_server_with(pool).await;
 
-        let (status, body) = get(format!("{server}/api/chats/{group}/todos")).await;
+        let (status, body) = admin_get_text(&server, &format!("/api/chats/{group}/todos")).await;
         assert_eq!(status, StatusCode::OK);
         let todos: Value = serde_json::from_str(&body).unwrap();
         assert_eq!(todos["group"]["name"], "Family");
@@ -707,7 +694,7 @@ mod tests {
         assert_eq!(list[1]["skipped"], false);
         assert!(list[1]["done_at"].is_string());
 
-        let (status, body) = get(format!("{server}/api/chats/{group}/shop")).await;
+        let (status, body) = admin_get_text(&server, &format!("/api/chats/{group}/shop")).await;
         assert_eq!(status, StatusCode::OK);
         let shop: Value = serde_json::from_str(&body).unwrap();
         assert_eq!(shop["items"][0]["name"], "milk");
@@ -721,16 +708,16 @@ mod tests {
         let server = start_server_with(pool).await;
 
         for list in ["todos", "shop"] {
-            let (status, body) = get(format!("{server}/api/chats/{dm}/{list}")).await;
+            let (status, body) = admin_get_text(&server, &format!("/api/chats/{dm}/{list}")).await;
             assert_eq!(status, StatusCode::NOT_FOUND, "{list}");
             assert_eq!(body, r#"{"error":"not found"}"#);
         }
-        let (status, _) = get(format!("{server}/api/chats/999/todos")).await;
+        let (status, _) = admin_get_text(&server, "/api/chats/999/todos").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
 
         // Every response the dashboard can get, read as plain text.
         for path in ["/api/users".to_string(), format!("/api/users/{bilal}")] {
-            let (_, body) = get(format!("{server}{path}")).await;
+            let (_, body) = admin_get_text(&server, &path).await;
             assert!(!body.contains("SECRET"), "{path}: {body}");
             assert!(!body.contains("51.12"), "{path}: {body}");
             assert!(!body.contains("0.65"), "{path}: {body}");
@@ -798,7 +785,7 @@ mod tests {
             format!("/api/users/{bilal}/prayers?month=2026-11"),
         ];
         for path in paths {
-            let (status, body) = get(format!("{server}{path}")).await;
+            let (status, body) = admin_get_text(&server, &path).await;
             // A 404 is fine (the DM's lists), but nothing else may fail,
             // or a broken route would pass by sending nothing.
             assert!(
@@ -816,7 +803,7 @@ mod tests {
     #[tokio::test]
     async fn not_a_number_is_a_400() {
         let server = start_server_with(test_pool().await).await;
-        let (status, _) = get(format!("{server}/api/users/abc")).await;
+        let (status, _) = admin_get_text(&server, "/api/users/abc").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 }
