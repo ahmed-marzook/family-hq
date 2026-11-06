@@ -122,12 +122,31 @@ async fn check_chat(
     // reminder is for.
     let name_places = places.len() > 1;
     for place in &places {
-        send_due(state, chat, place, name_places, now).await?;
-        // After the reminders: prayers whose time has ended are marked
-        // missed, then the day's, week's and month's reports go out.
-        prayer_tracking::check(state, chat, place, now).await?;
+        // Like one chat in `check`: one place's problem (its town can't be
+        // found today) must not stop the other places in the same group,
+        // so it's logged and the loop goes on.
+        if let Err(err) = check_place(state, chat, place, name_places, now).await {
+            warn!(
+                "{} ({}) failed: {err}",
+                chat.wa_chat_id, place.settings.city
+            );
+        }
     }
     Ok(())
+}
+
+/// Everything the loop does for one place in one chat.
+async fn check_place(
+    state: &AppState,
+    chat: &ReminderChat,
+    place: &Place,
+    name_place: bool,
+    now: DateTime<Utc>,
+) -> Result<(), AppError> {
+    send_due(state, chat, place, name_place, now).await?;
+    // After the reminders: prayers whose time has ended are marked
+    // missed, then the day's, week's and month's reports go out.
+    prayer_tracking::check(state, chat, place, now).await
 }
 
 /// Splits a group's members by their own settings. Members who never set
@@ -183,12 +202,21 @@ async fn send_due(
 ) -> Result<(), AppError> {
     let settings = &place.settings;
     let location = state.apis.prayer_location(settings).await?;
-    let day = state
-        .apis
-        .prayer_times
-        .for_date(&location, settings.today(now))
-        .await?;
-    let due = prayer::due_reminders(&day, now, settings.prayer_ending_minutes);
+    let today = settings.today(now);
+    // Isha ends at Islamic midnight, often after midnight on the clock
+    // (about 01:00 in a UK summer), so its "ending soon" can fall on the
+    // next day: yesterday's times are checked too, as in
+    // `prayer_tracking::check`. Each reminder keeps the date it's *for*,
+    // which is part of its claim, so yesterday's Isha and today's are
+    // never mixed up. (`pred_opt` is `None` only on the first day chrono
+    // knows; `flatten` skips it.)
+    let mut due = Vec::new();
+    for date in [today.pred_opt(), Some(today)].into_iter().flatten() {
+        let day = state.apis.prayer_times.for_date(&location, date).await?;
+        for (kind, window) in prayer::due_reminders(&day, now, settings.prayer_ending_minutes) {
+            due.push((day.date, kind, window));
+        }
+    }
     if due.is_empty() {
         return Ok(());
     }
@@ -202,13 +230,13 @@ async fn send_due(
     };
     let mut conn = state.db.acquire().await?;
 
-    for (kind, window) in due {
+    for (date, kind, window) in due {
         // "Ending soon" only goes to people who haven't prayed it yet.
         let mut recipients = place.recipients.clone();
         if kind == ReminderKind::Ending {
             let mut still_to_pray = Vec::new();
             for r in recipients {
-                let prayed = prayers::prayed_on(&mut conn, r.user_id, day.date).await?;
+                let prayed = prayers::prayed_on(&mut conn, r.user_id, date).await?;
                 if !prayed.contains(&window.prayer) {
                     still_to_pray.push(r);
                 }
@@ -227,7 +255,7 @@ async fn send_due(
             &mut conn,
             &NewReminder {
                 chat_id: chat.id,
-                date: day.date,
+                date,
                 prayer: window.prayer,
                 kind,
                 place: &place_key,
@@ -276,9 +304,8 @@ async fn send_due(
 
         // The same reminder as a push, for anyone it's for who has push on.
         if let Some(ntfy) = &state.apis.push {
-            let notice =
-                prayer::reminder_notice(kind, &window, day.date, now, settings, place_name);
-            let key = prayer::push_key(day.date, window.prayer, kind);
+            let notice = prayer::reminder_notice(kind, &window, date, now, settings, place_name);
+            let key = prayer::push_key(date, window.prayer, kind);
             for r in &recipients {
                 push::send_once(
                     ntfy,
