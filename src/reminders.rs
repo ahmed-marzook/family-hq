@@ -365,4 +365,178 @@ mod tests {
         assert_eq!(places.len(), 1);
         assert!(places[0].recipients.is_empty());
     }
+
+    // ---- the loop itself, with a fake GOWA and cached prayer times ----
+
+    use std::sync::Arc;
+
+    use chrono::NaiveDate;
+
+    use crate::aladhan::PrayerTimes;
+    use crate::db::test_pool;
+    use crate::person::Person;
+    use crate::prayer::{DayTimes, Prayer, Window};
+    use crate::repo::{chats, users};
+    use crate::reports::Delivery;
+    use crate::routes::api::{FakeGowa, fake_gowa, test_state};
+
+    /// A June day in Milton Keynes (BST, UTC+1; the times here are UTC).
+    /// Isha runs to Islamic midnight, 01:00 local, which is already the
+    /// next day on the clock.
+    fn june(day: u32) -> DayTimes {
+        let date = NaiveDate::from_ymd_opt(2026, 6, day).unwrap();
+        let at = |h, m| date.and_hms_opt(h, m, 0).unwrap().and_utc();
+        let window = |prayer, start, end| Window { prayer, start, end };
+        DayTimes {
+            date,
+            hijri: None,
+            windows: [
+                window(Prayer::Fajr, at(1, 30), at(3, 45)),
+                window(Prayer::Dhuhr, at(12, 5), at(16, 20)),
+                window(Prayer::Asr, at(16, 20), at(20, 20)),
+                window(Prayer::Maghrib, at(20, 20), at(21, 40)),
+                // Midnight UTC, the start of the next day.
+                window(
+                    Prayer::Isha,
+                    at(21, 40),
+                    at(0, 0) + chrono::Duration::days(1),
+                ),
+            ],
+        }
+    }
+
+    /// A test state on a fake GOWA whose prayer times for the default
+    /// place (Milton Keynes, with coordinates) are already in memory for
+    /// 14 and 15 June, so nothing reaches AlAdhan.
+    async fn state_with_june(pool: sqlx::SqlitePool) -> (Arc<AppState>, FakeGowa) {
+        let gowa = fake_gowa().await;
+        let mut state = test_state(pool, &gowa.url);
+        // `Arc::get_mut` gives a `&mut` only while nothing else shares the
+        // `Arc`, which is still true here.
+        Arc::get_mut(&mut state)
+            .expect("not shared yet")
+            .apis
+            .prayer_times = PrayerTimes::with_cached_days(defaults(), vec![june(14), june(15)]);
+        (state, gowa)
+    }
+
+    async fn register(conn: &mut sqlx::SqliteConnection, name: &str, phone: &str) -> i64 {
+        let person = Person {
+            name: name.to_string(),
+            jid: format!("{phone}@s.whatsapp.net"),
+            lid: None,
+        };
+        users::find_or_register(conn, &person, Utc::now())
+            .await
+            .unwrap()
+            .unwrap()
+            .id
+    }
+
+    #[tokio::test]
+    async fn isha_ending_reminder_after_midnight_is_sent() {
+        const DM: &str = "447700900001@s.whatsapp.net";
+        let pool = test_pool().await;
+        let (state, gowa) = state_with_june(pool.clone()).await;
+        let chat = {
+            let mut conn = pool.acquire().await.unwrap();
+            let user = register(&mut conn, "Bilal", "447700900001").await;
+            let id = chats::find_or_create(&mut conn, DM, Some(user), Utc::now())
+                .await
+                .unwrap();
+            ReminderChat {
+                id,
+                wa_chat_id: DM.to_string(),
+                dm_user_id: Some(user),
+                delivery: Delivery::default(),
+                // `/settings ending 15`.
+                overrides: Overrides {
+                    prayer_ending_minutes: Some(15),
+                    ..Overrides::default()
+                },
+            }
+        };
+
+        // 00:45 BST on 15 June: 14 June's Isha ends in 15 minutes.
+        let now = "2026-06-14T23:45:00Z".parse().unwrap();
+        check_chat(&state, &chat, now).await.unwrap();
+
+        let sent = gowa.sent.lock().unwrap();
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert_eq!(sent[0].0, DM);
+        assert!(sent[0].1.contains("*Isha* ends in 15 min"), "{}", sent[0].1);
+    }
+
+    #[tokio::test]
+    async fn one_failing_place_does_not_stop_the_others() {
+        const GROUP: &str = "120363000000000001@g.us";
+        let pool = test_pool().await;
+        let (mut state, gowa) = state_with_june(pool.clone()).await;
+        // A geocoder that only knows Leicester, so "Nowhereville" fails.
+        Arc::get_mut(&mut state).expect("not shared yet").apis.geo =
+            crate::geo::Geo::with_geocoding_url(
+                &crate::settings_edit::tests::fake_geocoder().await,
+            );
+        let chat = {
+            let mut conn = pool.acquire().await.unwrap();
+            let now = Utc::now();
+            let group = chats::find_or_create(&mut conn, GROUP, None, now)
+                .await
+                .unwrap();
+            // Aisha has no settings of her own, so she's on the group's
+            // (Nowhereville, no coordinates): her place's lookup fails.
+            // Members come A to Z, so her place is the first one.
+            let aisha = register(&mut conn, "Aisha", "447700900001").await;
+            // Bilal set his own town in his DM: Milton Keynes, the place
+            // whose times are cached.
+            let bilal = register(&mut conn, "Bilal", "447700900002").await;
+            for user in [aisha, bilal] {
+                chats::add_member(&mut conn, group, user, now)
+                    .await
+                    .unwrap();
+            }
+            let dm =
+                chats::find_or_create(&mut conn, "447700900002@s.whatsapp.net", Some(bilal), now)
+                    .await
+                    .unwrap();
+            let home = defaults();
+            stored::set_location(
+                &mut conn,
+                dm,
+                &home.city,
+                &home.country,
+                home.coordinates.unwrap(),
+                home.timezone.name(),
+            )
+            .await
+            .unwrap();
+            ReminderChat {
+                id: group,
+                wa_chat_id: GROUP.to_string(),
+                dm_user_id: None,
+                delivery: Delivery::default(),
+                overrides: Overrides {
+                    city: Some("Nowhereville".to_string()),
+                    country: Some("GB".to_string()),
+                    ..Overrides::default()
+                },
+            }
+        };
+
+        // 17:25 BST on 15 June: Asr started five minutes ago.
+        let now = "2026-06-15T16:25:00Z".parse().unwrap();
+        // Whether the failure is also returned doesn't matter here; what
+        // matters is that Bilal's reminder still went out.
+        let _ = check_chat(&state, &chat, now).await;
+
+        let sent = gowa.sent.lock().unwrap();
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert_eq!(sent[0].0, GROUP);
+        assert!(sent[0].1.contains("@447700900002"), "{}", sent[0].1);
+        assert!(
+            sent[0].1.contains("*Asr* has started in Milton Keynes"),
+            "{}",
+            sent[0].1
+        );
+    }
 }

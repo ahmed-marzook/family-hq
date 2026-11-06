@@ -737,4 +737,44 @@ mod tests {
             "2026-11-05 asr ending"
         );
     }
+
+    /// A UK summer night (BST, UTC+1): 14 June's Isha runs to Islamic
+    /// midnight, 01:00 local on the 15th. With "ending 15", its reminder is
+    /// due at 00:45 local, when "today" is already the 15th, so it only
+    /// shows up in *yesterday's* times. This pins the pure part; the loop
+    /// in `reminders` has to pass yesterday in.
+    #[test]
+    fn isha_ending_after_local_midnight_is_still_sent() {
+        let yesterday = DayTimes {
+            date: NaiveDate::from_ymd_opt(2026, 6, 14).unwrap(),
+            hijri: None,
+            windows: [
+                window(Prayer::Fajr, "2026-06-14T01:30:00Z", "2026-06-14T03:45:00Z"),
+                window(
+                    Prayer::Dhuhr,
+                    "2026-06-14T12:05:00Z",
+                    "2026-06-14T16:20:00Z",
+                ),
+                window(Prayer::Asr, "2026-06-14T16:20:00Z", "2026-06-14T20:20:00Z"),
+                window(
+                    Prayer::Maghrib,
+                    "2026-06-14T20:20:00Z",
+                    "2026-06-14T21:40:00Z",
+                ),
+                window(Prayer::Isha, "2026-06-14T21:40:00Z", "2026-06-15T00:00:00Z"),
+            ],
+        };
+        // 23:45 UTC on the 14th is 00:45 BST on the 15th.
+        let now = utc("2026-06-14T23:45:00Z");
+        assert_eq!(
+            defaults().today(now),
+            NaiveDate::from_ymd_opt(2026, 6, 15).unwrap(),
+            "it's already tomorrow on the clock"
+        );
+        let due: Vec<(ReminderKind, Prayer)> = due_reminders(&yesterday, now, 15)
+            .into_iter()
+            .map(|(kind, w)| (kind, w.prayer))
+            .collect();
+        assert_eq!(due, [(ReminderKind::Ending, Prayer::Isha)]);
+    }
 }
