@@ -18,7 +18,9 @@ pub enum AppError {
     #[error("file error: {0}")]
     Io(#[from] std::io::Error),
 
-    /// Any outgoing HTTP call: GOWA or AlAdhan.
+    /// Any outgoing HTTP call: GOWA, AlAdhan, Nominatim, Open-Meteo or
+    /// ntfy (they all share the client in `http.rs`). The server couldn't
+    /// be reached, timed out, answered 4xx/5xx, or sent JSON that didn't fit.
     #[error("HTTP request failed: {0}")]
     Http(#[from] reqwest::Error),
 
