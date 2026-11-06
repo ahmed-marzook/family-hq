@@ -1,6 +1,8 @@
 //! Todos. Every query is limited to one chat (`chat_id`), so one group can
 //! never see or change another group's list.
 
+use std::str::FromStr;
+
 use chrono::{DateTime, NaiveDate, Utc};
 use sqlx::SqliteConnection;
 
@@ -204,6 +206,40 @@ pub fn sort_for_list(todos: &mut [ListedTodo]) {
 /// `todos.status` values (the schema's CHECK allows these and 'pending').
 const COMPLETED: &str = "completed";
 const SKIPPED: &str = "skipped";
+
+/// Where a todo is, as `todos.status` stores it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TodoStatus {
+    Pending,
+    Completed,
+    /// Closed as "won't be done".
+    Skipped,
+}
+
+impl TodoStatus {
+    /// The exact text stored in the database (and allowed by its CHECK).
+    pub fn as_db_str(self) -> &'static str {
+        match self {
+            TodoStatus::Pending => "pending",
+            TodoStatus::Completed => "completed",
+            TodoStatus::Skipped => "skipped",
+        }
+    }
+}
+
+impl FromStr for TodoStatus {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        [
+            TodoStatus::Pending,
+            TodoStatus::Completed,
+            TodoStatus::Skipped,
+        ]
+        .into_iter()
+        .find(|t| t.as_db_str() == s)
+        .ok_or_else(|| format!("unknown todo status '{s}'"))
+    }
+}
 
 /// Open todos whose title matches `words`, for `+done gym`: an exact title
 /// (ignoring case) wins; otherwise every open todo whose title contains
@@ -414,6 +450,19 @@ mod tests {
     use crate::db::test_pool;
     use crate::repo::chats;
     use crate::testkit::register;
+
+    #[test]
+    fn todo_status_round_trips_through_its_db_text() {
+        for status in [
+            TodoStatus::Pending,
+            TodoStatus::Completed,
+            TodoStatus::Skipped,
+        ] {
+            assert_eq!(status.as_db_str().parse::<TodoStatus>(), Ok(status));
+        }
+        assert!("done".parse::<TodoStatus>().is_err());
+        assert!("Completed".parse::<TodoStatus>().is_err());
+    }
 
     /// A user and a group chat; returns (chat_id, user_id).
     async fn setup(conn: &mut SqliteConnection) -> (i64, i64) {

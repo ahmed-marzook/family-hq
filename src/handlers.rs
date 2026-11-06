@@ -3660,6 +3660,79 @@ Already on the list: milk, Eggs"
         );
     }
 
+    /// Sends `/todo all` and `/shop`, and saves both lists the way the
+    /// webhook does after sending them: the todo list first, so the shop
+    /// list is the newest list in the chat.
+    async fn save_both_lists(conn: &mut SqliteConnection, ctx: &Context) {
+        let Outcome::List { item_ids, .. } = typed(conn, ctx, "/todo all").await else {
+            panic!("expected a list");
+        };
+        messages::save_list(conn, "TODOLIST", ctx.chat_id, TODO_ITEM, &item_ids, ctx.now)
+            .await
+            .unwrap();
+        let (_, items) = shop_list(conn, ctx).await;
+        let ids: Vec<i64> = items.iter().map(|i| i.item_id).collect();
+        messages::save_list(conn, "SHOPLIST", ctx.chat_id, SHOP_ITEM, &ids, ctx.now)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn done_and_skip_by_number_use_the_latest_todo_list() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let ctx = setup(&mut conn).await;
+        typed(&mut conn, &ctx, "+todo go gym, bins").await;
+        run_command(&mut conn, &ctx, &Apis::new(times()), shop_cmd(&["milk"]))
+            .await
+            .unwrap();
+        save_both_lists(&mut conn, &ctx).await;
+
+        // The shop list is newer, but `+done` / `+skip` only look at todo
+        // lists.
+        let reply = typed(&mut conn, &ctx, "+done 1").await.into_text();
+        assert!(reply.starts_with("✅ Done: *go gym*"), "{reply}");
+        let reply = typed(&mut conn, &ctx, "+skip 2").await.into_text();
+        assert!(reply.starts_with("⏭️ Skipped: *bins*"), "{reply}");
+    }
+
+    #[tokio::test]
+    async fn a_reply_acts_on_the_kind_of_list_it_quotes() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let ctx = setup(&mut conn).await;
+        typed(&mut conn, &ctx, "+todo go gym").await;
+        run_command(&mut conn, &ctx, &Apis::new(times()), shop_cmd(&["milk"]))
+            .await
+            .unwrap();
+        save_both_lists(&mut conn, &ctx).await;
+
+        // What the webhook does with a reply: read back the quoted list.
+        let todo = messages::list_items(&mut conn, "TODOLIST", ctx.chat_id)
+            .await
+            .unwrap();
+        let shop = messages::list_items(&mut conn, "SHOPLIST", ctx.chat_id)
+            .await
+            .unwrap();
+
+        let reply = run_list_reply(&mut conn, &ctx, &defaults(), &todo, ReplyCommand::Done(1))
+            .await
+            .unwrap()
+            .into_text();
+        assert!(reply.starts_with("✅ Done: *go gym*"), "{reply}");
+
+        let reply = run_list_reply(&mut conn, &ctx, &defaults(), &shop, ReplyCommand::Skip(1))
+            .await
+            .unwrap()
+            .into_text();
+        assert!(reply.contains("`skip` is for todos"), "{reply}");
+        let reply = run_list_reply(&mut conn, &ctx, &defaults(), &shop, ReplyCommand::Done(1))
+            .await
+            .unwrap()
+            .into_text();
+        assert_eq!(reply, "✅ @447700900001 bought *milk*");
+    }
+
     // ---- settings ----
 
     async fn settings_reply(

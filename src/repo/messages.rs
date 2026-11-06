@@ -1,8 +1,43 @@
 //! WhatsApp bookkeeping: which messages are already handled, and which
 //! rows a numbered list message showed.
 
+use std::str::FromStr;
+
 use chrono::{DateTime, Utc};
 use sqlx::SqliteConnection;
+
+/// Which list a numbered list message showed, as `wa_message_context.item_type`
+/// stores it.
+///
+/// An enum rather than the text itself: the compiler then knows there are
+/// exactly two kinds, so a typo like `"shpo"` can't compile, and a `match`
+/// on it must handle both. ("Make illegal states unrepresentable": if a
+/// wrong value can't be written down, no code has to check for it.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListKind {
+    Todo,
+    Shop,
+}
+
+impl ListKind {
+    /// The exact text stored in the database (and allowed by its CHECK).
+    pub fn as_db_str(self) -> &'static str {
+        match self {
+            ListKind::Todo => "todo",
+            ListKind::Shop => "shop",
+        }
+    }
+}
+
+impl FromStr for ListKind {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        [ListKind::Todo, ListKind::Shop]
+            .into_iter()
+            .find(|k| k.as_db_str() == s)
+            .ok_or_else(|| format!("unknown list kind '{s}'"))
+    }
+}
 
 /// Records that a message is being handled. Returns `false` if it already
 /// was, i.e. this is GOWA retrying the same webhook.
@@ -113,6 +148,15 @@ mod tests {
     use super::*;
     use crate::db::test_pool;
     use crate::repo::chats;
+
+    #[test]
+    fn list_kind_round_trips_through_its_db_text() {
+        for kind in [ListKind::Todo, ListKind::Shop] {
+            assert_eq!(kind.as_db_str().parse::<ListKind>(), Ok(kind));
+        }
+        assert!("shopping".parse::<ListKind>().is_err());
+        assert!("".parse::<ListKind>().is_err());
+    }
 
     #[tokio::test]
     async fn latest_list_is_the_newest_of_its_type_in_the_chat() {
