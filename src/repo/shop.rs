@@ -76,6 +76,8 @@ pub async fn find_to_buy(
 
 /// Items still to buy, oldest first. That order is what the numbers in a
 /// `/shop` list refer to.
+// Only the tests use this.
+#[cfg(test)]
 pub async fn list_to_buy(
     conn: &mut SqliteConnection,
     chat_id: i64,
@@ -114,6 +116,8 @@ pub async fn list_all(
 }
 
 /// How many items are bought but not yet cleared.
+// Only the tests use this.
+#[cfg(test)]
 pub async fn count_bought(conn: &mut SqliteConnection, chat_id: i64) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar!(
         r#"SELECT COUNT(*) AS "count!: i64" FROM shopping_items

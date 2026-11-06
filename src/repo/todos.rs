@@ -7,6 +7,8 @@ use sqlx::SqliteConnection;
 use crate::todo_flags::Priority;
 
 /// One open todo, as shown in a `/todo` list.
+// Only the tests use this.
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct OpenTodo {
     pub id: i64,
@@ -60,6 +62,8 @@ pub async fn add(
 
 /// The chat's pending todos, oldest first. That order is what the numbers
 /// in a `/todo` list refer to.
+// Only the tests use this.
+#[cfg(test)]
 pub async fn list_open(
     conn: &mut SqliteConnection,
     chat_id: i64,
