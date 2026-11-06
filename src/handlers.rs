@@ -599,11 +599,24 @@ async fn shared_location(
     at: Coordinates,
 ) -> Result<String, AppError> {
     let (current, reminders) = chat_settings(conn, ctx, &apis.prayer_times).await?;
-    let Ok(near) = apis.geo.nearest_place(at).await else {
-        return Ok(format!(
-            "{PROBLEM} I couldn't work out which town that is. \
-             Try `/settings city Leicester, GB` instead."
-        ));
+    // `Geo` means OpenStreetMap answered but found no town there; any
+    // other error means it didn't answer properly, which is worth a log
+    // line and a different reply ("try again", not "try something else").
+    let near = match apis.geo.nearest_place(at).await {
+        Ok(near) => near,
+        Err(AppError::Geo(_)) => {
+            return Ok(format!(
+                "{PROBLEM} I couldn't work out which town that is. \
+                 Try `/settings city Leicester, GB` instead."
+            ));
+        }
+        Err(err) => {
+            warn!("nearest town lookup failed: {err}");
+            return Ok(format!(
+                "{PROBLEM} The map service isn't answering right now, so I couldn't \
+                 work out which town that is. Try again in a bit."
+            ));
+        }
     };
     // `names[0]` is the most specific: the town or village itself.
     let name = &near.names[0];
@@ -632,16 +645,29 @@ async fn weather(
     when: When,
 ) -> Result<String, AppError> {
     let settings = my_settings(conn, ctx, &apis.prayer_times).await?;
-    let Ok(at) = apis.coordinates(&settings).await else {
-        return Ok(format!(
-            "{PROBLEM} I couldn't find {}, {} for the weather. Check `/settings`.",
-            settings.city, settings.country
-        ));
+    // As in `shared_location`: `Geo` is "no such town", anything else is
+    // the town lookup not answering.
+    let at = match apis.coordinates(&settings).await {
+        Ok(at) => at,
+        Err(AppError::Geo(_)) => {
+            return Ok(format!(
+                "{PROBLEM} I couldn't find {}, {} for the weather. Check `/settings`.",
+                settings.city, settings.country
+            ));
+        }
+        Err(err) => {
+            warn!("town lookup for the weather failed: {err}");
+            return Ok(format!(
+                "{PROBLEM} The town lookup isn't answering right now. Try again in a bit."
+            ));
+        }
     };
     match apis.weather.forecast(at, settings.timezone).await {
         Ok(forecast) => Ok(weather::format(&forecast, when, &settings.city)),
         Err(err) => {
-            warn!("weather: {err}");
+            // Not "weather: {err}": `AppError::Weather`'s text already
+            // starts with "weather:".
+            warn!("forecast failed: {err}");
             Ok(format!(
                 "{PROBLEM} The weather service isn't answering. Try again in a bit."
             ))
@@ -663,7 +689,13 @@ async fn moon_command(
 
     // `.ok()` turns each `Result` into an `Option`: a failed lookup is
     // "not shown", not an error for the whole reply.
-    let at = apis.coordinates(&settings).await.ok();
+    // `inspect_err` looks at the error (to log it) without using it up,
+    // so `.ok()` after it still works as before.
+    let at = apis
+        .coordinates(&settings)
+        .await
+        .inspect_err(|err| warn!("town lookup for the moon failed: {err}"))
+        .ok();
     let rise_set = match at {
         Some(at) => apis
             .weather
@@ -679,9 +711,13 @@ async fn moon_command(
             .prayer_times
             .for_date(&location, today)
             .await
+            .inspect_err(|err| warn!("Hijri date for the moon failed: {err}"))
             .ok()
             .and_then(|day| day.hijri),
-        Err(_) => None,
+        Err(err) => {
+            warn!("prayer location for the moon failed: {err}");
+            None
+        }
     };
     Ok(moon::format(ctx.now, &settings, rise_set, hijri))
 }
