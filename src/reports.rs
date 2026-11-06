@@ -1,5 +1,5 @@
-//! Reports: the messages that sum up a feature (prayers now, habits later)
-//! for a day, a week or a month, and the rules every feature shares.
+//! Reports: the messages that sum up a feature (prayers and points now,
+//! habits later) for a day, a week or a month, and the rules every feature shares.
 //!
 //! * When they're due: once the feature's day is over (for prayers, when
 //!   Isha ends), a day's report; on a Sunday the week's too; on a month's
@@ -25,6 +25,8 @@ use crate::repo::reports;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Feature {
     Prayers,
+    /// The Sunday weekly summary of a group's points (`points_reports`).
+    Points,
 }
 
 impl Feature {
@@ -33,6 +35,7 @@ impl Feature {
     pub fn as_db_str(self) -> &'static str {
         match self {
             Feature::Prayers => "prayers",
+            Feature::Points => "points",
         }
     }
 }
@@ -40,7 +43,7 @@ impl Feature {
 impl FromStr for Feature {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        [Feature::Prayers]
+        [Feature::Prayers, Feature::Points]
             .into_iter()
             .find(|f| f.as_db_str() == s)
             .ok_or_else(|| format!("unknown report feature '{s}'"))

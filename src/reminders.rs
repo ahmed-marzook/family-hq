@@ -61,6 +61,10 @@ pub async fn run(state: Arc<AppState>) {
         if let Err(err) = todo_reminders::check(&state, Utc::now()).await {
             error!("todo reminders: check failed: {err}");
         }
+        // Sunday evening: each group's week of points.
+        if let Err(err) = crate::points_reports::check(&state, Utc::now()).await {
+            error!("points summary: check failed: {err}");
+        }
         // Not a reminder, but it runs on the same clock: warns, and clears
         // the data of, people who stopped using the bot.
         if let Err(err) = crate::cleanup::check(&state, Utc::now()).await {

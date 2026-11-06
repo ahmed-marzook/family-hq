@@ -125,6 +125,9 @@ pub async fn clear(
     sqlx::query!("DELETE FROM prayer_log WHERE user_id = ?", user_id)
         .execute(&mut *conn)
         .await?;
+    sqlx::query!("DELETE FROM points WHERE user_id = ?", user_id)
+        .execute(&mut *conn)
+        .await?;
     sqlx::query!("DELETE FROM command_log WHERE user_id = ?", user_id)
         .execute(&mut *conn)
         .await?;
@@ -160,6 +163,9 @@ pub async fn delete_chat(conn: &mut SqliteConnection, chat_id: i64) -> Result<()
     // Contents first: the tables that point at a chat without `ON DELETE
     // CASCADE` would otherwise stop the chat being deleted.
     sqlx::query!("DELETE FROM todos WHERE chat_id = ?", chat_id)
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query!("DELETE FROM points WHERE chat_id = ?", chat_id)
         .execute(&mut *conn)
         .await?;
     sqlx::query!("DELETE FROM shopping_items WHERE chat_id = ?", chat_id)
@@ -299,8 +305,9 @@ mod tests {
     use crate::geo::Coordinates;
     use crate::metrics::{Event, Kind};
     use crate::person::Person as Sender;
+    use crate::points::{Award, Reason, Source};
     use crate::repo::metrics::{Logged, record};
-    use crate::repo::{chats, prayers, settings, shop, todo_reminders, todos, users};
+    use crate::repo::{chats, points, prayers, settings, shop, todo_reminders, todos, users};
 
     const GROUP: &str = "120363000000000001@g.us";
 
@@ -391,6 +398,17 @@ mod tests {
             };
             record(conn, &row).await.unwrap();
         }
+        // Points: Bilal's in the group and his DM, Khadija's in the group.
+        let award = Award {
+            points: 2,
+            reason: Reason::Done,
+        };
+        let today = now.date_naive();
+        for (user, chat, todo) in [(bilal, group, 1), (bilal, dm, 2), (khadija, group, 3)] {
+            points::award(conn, user, chat, Source::Todo, todo, award, today, now)
+                .await
+                .unwrap();
+        }
         // Khadija's group todo, which must survive.
         todos::add(
             conn,
@@ -438,9 +456,15 @@ mod tests {
             "SELECT count(*) FROM todo_reminders WHERE user_id = ?",
             "SELECT count(*) FROM prayer_log WHERE user_id = ?",
             "SELECT count(*) FROM command_log WHERE user_id = ?",
+            "SELECT count(*) FROM points WHERE user_id = ?",
         ] {
             assert_eq!(count(c, table, bilal).await, 0, "{table}");
         }
+        assert_eq!(
+            count(c, "SELECT count(*) FROM points WHERE user_id = ?", khadija).await,
+            1,
+            "Khadija keeps her points"
+        );
         // Khadija, the group and its list are untouched.
         assert_eq!(
             count(c, "SELECT count(*) FROM users WHERE id = ?", khadija).await,
@@ -587,9 +611,15 @@ mod tests {
             "SELECT count(*) FROM chat_members WHERE chat_id = ?",
             "SELECT count(*) FROM todo_reminders WHERE chat_id = ?",
             "SELECT count(*) FROM command_log WHERE chat_id = ?",
+            "SELECT count(*) FROM points WHERE chat_id = ?",
         ] {
             assert_eq!(count(c, table, group).await, 0, "{table}");
         }
+        assert_eq!(
+            count(c, "SELECT count(*) FROM points WHERE chat_id = ?", dm).await,
+            1,
+            "points in Bilal's DM stay"
+        );
         // People stay (the inactive cleanup deals with them), and so does
         // Bilal's DM.
         assert_eq!(

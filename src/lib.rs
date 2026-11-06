@@ -17,6 +17,8 @@ pub mod metrics;
 pub mod moon;
 pub mod parser;
 pub mod person;
+pub mod points;
+pub mod points_reports;
 pub mod prayer;
 pub mod prayer_stats;
 pub mod prayer_tracking;

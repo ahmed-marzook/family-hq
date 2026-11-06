@@ -280,27 +280,36 @@ pub async fn clear_all(conn: &mut SqliteConnection, chat_id: i64) -> Result<u64,
     Ok(result.rows_affected())
 }
 
-/// Marks a todo done. Returns its title, or `None` if it isn't a pending
-/// todo in this chat (already done or skipped, removed, or another chat's).
+/// A todo that was just closed: what the reply names, and what its points
+/// depend on (`points::for_todo`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClosedTodo {
+    pub title: String,
+    pub priority: Option<Priority>,
+    pub due: Option<NaiveDate>,
+}
+
+/// Marks a todo done. Returns it, or `None` if it isn't a pending todo in
+/// this chat (already done or skipped, removed, or another chat's).
 pub async fn complete(
     conn: &mut SqliteConnection,
     id: i64,
     chat_id: i64,
     by: i64,
     now: DateTime<Utc>,
-) -> Result<Option<String>, sqlx::Error> {
+) -> Result<Option<ClosedTodo>, sqlx::Error> {
     close(conn, id, chat_id, by, now, COMPLETED).await
 }
 
 /// Skips a todo: closes it as "won't be done", keeping it on record.
-/// Returns its title, or `None` like `complete`.
+/// Returns it, or `None` like `complete`.
 pub async fn skip(
     conn: &mut SqliteConnection,
     id: i64,
     chat_id: i64,
     by: i64,
     now: DateTime<Utc>,
-) -> Result<Option<String>, sqlx::Error> {
+) -> Result<Option<ClosedTodo>, sqlx::Error> {
     close(conn, id, chat_id, by, now, SKIPPED).await
 }
 
@@ -312,14 +321,14 @@ async fn close(
     by: i64,
     now: DateTime<Utc>,
     status: &str,
-) -> Result<Option<String>, sqlx::Error> {
+) -> Result<Option<ClosedTodo>, sqlx::Error> {
     // One statement checks and changes, so there's no gap between "is it
     // still pending?" and "close it" for someone else to slip into.
-    sqlx::query_scalar!(
-        "UPDATE todos
-         SET status = ?, closed_by = ?, closed_at = ?
-         WHERE id = ? AND chat_id = ? AND status = 'pending'
-         RETURNING title",
+    let row = sqlx::query!(
+        r#"UPDATE todos
+           SET status = ?, closed_by = ?, closed_at = ?
+           WHERE id = ? AND chat_id = ? AND status = 'pending'
+           RETURNING title, priority, due_date AS "due_date: NaiveDate""#,
         status,
         by,
         now,
@@ -327,7 +336,14 @@ async fn close(
         chat_id
     )
     .fetch_optional(conn)
-    .await
+    .await?;
+    // `Option::map`: a closed todo becomes `Some(ClosedTodo)`, `None` stays.
+    Ok(row.map(|r| ClosedTodo {
+        title: r.title,
+        // The schema only allows the three words `Priority::parse` knows.
+        priority: r.priority.as_deref().and_then(Priority::parse),
+        due: r.due_date,
+    }))
 }
 
 /// Sets (or, with `None`, takes off) an open todo's due date. Returns its
@@ -464,6 +480,7 @@ mod tests {
             complete(&mut conn, gym, chat, user, now)
                 .await
                 .unwrap()
+                .map(|t| t.title)
                 .as_deref(),
             Some("go gym")
         );
@@ -554,6 +571,7 @@ mod tests {
             skip(&mut conn, gym, chat, user, now)
                 .await
                 .unwrap()
+                .map(|t| t.title)
                 .as_deref(),
             Some("go gym")
         );

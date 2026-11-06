@@ -83,6 +83,12 @@ pub enum BotCommand {
     /// `/push`, `/push on`, `/push off`, `/push test`: the sender's own push
     /// notifications (ntfy)
     Push(PushCommand),
+    /// `/points`: in a group, this week's leaderboard; in a DM, your own
+    /// points from every chat
+    Points,
+    /// `/points reports here|dm|off`, or just `/points reports` (`None`, to
+    /// see which it is): where a group's Sunday summary goes
+    PointsReports(Option<Delivery>),
     /// `/help` (overview) or `/help shop` (one topic's page)
     Help(Option<String>),
 }
@@ -297,6 +303,18 @@ pub fn parse(text: &str) -> Option<BotCommand> {
             _ => None,
         },
         "/moon" if rest.is_empty() => Some(BotCommand::Moon),
+        "/points" | "/point" | "/pts" => match rest.to_lowercase().as_str() {
+            "" => Some(BotCommand::Points),
+            "reports" | "report" => Some(BotCommand::PointsReports(None)),
+            "reports here" | "reports group" | "reports on" | "report here" | "report on" => {
+                Some(BotCommand::PointsReports(Some(Delivery::Here)))
+            }
+            "reports dm" | "reports private" | "report dm" => {
+                Some(BotCommand::PointsReports(Some(Delivery::Dm)))
+            }
+            "reports off" | "report off" => Some(BotCommand::PointsReports(Some(Delivery::Off))),
+            _ => None,
+        },
         "/push" => match rest.to_lowercase().as_str() {
             "" | "status" => Some(BotCommand::Push(PushCommand::Status)),
             "on" => Some(BotCommand::Push(PushCommand::On)),
@@ -1308,6 +1326,28 @@ mod tests {
         assert_eq!(parse("/moon"), Some(BotCommand::Moon));
         assert_eq!(parse("/Moon"), Some(BotCommand::Moon));
         assert_eq!(parse("/moon tomorrow"), None);
+    }
+
+    #[test]
+    fn points_command() {
+        assert_eq!(parse("/points"), Some(BotCommand::Points));
+        assert_eq!(parse("/Points"), Some(BotCommand::Points));
+        assert_eq!(parse("/pts"), Some(BotCommand::Points));
+        assert_eq!(parse("/point"), Some(BotCommand::Points));
+        assert_eq!(parse("/points please"), None);
+
+        let reports = |d| Some(BotCommand::PointsReports(d));
+        assert_eq!(parse("/points reports"), reports(None));
+        assert_eq!(parse("/pts report"), reports(None));
+        assert_eq!(parse("/points reports here"), reports(Some(Delivery::Here)));
+        assert_eq!(parse("/Points Reports ON"), reports(Some(Delivery::Here)));
+        assert_eq!(parse("/points reports dm"), reports(Some(Delivery::Dm)));
+        assert_eq!(
+            parse("/points reports private"),
+            reports(Some(Delivery::Dm))
+        );
+        assert_eq!(parse("/points reports off"), reports(Some(Delivery::Off)));
+        assert_eq!(parse("/points reports weekly"), None);
     }
 
     #[test]

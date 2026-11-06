@@ -50,6 +50,10 @@ Decisions:
   `parser.rs`, they get the most tests in this stage.
 - **Privacy in the admin dashboard:** a DM's habits are counts only, as for
   lists.
+- **Points:** check-ins earn points through `repo::points::award` with
+  `source = 'habit'` (the schema allows it already), so they show in
+  `/points` with todos. Decide the rules in H1 (see
+  [points.md](points.md)).
 
 Commands (`+did`, not `+d`: `+d` is todo's `+done`):
 

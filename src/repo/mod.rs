@@ -16,6 +16,7 @@ pub mod chats;
 pub mod cleanup;
 pub mod messages;
 pub mod metrics;
+pub mod points;
 pub mod prayers;
 pub mod push;
 pub mod reports;

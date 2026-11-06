@@ -120,7 +120,7 @@ export type Chat = {
 export type Delivery = "here" | "dm" | "off";
 
 /** Where each feature's reports go (src/routes/admin_reports.rs). */
-export type Reports = { prayers: Delivery };
+export type Reports = { prayers: Delivery; points: Delivery };
 
 /** A feature with reports: the key in `Reports` and the API path. */
 export type ReportFeature = keyof Reports;

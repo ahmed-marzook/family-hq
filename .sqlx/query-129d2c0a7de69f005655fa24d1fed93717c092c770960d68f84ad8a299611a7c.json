@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT title, due_date, priority FROM todos ORDER BY id",
+  "query": "UPDATE todos\n           SET status = ?, closed_by = ?, closed_at = ?\n           WHERE id = ? AND chat_id = ? AND status = 'pending'\n           RETURNING title, priority, due_date AS \"due_date: NaiveDate\"",
   "describe": {
     "columns": [
       {
@@ -15,19 +15,8 @@
         }
       },
       {
-        "name": "due_date",
-        "ordinal": 1,
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "todos",
-            "name": "due_date"
-          }
-        }
-      },
-      {
         "name": "priority",
-        "ordinal": 2,
+        "ordinal": 1,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -35,10 +24,21 @@
             "name": "priority"
           }
         }
+      },
+      {
+        "name": "due_date: NaiveDate",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "todos",
+            "name": "due_date"
+          }
+        }
       }
     ],
     "parameters": {
-      "Right": 0
+      "Right": 5
     },
     "nullable": [
       false,
@@ -46,5 +46,5 @@
       true
     ]
   },
-  "hash": "fbcd63dbfb64a6b0ef5dda08cc0c3bf3dafc93a6161c1bf7ce920c3c7afe1b02"
+  "hash": "129d2c0a7de69f005655fa24d1fed93717c092c770960d68f84ad8a299611a7c"
 }

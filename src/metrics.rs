@@ -202,6 +202,11 @@ pub fn command(command: &BotCommand) -> Event {
             }),
         ),
         BotCommand::Moon => event("moon", None),
+        BotCommand::Points => event("points", None),
+        BotCommand::PointsReports(reports) => event(
+            "points.reports",
+            Some(reports.map_or("status", |r| r.as_db_str())),
+        ),
         BotCommand::Push(command) => event(
             "push",
             Some(match command {

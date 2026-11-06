@@ -79,6 +79,21 @@ function Detail({ data }: { data: GroupDetail }) {
         </div>
       </Section>
 
+      <Section title="Points">
+        <div className="flex flex-col gap-3">
+          <ReportDelivery
+            owner={groupOwner(group.id)}
+            feature="points"
+            delivery={data.reports.points}
+            isGroup
+          />
+          <p className="text-xs text-stone-500">
+            Sundays at 8pm, group time: the week's leaderboard, each person's change from
+            last week, and the best day. Only in weeks when someone earned points.
+          </p>
+        </div>
+      </Section>
+
       <Section title="Lists">
         <p className="text-sm text-stone-600 dark:text-stone-400">
           Todos: {group.open_todos} open, {group.done_todos} done · Shopping:{" "}

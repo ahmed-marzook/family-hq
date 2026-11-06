@@ -68,6 +68,7 @@ new file. In short:
 | `chat_settings`      | Per-chat settings: timezone, city and its coordinates (`0003`), prayer method/school/reminder timing, reminders on/off |
 | `shopping_items`     | Items on a chat's list: `chat_id`, `name`, `added_by`, `bought_by` + `bought_at`                                       |
 | `todos`              | Todos on a chat's list: `chat_id`, `title`, `created_by`, `assignee_id`, `status` (pending, completed, skipped), `closed_by` + `closed_at`, `due_date`, `priority` (`0009`) |
+| `points`             | One row per award: `user_id`, `chat_id`, `source` (todo; habit, goal later), `source_id`, `reason`, `points`, the earner's local `day` (`0010`) |
 | `prayer_reminders`   | Each prayer reminder sent, per chat, day, prayer, kind (start/ending) and place (`0002`)                               |
 | `prayer_log`         | Who prayed what, per person per day                                                                                    |
 | `processed_messages` | WhatsApp message IDs already handled, so webhook retries can't add things twice                                        |

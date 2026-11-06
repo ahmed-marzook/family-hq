@@ -4,7 +4,7 @@
 //! changes, change its page here. Pure functions, no database.
 
 /// The topics `/help <topic>` knows, and the words that lead to each.
-const TOPICS: [(&str, &[&str]); 7] = [
+const TOPICS: [(&str, &[&str]); 8] = [
     ("shop", &["shop", "shopping", "buy", "got", "list"]),
     ("todo", &["todo", "todos", "task", "tasks"]),
     (
@@ -18,6 +18,10 @@ const TOPICS: [(&str, &[&str]); 7] = [
     ("weather", &["weather", "forecast", "rain"]),
     ("moon", &["moon", "hijri", "islamic", "month", "crescent"]),
     ("push", &["push", "notifications", "notification", "ntfy"]),
+    (
+        "points",
+        &["points", "point", "pts", "score", "leaderboard"],
+    ),
 ];
 
 const OVERVIEW: &str = "🤖 *Family HQ help*
@@ -25,6 +29,7 @@ I keep shared lists for each group I'm in, and private ones when you message me 
 
 🛒 *Shopping*: `+shop milk, eggs` · `/shop` · `+got milk`
 📝 *Todos*: `+todo fix the tap -d fri -p high` · `/todo` · `+done 2` or `+done gym` · `+skip 2`
+⭐ *Points*: `/points`, earned by finishing todos
 🕌 *Prayers*: `/prayers` · `/prayers on` · `+prayed asr` · `/prayers week`
 ⚙️ *Settings*: `/settings` · `/settings city Leicester, GB` · or share your location with me
 🌤️ *Weather*: `/weather` · `/weather hourly` · `/weather tomorrow` · `/weather week`
@@ -34,7 +39,7 @@ I keep shared lists for each group I'm in, and private ones when you message me 
 Short forms: `+s` shop · `+g` got · `+t` todo · `+d` done · `+p` prayed · `/s` · `/t` · `/p` · `/w` · `/m` · `/h`
 
 For the full page on a topic, with examples:
-`/help shop` · `/help todo` · `/help prayers` · `/help settings` · `/help weather` · `/help moon` · `/help push`
+`/help shop` · `/help todo` · `/help points` · `/help prayers` · `/help settings` · `/help weather` · `/help moon` · `/help push`
 
 I react 👍 to every command I understand. No reaction means I didn't recognise it.
 
@@ -101,6 +106,24 @@ Reply `remove 2` to a `/todo` list.
 `/todo clear`: empties the whole list.
 
 The numbers always mean the list you replied to, even if it's old.";
+
+const POINTS: &str = "⭐ *Help: points*
+Finishing a todo earns points for whoever ticks it off:
+• 🔴 high priority: 3 · medium or none: 2 · 🟢 low: 1
+• Done on or before its due date: +1
+• Done after its due date: 1 less (but always at least 1)
+• Skipped: −1. Removing a todo neither earns nor costs anything.
+The reply to `done 2` shows what it earned, like \"✅ Done: *fix the tap* · +4 ⭐\".
+
+*See them*
+`/points` in a group: this week's leaderboard (Monday to Sunday) 🥇🥈🥉, and who has earned what today. Only points earned in that group count.
+`/points` with me directly: your own points from every chat: today, this week, last week, and each of the last 7 days.
+
+*Sunday summary*
+In a group, every Sunday at 8pm: the week's leaderboard, how each person did against last week, and the best day. Only in weeks when someone earned points.
+`/points reports here` (the default), `/points reports dm` (each person gets just their own week, privately) or `/points reports off`.
+
+Clearing done todos doesn't take anyone's points away.";
 
 const PRAYERS: &str = "🕌 *Help: prayers*
 *Today's times*
@@ -198,9 +221,11 @@ pub fn page(topic: Option<&str>) -> String {
         Some("weather") => WEATHER.to_string(),
         Some("moon") => MOON.to_string(),
         Some("push") => PUSH.to_string(),
+        Some("points") => POINTS.to_string(),
         _ => format!(
             "❓ There's no help page for \"{topic}\". Try `/help shop`, `/help todo`, \
-             `/help prayers`, `/help settings`, `/help weather`, `/help moon` or `/help push`."
+             `/help prayers`, `/help settings`, `/help weather`, `/help moon`, `/help push` \
+             or `/help points`."
         ),
     }
 }
@@ -228,6 +253,7 @@ mod tests {
         assert!(page(Some("namaz")).starts_with("🕌 *Help: prayers*"));
         assert!(page(Some("timezone")).starts_with("⚙️ *Help: settings*"));
         assert!(page(Some("hijri")).starts_with("🌙 *Help: moon*"));
+        assert!(page(Some("leaderboard")).starts_with("⭐ *Help: points*"));
     }
 
     #[test]
@@ -245,6 +271,7 @@ mod tests {
         assert!(page(Some("todo")).contains("-d fri -p high"));
         assert!(page(Some("todo")).contains("due 2 fri"));
         assert!(page(Some("todo")).contains("/todo overdue"));
+        assert!(page(Some("points")).contains("/points reports dm"));
         assert!(page(Some("prayers")).contains("+prayed all"));
         assert!(page(Some("settings")).contains("/settings everyone"));
         assert!(page(Some("moon")).contains("`/moon` (or `/m`)"));

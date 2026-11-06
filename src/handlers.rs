@@ -16,11 +16,13 @@ use crate::parser::{
     BotCommand, Got, PushCommand, ReplyCommand, SettingsCommand, Timing, TodoFilter, TodoView,
 };
 use crate::person::Assignee;
+use crate::points::{self, Finish, Source};
 use crate::prayer::{self, DayTimes, Prayer};
 use crate::prayer_stats::{self, Status, Summary};
 use crate::progress;
 use crate::push;
 use crate::repo::messages::{self, ListItem};
+use crate::repo::points as stored_points;
 use crate::repo::prayers;
 use crate::repo::push as push_repo;
 use crate::repo::reports as stored_reports;
@@ -157,16 +159,16 @@ pub async fn run_command(
         }
         BotCommand::BadTodo(err) => format!("{PROBLEM} {err}"),
         BotCommand::DoneTodo(Got::Numbers(numbers)) => {
-            return close_by_numbers(conn, ctx, &numbers, Action::Tick).await;
+            return close_by_numbers(conn, ctx, prayer_times, &numbers, Action::Tick).await;
         }
         BotCommand::DoneTodo(Got::Names(names)) => {
-            close_by_name(conn, ctx, &names, Action::Tick).await?
+            close_by_name(conn, ctx, prayer_times, &names, Action::Tick).await?
         }
         BotCommand::SkipTodo(Got::Numbers(numbers)) => {
-            return close_by_numbers(conn, ctx, &numbers, Action::Skip).await;
+            return close_by_numbers(conn, ctx, prayer_times, &numbers, Action::Skip).await;
         }
         BotCommand::SkipTodo(Got::Names(names)) => {
-            close_by_name(conn, ctx, &names, Action::Skip).await?
+            close_by_name(conn, ctx, prayer_times, &names, Action::Skip).await?
         }
         BotCommand::ClearTodos { done_only: false } => {
             match todos::clear_all(conn, ctx.chat_id).await? {
@@ -343,6 +345,22 @@ pub async fn run_command(
         BotCommand::Settings(command) => settings_command(conn, ctx, apis, command).await?,
         BotCommand::Weather(when) => weather(conn, ctx, apis, when).await?,
         BotCommand::Moon => moon_command(conn, ctx, apis).await?,
+        BotCommand::Points => points_command(conn, ctx, prayer_times).await?,
+        BotCommand::PointsReports(_) if !ctx.is_group => format!(
+            "{CHART} The Sunday points summary is for groups. Here, `/points` shows \
+             your own week any time."
+        ),
+        BotCommand::PointsReports(change) => {
+            let delivery = match change {
+                Some(delivery) => {
+                    stored_reports::set_delivery(conn, ctx.chat_id, Feature::Points, delivery)
+                        .await?;
+                    delivery
+                }
+                None => stored_reports::delivery(conn, ctx.chat_id, Feature::Points).await?,
+            };
+            format_points_reports(delivery)
+        }
         BotCommand::SharedLocation {
             latitude,
             longitude,
@@ -864,7 +882,7 @@ pub async fn run_list_reply(
         }
         ReplyCommand::BadChange(err) => return Ok(Outcome::Reply(format!("{PROBLEM} {err}"))),
     };
-    act_on_list(conn, ctx, items, &numbers, action).await
+    act_on_list(conn, ctx, &apis.prayer_times, items, &numbers, action).await
 }
 
 /// A change to one todo, from a reply (`due 2 fri`, `priority 2 none`).
@@ -948,6 +966,16 @@ enum Action {
 }
 
 impl Action {
+    /// How a todo ends up, for its points: `None` for `Remove`, which
+    /// neither earns nor costs anything.
+    fn finish(self) -> Option<Finish> {
+        match self {
+            Action::Tick => Some(Finish::Done),
+            Action::Skip => Some(Finish::Skipped),
+            Action::Remove => None,
+        }
+    }
+
     /// The `+` command that does this without replying.
     fn command(self) -> &'static str {
         match self {
@@ -961,6 +989,7 @@ impl Action {
 async fn act_on_list(
     conn: &mut SqliteConnection,
     ctx: &Context,
+    prayer_times: &PrayerTimes,
     items: &[ListItem],
     numbers: &[usize],
     action: Action,
@@ -975,6 +1004,14 @@ async fn act_on_list(
              list, reply `remove 2`."
         )));
     }
+
+    // The closer's own today, for "done by its due date?". Only todos earn
+    // points, so a shopping list doesn't need to look it up.
+    let today = if is_shop {
+        ctx.now.date_naive()
+    } else {
+        my_settings(conn, ctx, prayer_times).await?.today(ctx.now)
+    };
 
     let mut lines = Vec::new();
     // Shopping items ticked off: reported together, mentioning the buyer.
@@ -992,24 +1029,37 @@ async fn act_on_list(
         // The repo call that matches the list type and the action. Each
         // returns the item's name, or `None` if it's already gone.
         let (chat, by, now) = (ctx.chat_id, ctx.sender.id, ctx.now);
-        let name = match (is_shop, action) {
-            (false, Action::Tick) => todos::complete(conn, id, chat, by, now).await?,
-            (false, Action::Skip) => todos::skip(conn, id, chat, by, now).await?,
-            (false, Action::Remove) => todos::remove(conn, id, chat).await?,
-            (true, Action::Tick) => shop::mark_bought(conn, id, chat, by, now).await?,
-            (true, Action::Remove) => shop::remove(conn, id, chat).await?,
+        // The points a closed todo earned, for its line.
+        let mut earned = None;
+        let name = match (is_shop, action.finish()) {
+            (false, Some(finish)) => {
+                // `map` with a closure that also sets `earned`: the title
+                // goes on to the `match` below, the points to the line.
+                close_todo(conn, ctx, id, finish, today)
+                    .await?
+                    .map(|(title, points)| {
+                        earned = Some(points);
+                        title
+                    })
+            }
+            (false, None) => todos::remove(conn, id, chat).await?,
+            (true, Some(Finish::Done)) => shop::mark_bought(conn, id, chat, by, now).await?,
+            (true, None) => shop::remove(conn, id, chat).await?,
             // Can't happen: answered before the loop.
-            (true, Action::Skip) => None,
+            (true, Some(Finish::Skipped)) => None,
         };
         match (name, is_shop, action) {
             (None, _, _) => lines.push(gone(n)),
             (Some(name), _, Action::Remove) => lines.push(format!("{REMOVED} Removed *{name}*")),
             (Some(name), false, Action::Tick) => {
-                lines.push(format!("{DONE} Done: *{name}*"));
+                lines.push(format!("{DONE} Done: *{name}*{}", earned_text(earned)));
                 closed_any = true;
             }
             (Some(name), false, Action::Skip) => {
-                lines.push(format!("{SKIPPED} Skipped: *{name}*"));
+                lines.push(format!(
+                    "{SKIPPED} Skipped: *{name}*{}",
+                    earned_text(earned)
+                ));
                 closed_any = true;
             }
             (Some(name), true, _) => bought.push(name),
@@ -1030,6 +1080,7 @@ async fn act_on_list(
 async fn close_by_numbers(
     conn: &mut SqliteConnection,
     ctx: &Context,
+    prayer_times: &PrayerTimes,
     numbers: &[usize],
     action: Action,
 ) -> Result<Outcome, AppError> {
@@ -1040,7 +1091,94 @@ async fn close_by_numbers(
             "{PROBLEM} No todo list sent here yet. Send /todo, then `{command} 2`."
         )));
     }
-    act_on_list(conn, ctx, &items, numbers, action).await
+    act_on_list(conn, ctx, prayer_times, &items, numbers, action).await
+}
+
+/// Closes todo `id` in this chat as `finish` (done or skipped) and records
+/// the points that earns the sender (`points::for_todo`), counted on their
+/// own `today`. Returns its title and the points, or `None` if it was
+/// already closed or gone (and so earns nothing).
+///
+/// No transaction of its own: the webhook runs each command in one, so the
+/// todo and its points are saved together or not at all.
+async fn close_todo(
+    conn: &mut SqliteConnection,
+    ctx: &Context,
+    id: i64,
+    finish: Finish,
+    today: NaiveDate,
+) -> Result<Option<(String, i64)>, AppError> {
+    let (chat, by, now) = (ctx.chat_id, ctx.sender.id, ctx.now);
+    let closed = match finish {
+        Finish::Done => todos::complete(conn, id, chat, by, now).await?,
+        Finish::Skipped => todos::skip(conn, id, chat, by, now).await?,
+    };
+    // `let ... else`: carry on with the todo if there is one, else return.
+    let Some(todo) = closed else {
+        return Ok(None);
+    };
+    let award = points::for_todo(finish, todo.priority, todo.due, today);
+    stored_points::award(conn, by, chat, Source::Todo, id, award, today, now).await?;
+    Ok(Some((todo.title, award.points)))
+}
+
+/// `/points`. In a group: this week's leaderboard for the group, Monday to
+/// Sunday on the reader's clock. In a DM: the sender's own points from
+/// every chat they're in.
+async fn points_command(
+    conn: &mut SqliteConnection,
+    ctx: &Context,
+    prayer_times: &PrayerTimes,
+) -> Result<String, AppError> {
+    let today = my_settings(conn, ctx, prayer_times).await?.today(ctx.now);
+    let week = Period::of(Span::Week, today);
+    let just_today = Period {
+        first: today,
+        last: today,
+    };
+    if ctx.is_group {
+        let totals = stored_points::totals(conn, ctx.chat_id, week).await?;
+        let today_totals = stored_points::totals(conn, ctx.chat_id, just_today).await?;
+        return Ok(points::group_text(week, &totals, &today_totals));
+    }
+
+    let user = ctx.sender.id;
+    let last_7 = Period {
+        first: today - chrono::Duration::days(6),
+        last: today,
+    };
+    // The previous Monday to Sunday: the week that the day before this
+    // Monday is in.
+    let last_week = Period::of(Span::Week, week.first - chrono::Duration::days(1));
+    let sum = |days: &[(NaiveDate, i64)]| days.iter().map(|(_, p)| p).sum::<i64>();
+
+    let earned = stored_points::by_day(conn, user, last_7).await?;
+    // Every one of the 7 days, with 0 for a day that earned nothing.
+    let last_7_days = last_7
+        .days()
+        .map(|day| {
+            let points = earned
+                .iter()
+                .find(|(d, _)| *d == day)
+                .map_or(0, |(_, p)| *p);
+            (day, points)
+        })
+        .collect();
+    let mine = points::Mine {
+        last_7_days,
+        this_week: sum(&stored_points::by_day(conn, user, week).await?),
+        last_week: sum(&stored_points::by_day(conn, user, last_week).await?),
+        by_chat: stored_points::by_chat(conn, user, week).await?,
+    };
+    Ok(points::mine_text(&mine))
+}
+
+/// " · +3 ⭐" after a closed todo's name, or nothing if it earned nothing.
+fn earned_text(points: Option<i64>) -> String {
+    match points {
+        Some(p) if p != 0 => format!(" · {} {}", points::signed(p), points::STAR),
+        _ => String::new(),
+    }
 }
 
 /// `+done gym` / `+skip gym`: closes the open todo whose title matches each
@@ -1048,9 +1186,14 @@ async fn close_by_numbers(
 async fn close_by_name(
     conn: &mut SqliteConnection,
     ctx: &Context,
+    prayer_times: &PrayerTimes,
     names: &[String],
     action: Action,
 ) -> Result<String, AppError> {
+    // `+done` / `+skip` only ever tick or skip, never remove.
+    let finish = action.finish().unwrap_or(Finish::Done);
+    // The closer's own today, for "done by its due date?".
+    let today = my_settings(conn, ctx, prayer_times).await?.today(ctx.now);
     let mut lines = Vec::new();
     let mut closed_any = false;
     for name in names {
@@ -1059,16 +1202,13 @@ async fn close_by_name(
         match matches.as_slice() {
             [] => lines.push(format!("{PROBLEM} No open todo matches \"{name}\".")),
             [(id, title)] => {
-                let (id, chat, by, now) = (*id, ctx.chat_id, ctx.sender.id, ctx.now);
-                let (closed, line) = if action == Action::Skip {
-                    let closed = todos::skip(conn, id, chat, by, now).await?;
-                    (closed, format!("{SKIPPED} Skipped: *{title}*"))
-                } else {
-                    let closed = todos::complete(conn, id, chat, by, now).await?;
-                    (closed, format!("{DONE} Done: *{title}*"))
-                };
-                if closed.is_some() {
-                    lines.push(line);
+                if let Some((_, points)) = close_todo(conn, ctx, *id, finish, today).await? {
+                    let mark = match finish {
+                        Finish::Done => format!("{DONE} Done"),
+                        Finish::Skipped => format!("{SKIPPED} Skipped"),
+                    };
+                    let earned = earned_text(Some(points));
+                    lines.push(format!("{mark}: *{title}*{earned}"));
                     closed_any = true;
                 }
             }
@@ -1252,6 +1392,21 @@ fn format_reports(delivery: Delivery, is_group: bool) -> String {
         "Change with `/prayers reports here` or `off`."
     };
     format!("{now}\nThey need prayer reminders on (`/prayers on`). {change}")
+}
+
+/// The `/points reports` reply, in a group: where the summary goes now.
+fn format_points_reports(delivery: Delivery) -> String {
+    let what = "every Sunday at 8pm, the week's points: the leaderboard, how \
+                each person did against last week, and the best day";
+    let now = match delivery {
+        Delivery::Off => format!("{BELL_OFF} The Sunday points summary is off in this group."),
+        Delivery::Here => format!("{CHART} The points summary comes to this group: {what}."),
+        Delivery::Dm => format!(
+            "{CHART} The points summary goes to each member privately, just their own \
+             week. (Only to people who have messaged me privately.)"
+        ),
+    };
+    format!("{now}\nChange with `/points reports here`, `dm` or `off`.")
 }
 
 /// The `/settings` reply.
@@ -2063,6 +2218,122 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn closing_todos_earns_points_that_outlive_the_list() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let mut ctx = setup(&mut conn).await;
+        // Friday 6 November, lunchtime in London.
+        ctx.now = "2026-11-06T12:00:00Z".parse().unwrap();
+        typed(&mut conn, &ctx, "+todo report -d today -p high").await;
+        typed(&mut conn, &ctx, "+todo bins, gym -d today").await;
+        typed(&mut conn, &ctx, "+todo fix the tap -p low").await;
+
+        // High and on time: 3 + 1.
+        let reply = typed(&mut conn, &ctx, "+done report").await.into_text();
+        assert!(reply.starts_with("✅ Done: *report* · +4 ⭐"), "{reply}");
+
+        // Saturday: bins is a day late (2 − 1), and a skip costs 1.
+        ctx.now = "2026-11-07T10:00:00Z".parse().unwrap();
+        let reply = typed(&mut conn, &ctx, "+done bins").await.into_text();
+        assert!(reply.starts_with("✅ Done: *bins* · +1 ⭐"), "{reply}");
+        let reply = typed(&mut conn, &ctx, "+skip gym").await.into_text();
+        assert!(reply.starts_with("⏭️ Skipped: *gym* · −1 ⭐"), "{reply}");
+
+        // Khadija ticks off the low one: whoever closes it earns it.
+        let khadija = users::find_member_by_name(&mut conn, ctx.chat_id, "Khadija")
+            .await
+            .unwrap()
+            .unwrap();
+        let hers = Context {
+            sender: khadija,
+            chat_id: ctx.chat_id,
+            is_group: true,
+            now: ctx.now,
+        };
+        let reply = typed(&mut conn, &hers, "+done tap").await.into_text();
+        assert!(
+            reply.starts_with("✅ Done: *fix the tap* · +1 ⭐"),
+            "{reply}"
+        );
+        // Already closed: nothing more to earn.
+        typed(&mut conn, &hers, "+done tap").await;
+
+        // Clearing the list keeps everyone's points.
+        typed(&mut conn, &ctx, "/todo clear done").await;
+        assert_eq!(
+            typed(&mut conn, &ctx, "/points").await.into_text(),
+            "🏆 *Points this week* (Mon 2 Nov – Sun 8 Nov)\n\
+             🥇 Bilal 4\n\
+             🥈 Khadija 1\n\
+             \n\
+             Today: Khadija +1"
+        );
+
+        // In his DM, Bilal sees his own points, from the group too.
+        let dm = chats::find_or_create(
+            &mut conn,
+            "447700900001@s.whatsapp.net",
+            Some(ctx.sender.id),
+            ctx.now,
+        )
+        .await
+        .unwrap();
+        let in_dm = Context {
+            chat_id: dm,
+            is_group: false,
+            sender: ctx.sender.clone(),
+            now: ctx.now,
+        };
+        let mine = typed(&mut conn, &in_dm, "/points").await.into_text();
+        assert!(
+            mine.starts_with("⭐ *Your points*\nToday: 0 · This week: 4 · Last week: 0"),
+            "{mine}"
+        );
+        assert!(mine.contains("Fri 6 ■■■■■■■■■■ 4"), "{mine}");
+    }
+
+    #[tokio::test]
+    async fn points_reports_are_set_per_group() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let ctx = setup(&mut conn).await;
+
+        let reply = typed(&mut conn, &ctx, "/points reports").await.into_text();
+        assert!(
+            reply.contains("comes to this group"),
+            "here by default: {reply}"
+        );
+        let reply = typed(&mut conn, &ctx, "/points reports dm")
+            .await
+            .into_text();
+        assert!(reply.contains("each member privately"), "{reply}");
+        assert_eq!(
+            stored_reports::delivery(&mut conn, ctx.chat_id, Feature::Points)
+                .await
+                .unwrap(),
+            Delivery::Dm
+        );
+        // The prayer reports are a separate setting.
+        assert_eq!(
+            stored_reports::delivery(&mut conn, ctx.chat_id, Feature::Prayers)
+                .await
+                .unwrap(),
+            Delivery::Here
+        );
+
+        let dm = Context {
+            chat_id: ctx.chat_id,
+            is_group: false,
+            sender: ctx.sender.clone(),
+            now: ctx.now,
+        };
+        let reply = typed(&mut conn, &dm, "/points reports off")
+            .await
+            .into_text();
+        assert!(reply.contains("for groups"), "{reply}");
+    }
+
+    #[tokio::test]
     async fn skipping_by_reply_by_number_and_by_name() {
         let pool = test_pool().await;
         let mut conn = pool.acquire().await.unwrap();
@@ -2090,7 +2361,7 @@ mod tests {
         .into_text();
         assert_eq!(
             reply,
-            "⏭️ Skipped: *go gym*\n□□□□□□□□□□ 0/3 done · 1 skipped"
+            "⏭️ Skipped: *go gym* · −1 ⭐\n□□□□□□□□□□ 0/3 done · 1 skipped"
         );
         // Already closed.
         let again = run_list_reply(
@@ -2114,7 +2385,7 @@ mod tests {
         let reply = typed(&mut conn, &ctx, "+skip tap").await.into_text();
         assert_eq!(
             reply,
-            "⏭️ Skipped: *fix the tap*\n□□□□□□□□□□ 0/2 done · 2 skipped"
+            "⏭️ Skipped: *fix the tap* · −1 ⭐\n□□□□□□□□□□ 0/2 done · 2 skipped"
         );
         typed(&mut conn, &ctx, "+done bins").await;
 
@@ -2457,7 +2728,8 @@ mod tests {
             .await
             .unwrap()
             .into_text();
-        assert_eq!(reply, "✅ Done: *go gym*\n■■■□□□□□□□ 1/3 done");
+        // No due date, no priority: 2 points.
+        assert_eq!(reply, "✅ Done: *go gym* · +2 ⭐\n■■■□□□□□□□ 1/3 done");
 
         // "tap" is in one open title: done.
         let reply = run_command(&mut conn, &ctx, &apis, done("tap"))
@@ -2550,7 +2822,7 @@ mod tests {
         .into_text();
         assert_eq!(
             reply,
-            "✅ Done: *go gym*\n✅ Done: *book dentist*\n■■■■■■■□□□ 2/3 done"
+            "✅ Done: *go gym* · +2 ⭐\n✅ Done: *book dentist* · +2 ⭐\n■■■■■■■□□□ 2/3 done"
         );
 
         // The numbers still refer to the old list: 2 is "fix the tap".

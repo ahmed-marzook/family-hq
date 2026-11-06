@@ -24,6 +24,8 @@ use crate::routes::admin_settings::dm_for;
 #[derive(Debug, Serialize)]
 pub(crate) struct ReportsView {
     prayers: String,
+    /// The Sunday points summary. Only means anything for a group.
+    points: String,
 }
 
 /// `chat_id`'s report settings; `None` (a person with no DM yet) reads as
@@ -32,13 +34,21 @@ pub(crate) async fn reports_view(
     conn: &mut SqliteConnection,
     chat_id: Option<i64>,
 ) -> Result<ReportsView, sqlx::Error> {
-    let delivery = match chat_id {
-        Some(chat) => reports::delivery(conn, chat, Feature::Prayers).await?,
-        None => Delivery::default(),
+    let mut view = ReportsView {
+        prayers: Delivery::default().as_db_str().to_string(),
+        points: Delivery::default().as_db_str().to_string(),
     };
-    Ok(ReportsView {
-        prayers: delivery.as_db_str().to_string(),
-    })
+    if let Some(chat) = chat_id {
+        view.prayers = reports::delivery(conn, chat, Feature::Prayers)
+            .await?
+            .as_db_str()
+            .to_string();
+        view.points = reports::delivery(conn, chat, Feature::Points)
+            .await?
+            .as_db_str()
+            .to_string();
+    }
+    Ok(view)
 }
 
 /// The body of the report endpoints: `{"delivery": "here"}`.
@@ -76,6 +86,10 @@ pub async fn user_reports(
     Json(body): Json<DeliveryBody>,
 ) -> Result<Json<UserDetail>, AppError> {
     let (feature, delivery) = parse(&feature, &body, false)?;
+    // The points summary is for groups only (`points_reports`).
+    if feature == Feature::Points {
+        return Err(AppError::NotFound);
+    }
     let mut tx = state.db.begin().await?;
     let dm = dm_for(&mut tx, id).await?;
     reports::set_delivery(&mut tx, dm, feature, delivery).await?;
