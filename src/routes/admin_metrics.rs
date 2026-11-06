@@ -280,10 +280,9 @@ mod tests {
     use super::*;
     use crate::db::test_pool;
     use crate::metrics::{Event, Kind};
-    use crate::person::Person;
+    use crate::repo::chats;
     use crate::repo::metrics::{Logged, record};
-    use crate::repo::{chats, users};
-    use crate::testkit::start_server_with;
+    use crate::testkit::{register, start_server_with};
 
     async fn get(url: String) -> (StatusCode, String) {
         let response = reqwest::Client::new()
@@ -336,16 +335,7 @@ mod tests {
             ("Khadija", "447700900002"),
             ("Zara", "447700900003"),
         ] {
-            let person = Person {
-                name: name.to_string(),
-                jid: format!("{phone}@s.whatsapp.net"),
-                lid: None,
-            };
-            let user = users::find_or_register(&mut conn, &person, now)
-                .await
-                .unwrap()
-                .unwrap();
-            ids.push(user.id);
+            ids.push(register(&mut conn, name, phone, now).await.id);
         }
         let (bilal, khadija) = (ids[0], ids[1]);
         let chat = chats::find_or_create(&mut conn, "120363000000000001@g.us", None, now)

@@ -129,10 +129,9 @@ async fn record(
 mod tests {
     use super::*;
     use crate::db::test_pool;
-    use crate::person::Person;
     use crate::prayer::Prayer;
     use crate::repo::push::Subscription;
-    use crate::testkit::{fake_gowa, serve_state, start_server_with, test_state};
+    use crate::testkit::{fake_gowa, register, serve_state, start_server_with, test_state};
     use chrono::NaiveDate;
 
     const TOKEN: &str = "a-token-that-is-at-least-32-characters-long";
@@ -149,16 +148,8 @@ mod tests {
     async fn subscriber(pool: &sqlx::SqlitePool) -> i64 {
         let mut conn = pool.acquire().await.unwrap();
         let now = Utc::now();
-        let person = Person {
-            name: "Amina".to_string(),
-            jid: "447700900001@s.whatsapp.net".to_string(),
-            lid: None,
-        };
-        let user = users::find_or_register(&mut conn, &person, now)
-            .await
-            .unwrap()
-            .unwrap();
-        chats::find_or_create(&mut conn, &person.jid, Some(user.id), now)
+        let user = register(&mut conn, "Amina", "447700900001", now).await;
+        chats::find_or_create(&mut conn, &user.wa_jid, Some(user.id), now)
             .await
             .unwrap();
         let sub = Subscription {

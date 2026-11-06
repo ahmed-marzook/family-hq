@@ -106,22 +106,13 @@ pub async fn claim(
 mod tests {
     use super::*;
     use crate::db::test_pool;
-    use crate::person::Person;
-    use crate::repo::{chats, users};
-    use crate::testkit::utc;
+    use crate::repo::chats;
+    use crate::testkit::{register, utc};
 
     /// A user and a group they're in.
     async fn setup(conn: &mut SqliteConnection) -> (i64, i64) {
         let now = utc("2026-10-31T09:00:00Z");
-        let bilal = Person {
-            name: "Bilal".to_string(),
-            jid: "447700900001@s.whatsapp.net".to_string(),
-            lid: None,
-        };
-        let user = users::find_or_register(conn, &bilal, now)
-            .await
-            .unwrap()
-            .unwrap();
+        let user = register(conn, "Bilal", "447700900001", now).await;
         let chat = chats::find_or_create(conn, "120363000000000001@g.us", None, now)
             .await
             .unwrap();

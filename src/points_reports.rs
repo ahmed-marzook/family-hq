@@ -223,9 +223,9 @@ mod tests {
     #[tokio::test]
     async fn the_summary_goes_once_on_sunday_evening() {
         use crate::db::test_pool;
-        use crate::person::Person;
         use crate::points::{Award, Reason, Source};
-        use crate::repo::{chats, users};
+        use crate::repo::chats;
+        use crate::testkit::register;
 
         const GROUP: &str = "120363000000000001@g.us";
         let pool = test_pool().await;
@@ -240,15 +240,7 @@ mod tests {
                 .await
                 .unwrap();
             for (i, (name, points)) in [("Bilal", 3), ("Khadija", 5)].into_iter().enumerate() {
-                let person = Person {
-                    name: name.to_string(),
-                    jid: format!("44770090000{i}@s.whatsapp.net"),
-                    lid: None,
-                };
-                let user = users::find_or_register(&mut conn, &person, now)
-                    .await
-                    .unwrap()
-                    .unwrap();
+                let user = register(&mut conn, name, &format!("44770090000{i}"), now).await;
                 let award = Award {
                     points,
                     reason: Reason::Done,

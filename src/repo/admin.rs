@@ -298,19 +298,11 @@ mod tests {
     use super::*;
     use crate::db::test_pool;
     use crate::metrics::{Event, Kind};
-    use crate::person::Person;
     use crate::repo::metrics::{Logged, record};
     use crate::repo::{chats, shop, todo_reminders, todos, users};
+    use crate::testkit::person;
 
     const GROUP: &str = "120363000000000001@g.us";
-
-    fn person(name: &str, phone: &str) -> Person {
-        Person {
-            name: name.to_string(),
-            jid: format!("{phone}@s.whatsapp.net"),
-            lid: None,
-        }
-    }
 
     async fn log_use(conn: &mut SqliteConnection, chat_id: i64, user_id: i64, at: DateTime<Utc>) {
         let event = Event {

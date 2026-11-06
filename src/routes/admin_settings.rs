@@ -269,8 +269,7 @@ mod tests {
     use crate::db::test_pool;
     use crate::person::Person;
     use crate::repo::{chats, settings as stored, todo_reminders, users};
-    use crate::testkit::fake_geocoder;
-    use crate::testkit::start_server_with_geocoder;
+    use crate::testkit::{fake_geocoder, start_server_with_geocoder};
 
     async fn send(method: reqwest::Method, url: String, body: Value) -> (StatusCode, Value) {
         let response = reqwest::Client::new()

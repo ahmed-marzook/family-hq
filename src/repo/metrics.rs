@@ -303,23 +303,15 @@ mod tests {
     use crate::db::test_pool;
     use crate::metrics::{self, Kind};
     use crate::parser::parse;
-    use crate::person::Person;
-    use crate::repo::{chats, users};
+    use crate::repo::chats;
+    use crate::testkit::register;
 
     #[tokio::test]
     async fn a_row_is_saved_with_its_details() {
         let pool = test_pool().await;
         let mut conn = pool.acquire().await.unwrap();
         let now: DateTime<Utc> = "2026-10-28T18:00:00Z".parse().unwrap();
-        let bilal = Person {
-            name: "Bilal".to_string(),
-            jid: "447700900001@s.whatsapp.net".to_string(),
-            lid: None,
-        };
-        let user = users::find_or_register(&mut conn, &bilal, now)
-            .await
-            .unwrap()
-            .unwrap();
+        let user = register(&mut conn, "Bilal", "447700900001", now).await;
         let chat = chats::find_or_create(&mut conn, "120363000000000001@g.us", None, now)
             .await
             .unwrap();
@@ -375,19 +367,11 @@ mod tests {
         let pool = test_pool().await;
         let mut conn = pool.acquire().await.unwrap();
         let now: DateTime<Utc> = "2026-10-28T18:00:00Z".parse().unwrap();
-        let bilal = Person {
-            name: "Bilal".to_string(),
-            jid: "447700900001@s.whatsapp.net".to_string(),
-            lid: None,
-        };
-        let user = users::find_or_register(&mut conn, &bilal, now)
-            .await
-            .unwrap()
-            .unwrap();
+        let user = register(&mut conn, "Bilal", "447700900001", now).await;
         let group = chats::find_or_create(&mut conn, "120363000000000001@g.us", None, now)
             .await
             .unwrap();
-        let dm = chats::find_or_create(&mut conn, &bilal.jid, Some(user.id), now)
+        let dm = chats::find_or_create(&mut conn, &user.wa_jid, Some(user.id), now)
             .await
             .unwrap();
 

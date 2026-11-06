@@ -15,8 +15,11 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, NaiveDate, Utc};
 use serde_json::{Value, json};
+use sqlx::SqliteConnection;
 
 use crate::AppState;
+use crate::person::Person;
+use crate::repo::users::{self, User};
 
 // ---- Times and dates ------------------------------------------------------
 
@@ -29,6 +32,39 @@ pub(crate) fn utc(s: &str) -> DateTime<Utc> {
 /// A calendar date from text such as `"2026-11-02"`.
 pub(crate) fn date(s: &str) -> NaiveDate {
     s.parse().unwrap()
+}
+
+// ---- People ---------------------------------------------------------------
+
+/// The WhatsApp ID for a phone number: `447700900001` →
+/// `447700900001@s.whatsapp.net`.
+pub(crate) fn jid(phone: &str) -> String {
+    format!("{phone}@s.whatsapp.net")
+}
+
+/// Someone as the webhook would see them: a name and a phone number, no LID.
+pub(crate) fn person(name: &str, phone: &str) -> Person {
+    Person {
+        name: name.to_string(),
+        jid: jid(phone),
+        lid: None,
+    }
+}
+
+/// Registers `person(name, phone)` at `now`, as their first message would,
+/// and returns their row. Both `unwrap`s are safe in a test: the first is
+/// the database working, the second is "they have a phone number", which
+/// `person` always gives them.
+pub(crate) async fn register(
+    conn: &mut SqliteConnection,
+    name: &str,
+    phone: &str,
+    now: DateTime<Utc>,
+) -> User {
+    users::find_or_register(conn, &person(name, phone), now)
+        .await
+        .unwrap()
+        .unwrap()
 }
 
 // ---- The app on a free port ----------------------------------------------

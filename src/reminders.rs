@@ -329,12 +329,13 @@ mod tests {
     use crate::repo::settings::ChatSettings;
     use crate::settings::Overrides;
     use crate::settings::tests::defaults;
+    use crate::testkit::jid;
 
     fn member(id: i64, phone: &str, own: Option<Overrides>) -> MemberSettings {
         MemberSettings {
             user_id: id,
             display_name: format!("member{id}"),
-            wa_jid: format!("{phone}@s.whatsapp.net"),
+            wa_jid: jid(phone),
             settings: own.map(|overrides| ChatSettings {
                 prayer_reminders: false,
                 overrides,
@@ -401,11 +402,10 @@ mod tests {
 
     use crate::aladhan::PrayerTimes;
     use crate::db::test_pool;
-    use crate::person::Person;
     use crate::prayer::{DayTimes, Prayer, Window};
-    use crate::repo::{chats, users};
+    use crate::repo::chats;
     use crate::reports::Delivery;
-    use crate::testkit::{FakeGowa, fake_gowa, test_state};
+    use crate::testkit::{FakeGowa, fake_gowa, register, test_state};
 
     /// A June day in Milton Keynes (BST, UTC+1; the times here are UTC).
     /// Isha runs to Islamic midnight, 01:00 local, which is already the
@@ -447,19 +447,6 @@ mod tests {
         (state, gowa)
     }
 
-    async fn register(conn: &mut sqlx::SqliteConnection, name: &str, phone: &str) -> i64 {
-        let person = Person {
-            name: name.to_string(),
-            jid: format!("{phone}@s.whatsapp.net"),
-            lid: None,
-        };
-        users::find_or_register(conn, &person, Utc::now())
-            .await
-            .unwrap()
-            .unwrap()
-            .id
-    }
-
     #[tokio::test]
     async fn isha_ending_reminder_after_midnight_is_sent() {
         const DM: &str = "447700900001@s.whatsapp.net";
@@ -467,7 +454,9 @@ mod tests {
         let (state, gowa) = state_with_june(pool.clone()).await;
         let chat = {
             let mut conn = pool.acquire().await.unwrap();
-            let user = register(&mut conn, "Bilal", "447700900001").await;
+            let user = register(&mut conn, "Bilal", "447700900001", Utc::now())
+                .await
+                .id;
             let id = chats::find_or_create(&mut conn, DM, Some(user), Utc::now())
                 .await
                 .unwrap();
@@ -511,10 +500,10 @@ mod tests {
             // Aisha has no settings of her own, so she's on the group's
             // (Nowhereville, no coordinates): her place's lookup fails.
             // Members come A to Z, so her place is the first one.
-            let aisha = register(&mut conn, "Aisha", "447700900001").await;
+            let aisha = register(&mut conn, "Aisha", "447700900001", now).await.id;
             // Bilal set his own town in his DM: Milton Keynes, the place
             // whose times are cached.
-            let bilal = register(&mut conn, "Bilal", "447700900002").await;
+            let bilal = register(&mut conn, "Bilal", "447700900002", now).await.id;
             for user in [aisha, bilal] {
                 chats::add_member(&mut conn, group, user, now)
                     .await

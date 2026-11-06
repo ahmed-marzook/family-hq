@@ -132,6 +132,7 @@ async fn prune(dir: &Path, keep: usize) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testkit::register;
     use sqlx::Connection;
     use sqlx::sqlite::SqliteConnectOptions;
     use std::path::PathBuf;
@@ -215,14 +216,7 @@ mod tests {
         let root = scratch_dir("backup");
         let pool = file_db(&root).await;
         let mut conn = pool.acquire().await.unwrap();
-        let amina = crate::person::Person {
-            name: "Amina".to_string(),
-            jid: "447700900001@s.whatsapp.net".to_string(),
-            lid: None,
-        };
-        crate::repo::users::find_or_register(&mut conn, &amina, Utc::now())
-            .await
-            .unwrap();
+        register(&mut conn, "Amina", "447700900001", Utc::now()).await;
         // Not created yet: `back_up` makes the folder.
         let dir = root.join("backups");
 

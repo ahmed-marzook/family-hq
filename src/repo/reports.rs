@@ -94,6 +94,7 @@ mod tests {
     use crate::db::test_pool;
     use crate::repo::chats;
     use crate::reports::Span;
+    use crate::testkit::{jid, register};
 
     #[tokio::test]
     async fn delivery_is_per_chat_and_defaults_to_here() {
@@ -153,18 +154,9 @@ mod tests {
         let pool = test_pool().await;
         let mut conn = pool.acquire().await.unwrap();
         let now = Utc::now();
-        let person = crate::person::Person {
-            name: "Bilal".to_string(),
-            jid: "447700900001@s.whatsapp.net".to_string(),
-            lid: None,
-        };
-        let user = crate::repo::users::find_or_register(&mut conn, &person, now)
-            .await
-            .unwrap()
-            .unwrap()
-            .id;
+        let user = register(&mut conn, "Bilal", "447700900001", now).await.id;
         assert_eq!(dm_chat(&mut conn, user).await.unwrap(), None);
-        chats::find_or_create(&mut conn, &person.jid, Some(user), now)
+        chats::find_or_create(&mut conn, &jid("447700900001"), Some(user), now)
             .await
             .unwrap();
         assert_eq!(

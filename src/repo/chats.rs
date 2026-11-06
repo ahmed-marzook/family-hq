@@ -127,6 +127,7 @@ mod tests {
     use crate::db::test_pool;
     use crate::person::Person;
     use crate::repo::users;
+    use crate::testkit::register;
 
     #[tokio::test]
     async fn a_dm_under_another_id_is_still_theirs() {
@@ -205,15 +206,7 @@ mod tests {
         let mut conn = pool.acquire().await.unwrap();
         let now = Utc::now();
         let jid = "447700900001@s.whatsapp.net";
-        let sender = Person {
-            name: "Bilal".to_string(),
-            jid: jid.to_string(),
-            lid: None,
-        };
-        let user = users::find_or_register(&mut conn, &sender, now)
-            .await
-            .unwrap()
-            .unwrap();
+        let user = register(&mut conn, "Bilal", "447700900001", now).await;
 
         let dm = find_or_create(&mut conn, jid, Some(user.id), now)
             .await

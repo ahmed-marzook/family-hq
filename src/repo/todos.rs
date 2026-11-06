@@ -408,21 +408,13 @@ pub async fn remove(
 mod tests {
     use super::*;
     use crate::db::test_pool;
-    use crate::person::Person;
-    use crate::repo::{chats, users};
+    use crate::repo::chats;
+    use crate::testkit::register;
 
     /// A user and a group chat; returns (chat_id, user_id).
     async fn setup(conn: &mut SqliteConnection) -> (i64, i64) {
         let now = Utc::now();
-        let sender = Person {
-            name: "Bilal".to_string(),
-            jid: "447700900001@s.whatsapp.net".to_string(),
-            lid: None,
-        };
-        let user = users::find_or_register(conn, &sender, now)
-            .await
-            .unwrap()
-            .unwrap();
+        let user = register(conn, "Bilal", "447700900001", now).await;
         let chat = chats::find_or_create(conn, "120363000000000001@g.us", None, now)
             .await
             .unwrap();

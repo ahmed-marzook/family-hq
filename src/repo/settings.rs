@@ -258,8 +258,8 @@ pub async fn reset(conn: &mut SqliteConnection, chat_id: i64) -> Result<(), sqlx
 mod tests {
     use super::*;
     use crate::db::test_pool;
-    use crate::person::Person;
-    use crate::repo::{chats, users};
+    use crate::repo::chats;
+    use crate::testkit::register;
     use chrono::Utc;
 
     fn paris() -> Coordinates {
@@ -336,28 +336,19 @@ mod tests {
         let now = Utc::now();
         let chat = group(&mut conn).await;
 
-        let mut ids = Vec::new();
-        for (name, jid) in [
-            ("Bilal", "447700900001@s.whatsapp.net"),
-            ("Khadija", "447700900002@s.whatsapp.net"),
-        ] {
-            let person = Person {
-                name: name.to_string(),
-                jid: jid.to_string(),
-                lid: None,
-            };
-            let user = users::find_or_register(&mut conn, &person, now)
-                .await
-                .unwrap()
-                .unwrap();
+        let mut people = Vec::new();
+        for (name, phone) in [("Bilal", "447700900001"), ("Khadija", "447700900002")] {
+            let user = register(&mut conn, name, phone, now).await;
             chats::add_member(&mut conn, chat, user.id, now)
                 .await
                 .unwrap();
-            ids.push((user.id, jid));
+            people.push(user);
         }
         // Bilal has a DM with his own city; Khadija has never DM'd the bot.
-        let (bilal, bilal_jid) = ids[0];
-        let dm = chats::find_or_create(&mut conn, bilal_jid, Some(bilal), now)
+        // `&people[0]` borrows him: a `User` holds `String`s, so it can't be
+        // moved out of the `Vec` the way a plain `(i64, &str)` could be copied.
+        let bilal = &people[0];
+        let dm = chats::find_or_create(&mut conn, &bilal.wa_jid, Some(bilal.id), now)
             .await
             .unwrap();
         set_location(&mut conn, dm, "Leicester", "GB", paris(), "Europe/London")

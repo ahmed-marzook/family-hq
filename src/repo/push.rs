@@ -104,20 +104,10 @@ pub async fn claim(
 mod tests {
     use super::*;
     use crate::db::test_pool;
-    use crate::person::Person;
-    use crate::repo::users;
+    use crate::testkit::register;
 
     async fn someone(conn: &mut SqliteConnection) -> i64 {
-        let person = Person {
-            name: "Amina".to_string(),
-            jid: "447700900001@s.whatsapp.net".to_string(),
-            lid: None,
-        };
-        users::find_or_register(conn, &person, Utc::now())
-            .await
-            .unwrap()
-            .unwrap()
-            .id
+        register(conn, "Amina", "447700900001", Utc::now()).await.id
     }
 
     fn sub(topic: &str, token: &str) -> Subscription {

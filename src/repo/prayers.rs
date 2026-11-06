@@ -429,8 +429,8 @@ pub async fn dm_reminders_on(
 mod tests {
     use super::*;
     use crate::db::test_pool;
-    use crate::person::Person;
-    use crate::repo::{chats, settings, users};
+    use crate::repo::{chats, settings};
+    use crate::testkit::register;
 
     fn date() -> NaiveDate {
         NaiveDate::from_ymd_opt(2026, 10, 27).unwrap()
@@ -550,15 +550,7 @@ mod tests {
         let pool = test_pool().await;
         let mut conn = pool.acquire().await.unwrap();
         let now = Utc::now();
-        let person = Person {
-            name: "Bilal".to_string(),
-            jid: "447700900001@s.whatsapp.net".to_string(),
-            lid: None,
-        };
-        let user = users::find_or_register(&mut conn, &person, now)
-            .await
-            .unwrap()
-            .unwrap();
+        let user = register(&mut conn, "Bilal", "447700900001", now).await;
 
         let first = mark_prayed(&mut conn, user.id, date(), Prayer::Fajr, now)
             .await
@@ -601,16 +593,7 @@ mod tests {
     }
 
     async fn bilal(conn: &mut SqliteConnection) -> i64 {
-        let person = Person {
-            name: "Bilal".to_string(),
-            jid: "447700900001@s.whatsapp.net".to_string(),
-            lid: None,
-        };
-        users::find_or_register(conn, &person, Utc::now())
-            .await
-            .unwrap()
-            .unwrap()
-            .id
+        register(conn, "Bilal", "447700900001", Utc::now()).await.id
     }
 
     #[tokio::test]

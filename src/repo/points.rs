@@ -166,10 +166,9 @@ pub async fn report_groups(
 mod tests {
     use super::*;
     use crate::db::test_pool;
-    use crate::person::Person;
     use crate::points::Reason;
-    use crate::repo::{chats, users};
-    use crate::testkit::date;
+    use crate::repo::chats;
+    use crate::testkit::{date, register};
 
     fn period(first: &str, last: &str) -> Period {
         Period {
@@ -186,16 +185,7 @@ mod tests {
     }
 
     async fn user(conn: &mut SqliteConnection, name: &str, phone: &str) -> i64 {
-        let person = Person {
-            name: name.to_string(),
-            jid: format!("{phone}@s.whatsapp.net"),
-            lid: None,
-        };
-        users::find_or_register(conn, &person, Utc::now())
-            .await
-            .unwrap()
-            .unwrap()
-            .id
+        register(conn, name, phone, Utc::now()).await.id
     }
 
     #[tokio::test]

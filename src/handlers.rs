@@ -1764,6 +1764,7 @@ mod tests {
     use crate::prayer::{HijriDate, Window};
     use crate::repo::chats;
     use crate::settings::tests::defaults;
+    use crate::testkit::register;
     use chrono::NaiveDate;
 
     /// 27 Oct 2026 in Milton Keynes (GMT, so London time = UTC).
@@ -2026,19 +2027,8 @@ mod tests {
             .await
             .unwrap();
         let mut sender = None;
-        for (name, jid) in [
-            ("Bilal", "447700900001@s.whatsapp.net"),
-            ("Khadija", "447700900002@s.whatsapp.net"),
-        ] {
-            let person = Person {
-                name: name.to_string(),
-                jid: jid.to_string(),
-                lid: None,
-            };
-            let user = users::find_or_register(conn, &person, now)
-                .await
-                .unwrap()
-                .unwrap();
+        for (name, phone) in [("Bilal", "447700900001"), ("Khadija", "447700900002")] {
+            let user = register(conn, name, phone, now).await;
             chats::add_member(conn, chat_id, user.id, now)
                 .await
                 .unwrap();

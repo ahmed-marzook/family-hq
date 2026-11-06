@@ -299,8 +299,7 @@ pub async fn send(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testkit::date;
-    use crate::testkit::utc;
+    use crate::testkit::{date, utc};
 
     #[test]
     fn delivery_round_trips_and_defaults_to_here() {
