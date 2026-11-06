@@ -18,7 +18,7 @@ use tracing::{Span, debug, info, warn};
 use crate::AppState;
 use crate::error::AppError;
 use crate::handlers::{self, Context, Offline, Outcome, Prepared, Ran};
-use crate::metrics::{self, Event};
+use crate::metrics::{self, Event, ReactionChange};
 use crate::parser::{self, BotCommand, ReplyCommand};
 use crate::person::{Assignee, Person};
 use crate::prayer::{self, Tick};
@@ -537,7 +537,12 @@ async fn handle_reaction(
     // gone, is harmless: both repo calls are safe to repeat, and say
     // whether anything changed. So retried webhooks need no dedupe here,
     // and only a real change gets a reply.
-    let removed = r.reaction.is_empty();
+    // An empty emoji means the reaction was taken off.
+    let change = if r.reaction.is_empty() {
+        ReactionChange::Removed
+    } else {
+        ReactionChange::Added
+    };
     // The chat is already known (the reminder was sent there), so this only
     // looks it up.
     let is_group = r.chat_id.ends_with("@g.us");
@@ -546,7 +551,7 @@ async fn handle_reaction(
     if is_group {
         chats::touch(&mut tx, chat_id, now).await?;
     }
-    let event: Event = metrics::reaction(removed);
+    let event: Event = metrics::reaction(change);
     let row = Logged {
         event: &event,
         chat_id,
@@ -559,18 +564,21 @@ async fn handle_reaction(
     repo::metrics::record(&mut tx, &row).await?;
 
     // `None` if nothing changed.
-    let tick = if removed {
-        let changed = prayers::unmark_prayed(&mut tx, user.id, date, prayer).await?;
-        info!("unticked {prayer} on {date}");
-        changed.then_some(Tick::Unticked)
-    } else {
-        let status = prayers::mark_prayed(&mut tx, user.id, date, prayer, now).await?;
-        info!("prayed {prayer} on {date}");
-        // Its time had ended and it was marked missed: made up.
-        status.map(|s| match s {
-            Status::Late => Tick::MadeUp,
-            _ => Tick::Prayed,
-        })
+    let tick = match change {
+        ReactionChange::Removed => {
+            let changed = prayers::unmark_prayed(&mut tx, user.id, date, prayer).await?;
+            info!("unticked {prayer} on {date}");
+            changed.then_some(Tick::Unticked)
+        }
+        ReactionChange::Added => {
+            let status = prayers::mark_prayed(&mut tx, user.id, date, prayer, now).await?;
+            info!("prayed {prayer} on {date}");
+            // Its time had ended and it was marked missed: made up.
+            status.map(|s| match s {
+                Status::Late => Tick::MadeUp,
+                _ => Tick::Prayed,
+            })
+        }
     };
     let prayed = prayers::prayed_on(&mut tx, user.id, date).await?.len();
     tx.commit().await?;

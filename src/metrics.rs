@@ -248,9 +248,19 @@ pub fn list_reply(kind: ListKind, reply: &ReplyCommand) -> Event {
     Event::new(Kind::ListReply, &format!("{list}.reply_{action}"), None)
 }
 
+/// Whether a reaction was put on a message or taken off it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReactionChange {
+    Added,
+    Removed,
+}
+
 /// A reaction on a prayer reminder: added (prayed) or removed (undone).
-pub fn reaction(removed: bool) -> Event {
-    let detail = if removed { "removed" } else { "added" };
+pub fn reaction(change: ReactionChange) -> Event {
+    let detail = match change {
+        ReactionChange::Added => "added",
+        ReactionChange::Removed => "removed",
+    };
     Event::new(Kind::Reaction, "prayers.react", Some(detail))
 }
 
@@ -415,7 +425,7 @@ mod tests {
         );
         let done = list_reply(ListKind::Todo, &ReplyCommand::Done(2));
         assert_eq!(done.name, "todo.reply_done");
-        let undo = reaction(true);
+        let undo = reaction(ReactionChange::Removed);
         assert_eq!(
             (undo.name.as_str(), undo.detail.as_deref()),
             ("prayers.react", Some("removed"))
