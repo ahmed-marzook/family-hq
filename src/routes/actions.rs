@@ -132,7 +132,7 @@ mod tests {
     use crate::person::Person;
     use crate::prayer::Prayer;
     use crate::repo::push::Subscription;
-    use crate::testkit::start_server_with;
+    use crate::testkit::{fake_gowa, serve_state, start_server_with, test_state};
     use chrono::NaiveDate;
 
     const TOKEN: &str = "a-token-that-is-at-least-32-characters-long";
@@ -141,6 +141,12 @@ mod tests {
     /// address, the pool and their id.
     async fn setup() -> (String, sqlx::SqlitePool, i64) {
         let pool = test_pool().await;
+        let user_id = subscriber(&pool).await;
+        (start_server_with(pool.clone()).await, pool, user_id)
+    }
+
+    /// Amina, with push on and a DM, in `pool`; returns her id.
+    async fn subscriber(pool: &sqlx::SqlitePool) -> i64 {
         let mut conn = pool.acquire().await.unwrap();
         let now = Utc::now();
         let person = Person {
@@ -163,8 +169,10 @@ mod tests {
             .await
             .unwrap();
         // The test pool has one connection, and the server needs it.
+        // (`conn` would be dropped at the end of this function anyway; the
+        // `drop` just says so.)
         drop(conn);
-        (start_server_with(pool.clone()).await, pool, user.id)
+        user.id
     }
 
     async fn press(server: &str, path: &str, token: Option<&str>) -> StatusCode {
@@ -231,6 +239,42 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(count, 2);
+    }
+
+    /// The test button also answers in WhatsApp. If GOWA can't send that,
+    /// the press was already saved, so it's still a 200; the failure is
+    /// only logged.
+    #[tokio::test]
+    async fn test_button_is_ok_even_if_whatsapp_fails() {
+        let pool = test_pool().await;
+        let user_id = subscriber(&pool).await;
+        let gowa = fake_gowa().await;
+        *gowa.fail_sends.lock().unwrap() = true;
+        let server = serve_state(test_state(pool.clone(), &gowa.url)).await;
+
+        let response = reqwest::Client::new()
+            .post(format!("{server}/actions/test"))
+            .bearer_auth(TOKEN)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.text().await.unwrap(), "The button works");
+
+        // It did try to confirm, in Amina's DM. `clone` copies the list out,
+        // so the lock is let go at the end of this line.
+        let sent = gowa.sent.lock().unwrap().clone();
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert_eq!(sent[0].0, "447700900001@s.whatsapp.net");
+        // And the press was saved before that: counted, under her DM.
+        let (count,): (i64,) = sqlx::query_as(
+            "SELECT count(*) FROM command_log WHERE name = 'push.test' AND user_id = ?",
+        )
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 1);
     }
 
     #[tokio::test]

@@ -102,8 +102,10 @@ async fn serve(app: Router) -> String {
 /// A fake GOWA for tests, on a free port: remembers each message the bot
 /// sends as (to, text) and each group it leaves, says yes to reactions
 /// (without keeping them; no test needs them yet); lists the groups in
-/// `listed`; and refuses to leave a group (with a 500, as a broken GOWA would)
-/// while `refuse_leave` is set.
+/// `listed`; refuses to leave a group (with a 500, as a broken GOWA would)
+/// while `refuse_leave` is set; and refuses to send while `fail_sends` is
+/// set. A refused message is still kept in `sent`, so a test can see the
+/// bot tried.
 ///
 /// Each field is an `Arc<Mutex<...>>`: the `Arc` lets the test and the
 /// fake's handlers share one value, and the `Mutex` lets either change it.
@@ -115,6 +117,7 @@ pub(crate) struct FakeGowa {
     pub(crate) listed: Arc<Mutex<Vec<String>>>,
     pub(crate) left: Arc<Mutex<Vec<String>>>,
     pub(crate) refuse_leave: Arc<Mutex<bool>>,
+    pub(crate) fail_sends: Arc<Mutex<bool>>,
 }
 
 /// Starts a `FakeGowa`. It answers the paths `crate::whatsapp` calls, with
@@ -124,10 +127,12 @@ pub(crate) async fn fake_gowa() -> FakeGowa {
     let listed = Arc::new(Mutex::new(Vec::<String>::new()));
     let left = Arc::new(Mutex::new(Vec::new()));
     let refuse_leave = Arc::new(Mutex::new(false));
+    let fail_sends = Arc::new(Mutex::new(false));
     // Each handler gets its own clone of the `Arc`s it needs: `move`
     // closures take ownership, and the originals go back to the test.
-    let (log, groups, leaves, refuse) = (
+    let (log, fail, groups, leaves, refuse) = (
         sent.clone(),
+        fail_sends.clone(),
         listed.clone(),
         left.clone(),
         refuse_leave.clone(),
@@ -139,7 +144,13 @@ pub(crate) async fn fake_gowa() -> FakeGowa {
                 let to = body["phone"].as_str().unwrap_or_default().to_string();
                 let text = body["message"].as_str().unwrap_or_default().to_string();
                 log.lock().unwrap().push((to, text));
-                Json(json!({ "code": "SUCCESS", "results": { "message_id": "FAKE1" } }))
+                if *fail.lock().unwrap() {
+                    return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({})));
+                }
+                (
+                    StatusCode::OK,
+                    Json(json!({ "code": "SUCCESS", "results": { "message_id": "FAKE1" } })),
+                )
             }),
         )
         .route(
@@ -175,6 +186,7 @@ pub(crate) async fn fake_gowa() -> FakeGowa {
         listed,
         left,
         refuse_leave,
+        fail_sends,
     }
 }
 
