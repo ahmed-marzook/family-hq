@@ -277,4 +277,120 @@ mod tests {
         // `Datelike` gives `.day()`: always the 1st.
         assert_eq!(parse_month("2026-02").map(|d| d.day()), Some(1));
     }
+
+    // ---- whose settings apply (`today_for`) ----
+    //
+    // Pinning tests: what the code does today. `today_for` reads the clock
+    // itself, so these use two timezones more than 24 hours apart (UTC-11
+    // and UTC+14): their dates are never the same, whatever the time is,
+    // so "which date came back" says which timezone was used.
+
+    use chrono_tz::Tz;
+
+    use crate::db::test_pool;
+    use crate::settings::tests::defaults;
+    use crate::testkit::{seed_family, utc};
+
+    /// UTC-11.
+    const PAGO_PAGO: Tz = chrono_tz::Pacific::Pago_Pago;
+    /// UTC+14.
+    const KIRITIMATI: Tz = chrono_tz::Pacific::Kiritimati;
+
+    /// The usual defaults, on Pago Pago's clock.
+    fn pago_pago_defaults() -> Settings {
+        Settings {
+            timezone: PAGO_PAGO,
+            ..defaults()
+        }
+    }
+
+    /// Checks `today_for` gives today on `expected`'s clock, not `other`'s.
+    /// The clock is read before and after, in case midnight falls between.
+    async fn assert_today_on(
+        conn: &mut SqliteConnection,
+        user_id: i64,
+        base: &Settings,
+        expected: Tz,
+        other: Tz,
+    ) {
+        let before = Utc::now();
+        let today = today_for(conn, user_id, base).await.unwrap();
+        let after = Utc::now();
+        let on = |tz: Tz| [before, after].map(|now| now.with_timezone(&tz).date_naive());
+        assert!(
+            on(expected).contains(&today),
+            "{today} isn't today on {expected}"
+        );
+        assert!(!on(other).contains(&today), "{today} is today on {other}");
+    }
+
+    #[tokio::test]
+    async fn today_for_uses_personal_timezone_over_the_base() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let family = seed_family(&mut conn, utc("2026-11-01T12:00:00Z")).await;
+        stored::set_timezone(&mut conn, family.dm, "Pacific/Kiritimati")
+            .await
+            .unwrap();
+
+        let base = pago_pago_defaults();
+        assert_today_on(&mut conn, family.bilal.id, &base, KIRITIMATI, PAGO_PAGO).await;
+    }
+
+    #[tokio::test]
+    async fn today_for_with_the_defaults_ignores_the_groups_timezone() {
+        // The user page and the prayer calendar pass the server defaults
+        // as `base`, so a group's timezone never counts there, even for
+        // someone whose only chat with the bot is that group. In the group
+        // itself, `my_settings` would use the group's (Kiritimati).
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let family = seed_family(&mut conn, utc("2026-11-01T12:00:00Z")).await;
+        stored::set_timezone(&mut conn, family.group, "Pacific/Kiritimati")
+            .await
+            .unwrap();
+
+        let base = pago_pago_defaults();
+        assert_today_on(&mut conn, family.bilal.id, &base, PAGO_PAGO, KIRITIMATI).await;
+        assert_today_on(&mut conn, family.khadija.id, &base, PAGO_PAGO, KIRITIMATI).await;
+    }
+
+    #[tokio::test]
+    async fn today_for_with_the_groups_settings_is_the_groups_unless_personal() {
+        // The group page passes the group's settings as `base`.
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let family = seed_family(&mut conn, utc("2026-11-01T12:00:00Z")).await;
+        let group = Settings {
+            timezone: KIRITIMATI,
+            ..defaults()
+        };
+        // Khadija has no DM; Bilal has one with nothing changed.
+        assert_today_on(&mut conn, family.khadija.id, &group, KIRITIMATI, PAGO_PAGO).await;
+        assert_today_on(&mut conn, family.bilal.id, &group, KIRITIMATI, PAGO_PAGO).await;
+
+        // Bilal's own timezone wins over the group's.
+        stored::set_timezone(&mut conn, family.dm, "Pacific/Pago_Pago")
+            .await
+            .unwrap();
+        assert_today_on(&mut conn, family.bilal.id, &group, PAGO_PAGO, KIRITIMATI).await;
+    }
+
+    #[tokio::test]
+    async fn today_for_still_uses_a_dm_marked_left() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let family = seed_family(&mut conn, utc("2026-11-01T12:00:00Z")).await;
+        stored::set_timezone(&mut conn, family.dm, "Pacific/Kiritimati")
+            .await
+            .unwrap();
+        // The bot only ever marks groups as left; done by hand here.
+        let left = Some(utc("2026-11-01T13:00:00Z"));
+        crate::repo::cleanup::set_left(&mut conn, family.dm, left)
+            .await
+            .unwrap();
+
+        let base = pago_pago_defaults();
+        assert_today_on(&mut conn, family.bilal.id, &base, KIRITIMATI, PAGO_PAGO).await;
+    }
 }

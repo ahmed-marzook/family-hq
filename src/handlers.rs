@@ -2107,7 +2107,7 @@ mod tests {
     use crate::prayer::{HijriDate, Window};
     use crate::repo::chats;
     use crate::settings::tests::defaults;
-    use crate::testkit::register;
+    use crate::testkit::{register, seed_family, utc};
     use chrono::NaiveDate;
 
     /// 27 Oct 2026 in Milton Keynes (GMT, so London time = UTC).
@@ -3917,5 +3917,144 @@ Already on the list: milk, Eggs"
 
         let text = reply_to(&mut conn, &ctx, &apis, BotCommand::Weather(When::Now)).await;
         assert!(text.contains("couldn't find Milton Keynes, GB"), "{text}");
+    }
+
+    // ---- whose settings apply (`my_settings`) ----
+    //
+    // Pinning tests: they describe what the code does today, so a refactor
+    // can't change it by accident. The places are picked so each field
+    // shows where it came from: the defaults are Milton Keynes on
+    // Europe/London, the group is Colombo on Asia/Colombo, and Bilal's own
+    // timezone (set in his DM) is America/New_York.
+
+    const NEW_YORK: Tz = chrono_tz::America::New_York;
+    const COLOMBO: Tz = chrono_tz::Asia::Colombo;
+
+    /// Gives a chat Colombo as its town and timezone.
+    async fn set_colombo(conn: &mut SqliteConnection, chat_id: i64) {
+        let at = Coordinates {
+            latitude: 6.9271,
+            longitude: 79.8612,
+        };
+        stored::set_location(conn, chat_id, "Colombo", "LK", at, "Asia/Colombo")
+            .await
+            .unwrap();
+    }
+
+    /// `user` sending a message in chat `chat_id`.
+    fn ctx_in(chat_id: i64, is_group: bool, user: &User) -> Context {
+        Context {
+            chat_id,
+            is_group,
+            sender: user.clone(),
+            now: utc("2026-11-02T12:00:00Z"),
+        }
+    }
+
+    #[tokio::test]
+    async fn my_settings_in_a_dm_is_the_dms_own_settings() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let family = seed_family(&mut conn, utc("2026-11-01T12:00:00Z")).await;
+        stored::set_timezone(&mut conn, family.dm, "America/New_York")
+            .await
+            .unwrap();
+        // The group's settings don't reach the DM at all.
+        set_colombo(&mut conn, family.group).await;
+
+        let ctx = ctx_in(family.dm, false, &family.bilal);
+        let settings = my_settings(&mut conn, &ctx, &defaults()).await.unwrap();
+        assert_eq!(settings.timezone, NEW_YORK);
+        assert_eq!(settings.city, "Milton Keynes", "the default town");
+    }
+
+    #[tokio::test]
+    async fn my_settings_in_a_dm_without_own_settings_is_the_defaults() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let family = seed_family(&mut conn, utc("2026-11-01T12:00:00Z")).await;
+        set_colombo(&mut conn, family.group).await;
+
+        let ctx = ctx_in(family.dm, false, &family.bilal);
+        let settings = my_settings(&mut conn, &ctx, &defaults()).await.unwrap();
+        assert_eq!(settings, defaults());
+    }
+
+    #[tokio::test]
+    async fn my_settings_in_a_group_uses_personal_timezone_over_the_groups() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let family = seed_family(&mut conn, utc("2026-11-01T12:00:00Z")).await;
+        set_colombo(&mut conn, family.group).await;
+        stored::set_timezone(&mut conn, family.dm, "America/New_York")
+            .await
+            .unwrap();
+
+        let ctx = ctx_in(family.group, true, &family.bilal);
+        let settings = my_settings(&mut conn, &ctx, &defaults()).await.unwrap();
+        assert_eq!(settings.timezone, NEW_YORK, "his own timezone wins");
+        // Field by field: he only set a timezone, so the town is still the
+        // group's. Colombo's prayer times, shown on New York's clock.
+        assert_eq!(settings.city, "Colombo");
+    }
+
+    #[tokio::test]
+    async fn my_settings_in_a_group_without_personal_settings_is_the_groups() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let family = seed_family(&mut conn, utc("2026-11-01T12:00:00Z")).await;
+        set_colombo(&mut conn, family.group).await;
+
+        // Bilal has a DM, but never changed anything in it.
+        let ctx = ctx_in(family.group, true, &family.bilal);
+        let settings = my_settings(&mut conn, &ctx, &defaults()).await.unwrap();
+        assert_eq!(
+            (settings.timezone, settings.city.as_str()),
+            (COLOMBO, "Colombo")
+        );
+
+        // Khadija has no DM at all: the same.
+        let ctx = ctx_in(family.group, true, &family.khadija);
+        let settings = my_settings(&mut conn, &ctx, &defaults()).await.unwrap();
+        assert_eq!(
+            (settings.timezone, settings.city.as_str()),
+            (COLOMBO, "Colombo")
+        );
+    }
+
+    #[tokio::test]
+    async fn my_settings_in_a_group_without_its_own_uses_personal_over_the_defaults() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let family = seed_family(&mut conn, utc("2026-11-01T12:00:00Z")).await;
+        stored::set_timezone(&mut conn, family.dm, "America/New_York")
+            .await
+            .unwrap();
+
+        let ctx = ctx_in(family.group, true, &family.bilal);
+        let settings = my_settings(&mut conn, &ctx, &defaults()).await.unwrap();
+        assert_eq!(settings.timezone, NEW_YORK);
+        assert_eq!(settings.city, "Milton Keynes");
+    }
+
+    #[tokio::test]
+    async fn my_settings_in_a_group_still_uses_a_dm_marked_left() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let family = seed_family(&mut conn, utc("2026-11-01T12:00:00Z")).await;
+        set_colombo(&mut conn, family.group).await;
+        stored::set_timezone(&mut conn, family.dm, "America/New_York")
+            .await
+            .unwrap();
+        // The bot only ever marks groups as left; this is done by hand, to
+        // show `stored::personal` doesn't look at `left_at`.
+        let left = Some(utc("2026-11-01T13:00:00Z"));
+        crate::repo::cleanup::set_left(&mut conn, family.dm, left)
+            .await
+            .unwrap();
+
+        let ctx = ctx_in(family.group, true, &family.bilal);
+        let settings = my_settings(&mut conn, &ctx, &defaults()).await.unwrap();
+        assert_eq!(settings.timezone, NEW_YORK);
     }
 }

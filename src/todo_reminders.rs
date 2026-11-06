@@ -251,4 +251,110 @@ mod tests {
         let one = open_for(&items, "Khadija", false);
         assert!(format("Morning", &one, None).starts_with("⏰ *Morning*: you have 1 todo\n"));
     }
+
+    // ---- whose settings apply (`settings_for`) ----
+    //
+    // Pinning tests, like `my_settings`'s in `handlers`: what the code does
+    // today. Defaults Europe/London, the group Asia/Colombo, Bilal's own
+    // (from his DM) America/New_York.
+
+    use crate::db::test_pool;
+    use crate::repo::users::User;
+    use crate::testkit::{Family, seed_family, test_state};
+
+    const NEW_YORK: Tz = chrono_tz::America::New_York;
+    const COLOMBO: Tz = chrono_tz::Asia::Colombo;
+
+    /// `user`'s todo reminders in chat `chat_id`, as `subscribers` lists them.
+    fn subscriber(chat_id: i64, dm_user_id: Option<i64>, user: &User) -> Subscriber {
+        Subscriber {
+            chat_id,
+            wa_chat_id: String::new(),
+            dm_user_id,
+            user_id: user.id,
+            display_name: user.display_name.clone(),
+            wa_jid: user.wa_jid.clone(),
+        }
+    }
+
+    /// The family, with the group on Colombo time and Bilal on New York
+    /// time in his DM. An address nothing listens on is fine for GOWA:
+    /// nothing is sent.
+    async fn colombo_and_new_york() -> (std::sync::Arc<AppState>, Family) {
+        let state = test_state(test_pool().await, "http://localhost:1");
+        let mut conn = state.db.acquire().await.unwrap();
+        let family = seed_family(&mut conn, utc("2026-11-01T12:00:00Z")).await;
+        stored::set_timezone(&mut conn, family.group, "Asia/Colombo")
+            .await
+            .unwrap();
+        stored::set_timezone(&mut conn, family.dm, "America/New_York")
+            .await
+            .unwrap();
+        drop(conn);
+        (state, family)
+    }
+
+    #[tokio::test]
+    async fn settings_for_a_dm_is_the_dms_own_settings() {
+        let (state, family) = colombo_and_new_york().await;
+        let mut conn = state.db.acquire().await.unwrap();
+        let bilal = subscriber(family.dm, Some(family.bilal.id), &family.bilal);
+        let settings = settings_for(&state, &mut conn, &bilal).await.unwrap();
+        assert_eq!(settings.timezone, NEW_YORK);
+    }
+
+    #[tokio::test]
+    async fn settings_for_a_group_uses_personal_timezone_over_the_groups() {
+        let (state, family) = colombo_and_new_york().await;
+        let mut conn = state.db.acquire().await.unwrap();
+        let bilal = subscriber(family.group, None, &family.bilal);
+        let settings = settings_for(&state, &mut conn, &bilal).await.unwrap();
+        assert_eq!(settings.timezone, NEW_YORK);
+    }
+
+    #[tokio::test]
+    async fn settings_for_a_group_member_without_a_dm_is_the_groups() {
+        let (state, family) = colombo_and_new_york().await;
+        let mut conn = state.db.acquire().await.unwrap();
+        let khadija = subscriber(family.group, None, &family.khadija);
+        let settings = settings_for(&state, &mut conn, &khadija).await.unwrap();
+        assert_eq!(settings.timezone, COLOMBO);
+    }
+
+    #[tokio::test]
+    async fn settings_for_a_group_without_its_own_is_personal_over_the_defaults() {
+        let (state, family) = colombo_and_new_york().await;
+        let mut conn = state.db.acquire().await.unwrap();
+        stored::reset(&mut conn, family.group).await.unwrap();
+        let bilal = subscriber(family.group, None, &family.bilal);
+        assert_eq!(
+            settings_for(&state, &mut conn, &bilal)
+                .await
+                .unwrap()
+                .timezone,
+            NEW_YORK
+        );
+        let khadija = subscriber(family.group, None, &family.khadija);
+        assert_eq!(
+            settings_for(&state, &mut conn, &khadija)
+                .await
+                .unwrap()
+                .timezone,
+            chrono_tz::Europe::London
+        );
+    }
+
+    #[tokio::test]
+    async fn settings_for_a_group_still_uses_a_dm_marked_left() {
+        let (state, family) = colombo_and_new_york().await;
+        let mut conn = state.db.acquire().await.unwrap();
+        // Only groups are ever marked left by the bot; done by hand here.
+        let left = Some(utc("2026-11-01T13:00:00Z"));
+        crate::repo::cleanup::set_left(&mut conn, family.dm, left)
+            .await
+            .unwrap();
+        let bilal = subscriber(family.group, None, &family.bilal);
+        let settings = settings_for(&state, &mut conn, &bilal).await.unwrap();
+        assert_eq!(settings.timezone, NEW_YORK);
+    }
 }
