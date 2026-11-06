@@ -77,9 +77,8 @@ pub async fn leave(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
-    use axum::Json;
     use chrono::{DateTime, Duration, Utc};
     use hmac::{Hmac, KeyInit, Mac};
     use reqwest::StatusCode;
@@ -90,7 +89,7 @@ mod tests {
     use crate::cleanup;
     use crate::db::test_pool;
     use crate::repo::{chats, todos};
-    use crate::routes::api::{serve_state, test_state};
+    use crate::routes::api::{fake_gowa, serve_state, test_state};
 
     const GROUP: &str = "120363000000000001@g.us";
     const BILAL: &str = "447700900001@s.whatsapp.net";
@@ -142,7 +141,8 @@ mod tests {
     #[tokio::test]
     async fn using_the_bot_counts_and_group_chat_does_not() {
         let pool = test_pool().await;
-        let server = serve_state(test_state(pool.clone(), "http://localhost:1")).await;
+        let gowa = fake_gowa().await;
+        let server = serve_state(test_state(pool.clone(), &gowa.url)).await;
 
         // A new person starts active.
         webhook(&server, "M1", GROUP, "morning all").await;
@@ -162,75 +162,6 @@ mod tests {
         let old = make_old(&pool, 20).await;
         webhook(&server, "M5", BILAL, "thanks!").await;
         assert!(last_active(&pool).await > old, "anything in their DM");
-    }
-
-    /// A fake GOWA: remembers each message the bot sends (to, text) and
-    /// each group it leaves, lists the groups in `listed`, and refuses to
-    /// leave while `refuse_leave` is set.
-    struct FakeGowa {
-        url: String,
-        sent: Arc<Mutex<Vec<(String, String)>>>,
-        listed: Arc<Mutex<Vec<String>>>,
-        left: Arc<Mutex<Vec<String>>>,
-        refuse_leave: Arc<Mutex<bool>>,
-    }
-
-    async fn fake_gowa() -> FakeGowa {
-        let sent = Arc::new(Mutex::new(Vec::new()));
-        let listed = Arc::new(Mutex::new(Vec::<String>::new()));
-        let left = Arc::new(Mutex::new(Vec::new()));
-        let refuse_leave = Arc::new(Mutex::new(false));
-        let (log, groups, leaves, refuse) = (
-            sent.clone(),
-            listed.clone(),
-            left.clone(),
-            refuse_leave.clone(),
-        );
-        let app = axum::Router::new()
-            .route(
-                "/send/message",
-                axum::routing::post(move |Json(body): Json<Value>| async move {
-                    let to = body["phone"].as_str().unwrap_or_default().to_string();
-                    let text = body["message"].as_str().unwrap_or_default().to_string();
-                    log.lock().unwrap().push((to, text));
-                    Json(json!({ "code": "SUCCESS", "results": { "message_id": "FAKE1" } }))
-                }),
-            )
-            .route(
-                "/user/my/groups",
-                axum::routing::get(move || async move {
-                    let data: Vec<Value> = groups
-                        .lock()
-                        .unwrap()
-                        .iter()
-                        .map(|jid| json!({ "JID": jid, "Name": "Family" }))
-                        .collect();
-                    Json(json!({ "code": "SUCCESS", "results": { "data": data } }))
-                }),
-            )
-            .route(
-                "/group/leave",
-                axum::routing::post(move |Json(body): Json<Value>| async move {
-                    if *refuse.lock().unwrap() {
-                        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({})));
-                    }
-                    let group = body["group_id"].as_str().unwrap_or_default().to_string();
-                    leaves.lock().unwrap().push(group);
-                    (StatusCode::OK, Json(json!({ "code": "SUCCESS" })))
-                }),
-            );
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-            .await
-            .unwrap();
-        let address = listener.local_addr().unwrap();
-        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        FakeGowa {
-            url: format!("http://{address}"),
-            sent,
-            listed,
-            left,
-            refuse_leave,
-        }
     }
 
     async fn users(pool: &SqlitePool) -> i64 {
@@ -334,7 +265,8 @@ mod tests {
     #[tokio::test]
     async fn the_dashboard_shows_when_and_can_clear_now() {
         let pool = test_pool().await;
-        let state = test_state(pool.clone(), "http://localhost:1");
+        let gowa = fake_gowa().await;
+        let state = test_state(pool.clone(), &gowa.url);
         let server = serve_state(state.clone()).await;
         webhook(&server, "M1", GROUP, "+todo fix the tap").await;
         let id: i64 = sqlx::query_scalar("SELECT id FROM users")

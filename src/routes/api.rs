@@ -88,7 +88,7 @@ async fn not_found() -> (StatusCode, Json<Value>) {
 
 /// Runs the real router, on a free port with `pool` as its database, and
 /// returns its address. For tests of anything under `/api`. The login is
-/// `test:test`, and GOWA can't be reached.
+/// `test:test`, and GOWA is a fake (`fake_gowa`) that says yes to everything.
 #[cfg(test)]
 pub(crate) async fn start_server_with(pool: sqlx::SqlitePool) -> String {
     serve_for_test(pool, None).await
@@ -104,8 +104,8 @@ pub(crate) async fn start_server_with_geocoder(
 }
 
 /// The app's state for tests: `pool` as its database, GOWA at `gowa_url`
-/// (`http://localhost:1` can't be reached), login `test:test`, webhook
-/// secret `test`, Milton Keynes defaults, clearing after 14 days.
+/// (usually a `fake_gowa`'s `url`), login `test:test`, webhook secret
+/// `test`, Milton Keynes defaults, clearing after 14 days.
 #[cfg(test)]
 pub(crate) fn test_state(pool: sqlx::SqlitePool, gowa_url: &str) -> Arc<AppState> {
     use crate::config::Config;
@@ -149,7 +149,13 @@ pub(crate) async fn serve_state(state: Arc<AppState>) -> String {
 
 #[cfg(test)]
 async fn serve_for_test(pool: sqlx::SqlitePool, geocoding_url: Option<&str>) -> String {
-    let mut state = test_state(pool, "http://localhost:1");
+    // A fake GOWA that answers at once. An address nothing listens on (like
+    // `http://localhost:1`) works too, but Windows takes about 2 seconds to
+    // give up on each connection, which made the tests slow. Nobody looks at
+    // what this one records, so its handle is dropped; the server itself
+    // keeps running, because `tokio::spawn` owns it.
+    let gowa = fake_gowa().await;
+    let mut state = test_state(pool, &gowa.url);
     if let Some(url) = geocoding_url {
         // `Arc::get_mut` gives a `&mut` only while nothing else shares the
         // `Arc`, which is still true here, before the server starts.
@@ -157,6 +163,93 @@ async fn serve_for_test(pool: sqlx::SqlitePool, geocoding_url: Option<&str>) -> 
             crate::geo::Geo::with_geocoding_url(url);
     }
     serve_state(state).await
+}
+
+/// A fake GOWA for tests, on a free port: remembers each message the bot
+/// sends as (to, text) and each group it leaves, says yes to reactions
+/// (without keeping them; no test needs them yet); lists the groups in `listed`; and refuses to leave a
+/// group (with a 500, as a broken GOWA would) while `refuse_leave` is set.
+///
+/// Each field is an `Arc<Mutex<...>>`: the `Arc` lets the test and the
+/// fake's handlers share one value, and the `Mutex` lets either change it.
+/// A plain `std::sync::Mutex` is fine here, because nobody holds the lock
+/// across an `.await`.
+#[cfg(test)]
+pub(crate) struct FakeGowa {
+    pub(crate) url: String,
+    pub(crate) sent: Arc<std::sync::Mutex<Vec<(String, String)>>>,
+    pub(crate) listed: Arc<std::sync::Mutex<Vec<String>>>,
+    pub(crate) left: Arc<std::sync::Mutex<Vec<String>>>,
+    pub(crate) refuse_leave: Arc<std::sync::Mutex<bool>>,
+}
+
+/// Starts a `FakeGowa`. It answers the paths `crate::whatsapp` calls, with
+/// the same reply shapes as the real GOWA.
+#[cfg(test)]
+pub(crate) async fn fake_gowa() -> FakeGowa {
+    use std::sync::Mutex;
+
+    let sent = Arc::new(Mutex::new(Vec::new()));
+    let listed = Arc::new(Mutex::new(Vec::<String>::new()));
+    let left = Arc::new(Mutex::new(Vec::new()));
+    let refuse_leave = Arc::new(Mutex::new(false));
+    // Each handler gets its own clone of the `Arc`s it needs: `move`
+    // closures take ownership, and the originals go back to the test.
+    let (log, groups, leaves, refuse) = (
+        sent.clone(),
+        listed.clone(),
+        left.clone(),
+        refuse_leave.clone(),
+    );
+    let app = Router::new()
+        .route(
+            "/send/message",
+            post(move |Json(body): Json<Value>| async move {
+                let to = body["phone"].as_str().unwrap_or_default().to_string();
+                let text = body["message"].as_str().unwrap_or_default().to_string();
+                log.lock().unwrap().push((to, text));
+                Json(json!({ "code": "SUCCESS", "results": { "message_id": "FAKE1" } }))
+            }),
+        )
+        .route(
+            "/message/{id}/reaction",
+            post(|| async { Json(json!({ "code": "SUCCESS" })) }),
+        )
+        .route(
+            "/user/my/groups",
+            get(move || async move {
+                let data: Vec<Value> = groups
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .map(|jid| json!({ "JID": jid, "Name": "Family" }))
+                    .collect();
+                Json(json!({ "code": "SUCCESS", "results": { "data": data } }))
+            }),
+        )
+        .route(
+            "/group/leave",
+            post(move |Json(body): Json<Value>| async move {
+                if *refuse.lock().unwrap() {
+                    return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({})));
+                }
+                let group = body["group_id"].as_str().unwrap_or_default().to_string();
+                leaves.lock().unwrap().push(group);
+                (StatusCode::OK, Json(json!({ "code": "SUCCESS" })))
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    FakeGowa {
+        url: format!("http://{address}"),
+        sent,
+        listed,
+        left,
+        refuse_leave,
+    }
 }
 
 #[cfg(test)]
