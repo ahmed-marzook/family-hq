@@ -306,7 +306,7 @@ mod tests {
     use crate::metrics::{Event, Kind};
     use crate::points::{Award, Reason, Source};
     use crate::repo::metrics::{Logged, record};
-    use crate::repo::{chats, points, prayers, settings, shop, todo_reminders, todos, users};
+    use crate::repo::{chats, points, settings, shop, todo_reminders, todos, users};
     use crate::testkit::seed_family;
 
     async fn count(conn: &mut SqliteConnection, sql: &'static str, id: i64) -> i64 {
@@ -353,7 +353,7 @@ mod tests {
         todo_reminders::enable(conn, group, bilal, now)
             .await
             .unwrap();
-        prayers::mark_prayed(
+        crate::prayer::checkin::tick(
             conn,
             bilal,
             now.date_naive(),

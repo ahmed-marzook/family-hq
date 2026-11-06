@@ -17,8 +17,8 @@ use tracing::info;
 
 use crate::AppState;
 use crate::error::AppError;
-use crate::prayer::DayTimes;
 use crate::prayer::stats::{self, Entry, Summary};
+use crate::prayer::{DayTimes, checkin};
 use crate::reminders::{Place, Recipient};
 use crate::repo::prayers::{self, ReminderChat};
 use crate::reports::{self, Delivery, Feature, Outgoing, Period, Report, ReportKind, To};
@@ -60,17 +60,26 @@ async fn mark_missed(
     day: &DayTimes,
     now: DateTime<Utc>,
 ) -> Result<(), AppError> {
-    let mut conn = state.db.acquire().await?;
-    for prayer in stats::ended(day, now) {
-        if !prayers::was_reminded(&mut conn, chat.id, day.date, prayer, place_key).await? {
+    let ended = stats::ended(day, now);
+    if ended.is_empty() {
+        return Ok(());
+    }
+    // `checkin::mark_missed` reads the log, then writes. A write
+    // transaction (`BEGIN IMMEDIATE`) keeps anyone else (a reaction coming
+    // in at the same moment) from changing it in between. Nothing in here
+    // waits on the network, so it's held only for a few quick queries.
+    let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
+    for prayer in ended {
+        if !prayers::was_reminded(&mut tx, chat.id, day.date, prayer, place_key).await? {
             continue;
         }
         for r in &place.recipients {
-            if prayers::mark_missed(&mut conn, r.user_id, day.date, prayer, now).await? {
+            if checkin::mark_missed(&mut tx, r.user_id, day.date, prayer, now).await? {
                 info!("{prayer} on {} missed by user {}", day.date, r.user_id);
             }
         }
     }
+    tx.commit().await?;
     Ok(())
 }
 

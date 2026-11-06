@@ -541,7 +541,7 @@ mod tests {
     #[tokio::test]
     async fn report_delivery_and_prayer_stats_on_the_pages() {
         use crate::prayer::Prayer;
-        use crate::repo::prayers;
+        use crate::prayer::checkin;
 
         let pool = test_pool().await;
         let (bilal, khadija, group, _) = seed(&pool).await;
@@ -552,10 +552,10 @@ mod tests {
         {
             let mut conn = pool.acquire().await.unwrap();
             let now = chrono::Utc::now();
-            prayers::mark_prayed(&mut conn, bilal, today, Prayer::Fajr, now)
+            checkin::tick(&mut conn, bilal, today, Prayer::Fajr, now)
                 .await
                 .unwrap();
-            prayers::mark_missed(&mut conn, bilal, today, Prayer::Dhuhr, now)
+            checkin::mark_missed(&mut conn, bilal, today, Prayer::Dhuhr, now)
                 .await
                 .unwrap();
         }

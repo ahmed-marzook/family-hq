@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO prayer_log (user_id, prayer_date, prayer, status, prayed_at, missed_at)\n                 VALUES (?, ?, ?, ?, ?, ?)\n                 ON CONFLICT (user_id, prayer_date, prayer) DO UPDATE\n                 SET status = excluded.status,\n                     prayed_at = excluded.prayed_at,\n                     missed_at = excluded.missed_at",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "be509053ce5abc8c1d6be20b7bfcf3341cab3b74b357b09d8b5c0cc580f2c32b"
+}

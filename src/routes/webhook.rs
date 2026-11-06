@@ -564,7 +564,7 @@ async fn handle_reaction(
 
     // `None` if nothing changed.
     let tick = match change {
-        ReactionChange::Removed => checkin::untick(&mut tx, user.id, date, prayer).await?,
+        ReactionChange::Removed => checkin::untick(&mut tx, user.id, date, prayer, now).await?,
         ReactionChange::Added => checkin::tick(&mut tx, user.id, date, prayer, now).await?,
     };
     let prayed = prayers::prayed_on(&mut tx, user.id, date).await?.len();

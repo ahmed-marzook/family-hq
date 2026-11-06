@@ -5,7 +5,8 @@ use chrono::{DateTime, NaiveDate, Utc};
 use sqlx::SqliteConnection;
 use tracing::warn;
 
-use crate::prayer::stats::{Entry, Status};
+use crate::prayer::checkin::{Logged, Write};
+use crate::prayer::stats::Entry;
 use crate::prayer::{Prayer, ReminderKind};
 use crate::reports::Delivery;
 use crate::settings::Overrides;
@@ -158,119 +159,78 @@ pub async fn find_reminder(
     }))
 }
 
-/// Marks a prayer as prayed. If the bot had already marked it missed, it
-/// becomes made up (`Late`). Returns what it is now, or `None` if nothing
-/// changed: it was already marked (a second reaction, or a retried
-/// webhook), so the caller needn't say so twice.
-pub async fn mark_prayed(
+/// One prayer's entry in the log, if it has one. The rules for changing
+/// it are `prayer::checkin`'s; this only reads it.
+pub async fn load(
     conn: &mut SqliteConnection,
     user_id: i64,
     date: NaiveDate,
     prayer: Prayer,
-    now: DateTime<Utc>,
-) -> Result<Option<Status>, sqlx::Error> {
+) -> Result<Option<Logged>, sqlx::Error> {
     let prayer = prayer.as_db_str();
-    // An "upsert" with a condition: insert a new 'prayed' row, or turn a
-    // 'missed' one into 'late'. Any other existing row fails the `WHERE`,
-    // so nothing changes and `RETURNING` gives no row.
-    let status = sqlx::query_scalar!(
-        "INSERT INTO prayer_log (user_id, prayer_date, prayer, status, prayed_at)
-         VALUES (?, ?, ?, 'prayed', ?)
-         ON CONFLICT (user_id, prayer_date, prayer) DO UPDATE
-         SET status = 'late', prayed_at = excluded.prayed_at
-         WHERE prayer_log.status = 'missed'
-         RETURNING status",
+    let row = sqlx::query!(
+        r#"SELECT status, prayed_at AS "prayed_at: DateTime<Utc>",
+                  missed_at AS "missed_at: DateTime<Utc>"
+           FROM prayer_log WHERE user_id = ? AND prayer_date = ? AND prayer = ?"#,
         user_id,
         date,
-        prayer,
-        now
+        prayer
     )
     .fetch_optional(conn)
     .await?;
-    Ok(status.and_then(|s| {
-        s.parse()
-            .inspect_err(|err| warn!("prayer_log of user {user_id} on {date}: {err}"))
-            .ok()
-    }))
+    // `transpose` turns the `Option<Result<..>>` from parsing an optional
+    // row into a `Result<Option<..>>`, so `?` can pass the error on. The
+    // CHECK allows only the three statuses, so the parse fails only if the
+    // code and the schema disagree; unlike a report, a change can't just
+    // skip the row, so that's an error.
+    row.map(|r| {
+        let status = r
+            .status
+            .parse()
+            .map_err(|err: String| sqlx::Error::Decode(err.into()))?;
+        Ok(Logged {
+            status,
+            prayed_at: r.prayed_at,
+            missed_at: r.missed_at,
+        })
+    })
+    .transpose()
 }
 
-/// Sets how a prayer went when the person says so themselves (`+prayed
-/// asr on time` / `late`): `Prayed` replaces a ❌ or a 🕐, `Late` replaces
-/// a ✅ or a ❌. Unlike `mark_prayed`, this overrides what's there.
-pub async fn set_prayed(
+/// Stores what `prayer::checkin::next` decided, whatever was there before:
+/// the entry as given, or none at all.
+pub async fn store(
     conn: &mut SqliteConnection,
     user_id: i64,
     date: NaiveDate,
     prayer: Prayer,
-    on_time: bool,
-    now: DateTime<Utc>,
+    write: Write,
 ) -> Result<(), sqlx::Error> {
     let prayer = prayer.as_db_str();
-    let status = if on_time {
-        Status::Prayed
-    } else {
-        Status::Late
-    };
-    let status = status.as_db_str();
-    // The CHECKs want `missed_at` NULL exactly when it's 'prayed'. A
-    // prayer made up that the bot never marked missed gets `now`.
-    let missed_at = (!on_time).then_some(now);
-    // `COALESCE(a, b)` is the first that isn't NULL: an earlier time is
-    // kept rather than replaced.
-    sqlx::query!(
-        "INSERT INTO prayer_log (user_id, prayer_date, prayer, status, prayed_at, missed_at)
-         VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT (user_id, prayer_date, prayer) DO UPDATE
-         SET status = excluded.status,
-             prayed_at = COALESCE(prayer_log.prayed_at, excluded.prayed_at),
-             missed_at = CASE WHEN excluded.missed_at IS NULL THEN NULL
-                              ELSE COALESCE(prayer_log.missed_at, excluded.missed_at) END",
-        user_id,
-        date,
-        prayer,
-        status,
-        now,
-        missed_at
-    )
-    .execute(conn)
-    .await?;
-    Ok(())
-}
-
-/// Sets a prayer to exactly `status`, or (`None`) takes it out of the log,
-/// whatever it was before. For the admin dashboard's corrections.
-pub async fn set_status(
-    conn: &mut SqliteConnection,
-    user_id: i64,
-    date: NaiveDate,
-    prayer: Prayer,
-    status: Option<Status>,
-    now: DateTime<Utc>,
-) -> Result<(), sqlx::Error> {
-    match status {
-        Some(Status::Prayed) => set_prayed(conn, user_id, date, prayer, true, now).await,
-        Some(Status::Late) => set_prayed(conn, user_id, date, prayer, false, now).await,
-        Some(Status::Missed) => {
-            let prayer = prayer.as_db_str();
-            // Prayed or not, it becomes missed: no check-in time, and the
-            // earliest time it was marked missed (or now).
+    match write {
+        Write::Store(logged) => {
+            let status = logged.status.as_db_str();
+            // An "upsert": insert the row, or if there's one already for
+            // this prayer, overwrite it (`excluded` is the row we tried to
+            // insert).
             sqlx::query!(
-                "INSERT INTO prayer_log (user_id, prayer_date, prayer, status, missed_at)
-                 VALUES (?, ?, ?, 'missed', ?)
+                "INSERT INTO prayer_log (user_id, prayer_date, prayer, status, prayed_at, missed_at)
+                 VALUES (?, ?, ?, ?, ?, ?)
                  ON CONFLICT (user_id, prayer_date, prayer) DO UPDATE
-                 SET status = 'missed', prayed_at = NULL,
-                     missed_at = COALESCE(prayer_log.missed_at, excluded.missed_at)",
+                 SET status = excluded.status,
+                     prayed_at = excluded.prayed_at,
+                     missed_at = excluded.missed_at",
                 user_id,
                 date,
                 prayer,
-                now
+                status,
+                logged.prayed_at,
+                logged.missed_at
             )
             .execute(conn)
             .await?;
-            Ok(())
         }
-        None => {
-            let prayer = prayer.as_db_str();
+        Write::Delete => {
             sqlx::query!(
                 "DELETE FROM prayer_log WHERE user_id = ? AND prayer_date = ? AND prayer = ?",
                 user_id,
@@ -279,67 +239,9 @@ pub async fn set_status(
             )
             .execute(conn)
             .await?;
-            Ok(())
         }
     }
-}
-
-/// Undoes `mark_prayed` (the reaction was removed): a made-up prayer goes
-/// back to missed, an on-time one is deleted. (If its time has already
-/// ended, the reminder loop then marks it missed again.)
-pub async fn unmark_prayed(
-    conn: &mut SqliteConnection,
-    user_id: i64,
-    date: NaiveDate,
-    prayer: Prayer,
-) -> Result<bool, sqlx::Error> {
-    let prayer = prayer.as_db_str();
-    // `&mut *conn` reborrows the connection for this query, so `conn`
-    // itself is still ours for the next one.
-    let back_to_missed = sqlx::query!(
-        "UPDATE prayer_log SET status = 'missed', prayed_at = NULL
-         WHERE user_id = ? AND prayer_date = ? AND prayer = ? AND status = 'late'",
-        user_id,
-        date,
-        prayer
-    )
-    .execute(&mut *conn)
-    .await?;
-    let deleted = sqlx::query!(
-        "DELETE FROM prayer_log
-         WHERE user_id = ? AND prayer_date = ? AND prayer = ? AND status = 'prayed'",
-        user_id,
-        date,
-        prayer
-    )
-    .execute(conn)
-    .await?;
-    // `true` if it was marked and now isn't.
-    Ok(back_to_missed.rows_affected() + deleted.rows_affected() == 1)
-}
-
-/// Marks a prayer missed, unless it's already in the log (prayed, or
-/// marked missed by an earlier check). Returns whether it was newly marked.
-pub async fn mark_missed(
-    conn: &mut SqliteConnection,
-    user_id: i64,
-    date: NaiveDate,
-    prayer: Prayer,
-    now: DateTime<Utc>,
-) -> Result<bool, sqlx::Error> {
-    let prayer = prayer.as_db_str();
-    let result = sqlx::query!(
-        "INSERT INTO prayer_log (user_id, prayer_date, prayer, status, missed_at)
-         VALUES (?, ?, ?, 'missed', ?)
-         ON CONFLICT (user_id, prayer_date, prayer) DO NOTHING",
-        user_id,
-        date,
-        prayer,
-        now
-    )
-    .execute(conn)
-    .await?;
-    Ok(result.rows_affected() == 1)
+    Ok(())
 }
 
 /// The prayers `user_id` has prayed on `date`, on time or made up.
@@ -463,6 +365,8 @@ pub async fn dm_reminders_on(
 mod tests {
     use super::*;
     use crate::db::test_pool;
+    use crate::prayer::checkin;
+    use crate::prayer::stats::Status;
     use crate::repo::{chats, settings};
     use crate::testkit::register;
     use chrono::TimeZone;
@@ -580,184 +484,8 @@ mod tests {
         assert_eq!(elsewhere.unwrap(), None, "same message ID, other chat");
     }
 
-    #[tokio::test]
-    async fn mark_and_unmark_prayed() {
-        let pool = test_pool().await;
-        let mut conn = pool.acquire().await.unwrap();
-        let now = Utc::now();
-        let user = register(&mut conn, "Bilal", "447700900001", now).await;
-
-        let first = mark_prayed(&mut conn, user.id, date(), Prayer::Fajr, now)
-            .await
-            .unwrap();
-        let again = mark_prayed(&mut conn, user.id, date(), Prayer::Fajr, now)
-            .await
-            .unwrap();
-        assert_eq!(first, Some(Status::Prayed));
-        assert_eq!(again, None, "only the first one changes anything");
-        mark_prayed(&mut conn, user.id, date(), Prayer::Asr, now)
-            .await
-            .unwrap();
-        let mut prayed = prayed_on(&mut conn, user.id, date()).await.unwrap();
-        prayed.sort_by_key(|p| p.as_db_str());
-        assert_eq!(prayed, [Prayer::Asr, Prayer::Fajr]);
-
-        assert!(
-            unmark_prayed(&mut conn, user.id, date(), Prayer::Fajr)
-                .await
-                .unwrap()
-        );
-        assert!(
-            !unmark_prayed(&mut conn, user.id, date(), Prayer::Fajr)
-                .await
-                .unwrap(),
-            "already gone"
-        );
-        assert_eq!(
-            prayed_on(&mut conn, user.id, date()).await.unwrap(),
-            [Prayer::Asr]
-        );
-
-        let tomorrow = date().succ_opt().unwrap();
-        assert!(
-            prayed_on(&mut conn, user.id, tomorrow)
-                .await
-                .unwrap()
-                .is_empty()
-        );
-    }
-
     async fn bilal(conn: &mut SqliteConnection) -> i64 {
         register(conn, "Bilal", "447700900001", Utc::now()).await.id
-    }
-
-    #[tokio::test]
-    async fn a_missed_prayer_can_be_made_up_and_unticked_back_to_missed() {
-        let pool = test_pool().await;
-        let mut conn = pool.acquire().await.unwrap();
-        let now = Utc::now();
-        let user = bilal(&mut conn).await;
-        let log = async |conn: &mut SqliteConnection| {
-            log_between(conn, user, date(), date()).await.unwrap()
-        };
-        let asr = |status| Entry {
-            date: date(),
-            prayer: Prayer::Asr,
-            status,
-        };
-
-        assert!(
-            mark_missed(&mut conn, user, date(), Prayer::Asr, now)
-                .await
-                .unwrap()
-        );
-        assert!(
-            !mark_missed(&mut conn, user, date(), Prayer::Asr, now)
-                .await
-                .unwrap(),
-            "already missed"
-        );
-        assert_eq!(log(&mut conn).await, [asr(Status::Missed)]);
-        assert!(prayed_on(&mut conn, user, date()).await.unwrap().is_empty());
-
-        // Prayed after its time: made up.
-        let late = mark_prayed(&mut conn, user, date(), Prayer::Asr, now).await;
-        assert_eq!(late.unwrap(), Some(Status::Late));
-        let again = mark_prayed(&mut conn, user, date(), Prayer::Asr, now).await;
-        assert_eq!(again.unwrap(), None, "already made up");
-        assert_eq!(log(&mut conn).await, [asr(Status::Late)]);
-        assert_eq!(
-            prayed_on(&mut conn, user, date()).await.unwrap(),
-            [Prayer::Asr]
-        );
-
-        // Removing the reaction puts the ❌ back, rather than deleting it.
-        assert!(
-            unmark_prayed(&mut conn, user, date(), Prayer::Asr)
-                .await
-                .unwrap()
-        );
-        assert_eq!(log(&mut conn).await, [asr(Status::Missed)]);
-        assert!(
-            !unmark_prayed(&mut conn, user, date(), Prayer::Asr)
-                .await
-                .unwrap(),
-            "a missed prayer has nothing to untick"
-        );
-
-        // "I prayed it on time, I just forgot to tick it": ❌ → ✅.
-        set_prayed(&mut conn, user, date(), Prayer::Asr, true, now)
-            .await
-            .unwrap();
-        assert_eq!(log(&mut conn).await, [asr(Status::Prayed)]);
-        // And the other way: ✅ → 🕐.
-        set_prayed(&mut conn, user, date(), Prayer::Asr, false, now)
-            .await
-            .unwrap();
-        assert_eq!(log(&mut conn).await, [asr(Status::Late)]);
-        // With no row yet, either works too.
-        set_prayed(&mut conn, user, date(), Prayer::Isha, false, now)
-            .await
-            .unwrap();
-        unmark_prayed(&mut conn, user, date(), Prayer::Asr)
-            .await
-            .unwrap();
-        unmark_prayed(&mut conn, user, date(), Prayer::Isha)
-            .await
-            .unwrap();
-
-        // The dashboard can set anything, or clear it. (Isha is ❌ from
-        // above; cleared first so the day holds only Asr.)
-        set_status(&mut conn, user, date(), Prayer::Isha, None, now)
-            .await
-            .unwrap();
-        set_status(
-            &mut conn,
-            user,
-            date(),
-            Prayer::Asr,
-            Some(Status::Missed),
-            now,
-        )
-        .await
-        .unwrap();
-        assert_eq!(log(&mut conn).await, [asr(Status::Missed)]);
-        set_status(
-            &mut conn,
-            user,
-            date(),
-            Prayer::Asr,
-            Some(Status::Prayed),
-            now,
-        )
-        .await
-        .unwrap();
-        assert_eq!(log(&mut conn).await, [asr(Status::Prayed)]);
-        set_status(
-            &mut conn,
-            user,
-            date(),
-            Prayer::Asr,
-            Some(Status::Missed),
-            now,
-        )
-        .await
-        .unwrap();
-        assert_eq!(log(&mut conn).await, [asr(Status::Missed)], "✅ → ❌");
-        set_status(&mut conn, user, date(), Prayer::Asr, None, now)
-            .await
-            .unwrap();
-        assert!(log(&mut conn).await.is_empty());
-
-        // A prayer prayed in time is never marked missed afterwards.
-        mark_prayed(&mut conn, user, date(), Prayer::Fajr, now)
-            .await
-            .unwrap();
-        assert!(
-            !mark_missed(&mut conn, user, date(), Prayer::Fajr, now)
-                .await
-                .unwrap()
-        );
     }
 
     /// One prayer_log row, exactly as stored: `(status, prayed_at,
@@ -835,22 +563,31 @@ mod tests {
     }
 
     /// Makes `happens` happen to Asr on `date()`, at `now`, the way the
-    /// code does it.
+    /// code does it. (Since the rules moved into `prayer::checkin`, that's
+    /// its functions; the table below hasn't changed.)
     async fn fire(conn: &mut SqliteConnection, user: i64, happens: Happens, now: DateTime<Utc>) {
         let (day, asr) = (date(), Prayer::Asr);
         match happens {
             Happens::MarkMissed => {
-                mark_missed(conn, user, day, asr, now).await.unwrap();
+                checkin::mark_missed(conn, user, day, asr, now)
+                    .await
+                    .unwrap();
             }
             Happens::Tick => {
-                mark_prayed(conn, user, day, asr, now).await.unwrap();
+                checkin::tick(conn, user, day, asr, now).await.unwrap();
             }
-            Happens::OnTime => set_prayed(conn, user, day, asr, true, now).await.unwrap(),
-            Happens::Late => set_prayed(conn, user, day, asr, false, now).await.unwrap(),
+            Happens::OnTime => checkin::correct(conn, user, day, asr, true, now)
+                .await
+                .unwrap(),
+            Happens::Late => checkin::correct(conn, user, day, asr, false, now)
+                .await
+                .unwrap(),
             Happens::Untick => {
-                unmark_prayed(conn, user, day, asr).await.unwrap();
+                checkin::untick(conn, user, day, asr, now).await.unwrap();
             }
-            Happens::Set(status) => set_status(conn, user, day, asr, status, now).await.unwrap(),
+            Happens::Set(status) => checkin::set_status(conn, user, day, asr, status, now)
+                .await
+                .unwrap(),
         }
     }
 
@@ -941,7 +678,7 @@ mod tests {
         let user = bilal(&mut conn).await;
         let day = |d: u32| NaiveDate::from_ymd_opt(2026, 10, d).unwrap();
         for d in [25, 26, 27, 28] {
-            mark_prayed(&mut conn, user, day(d), Prayer::Isha, now)
+            checkin::tick(&mut conn, user, day(d), Prayer::Isha, now)
                 .await
                 .unwrap();
         }

@@ -257,10 +257,10 @@ async fn prayed(
                 checkin::tick(conn, user, date, prayer, ctx.now).await?;
             }
             Timing::OnTime => {
-                prayers::set_prayed(conn, user, date, prayer, true, ctx.now).await?;
+                checkin::correct(conn, user, date, prayer, true, ctx.now).await?;
             }
             Timing::Late => {
-                prayers::set_prayed(conn, user, date, prayer, false, ctx.now).await?;
+                checkin::correct(conn, user, date, prayer, false, ctx.now).await?;
             }
         }
     }
@@ -425,7 +425,7 @@ mod tests {
         let mut conn = pool.acquire().await.unwrap();
         let mut ctx = setup(&mut conn).await;
         ctx.now = "2026-10-27T15:00:00Z".parse().unwrap();
-        prayers::mark_prayed(&mut conn, ctx.sender.id, day().date, Prayer::Dhuhr, ctx.now)
+        checkin::tick(&mut conn, ctx.sender.id, day().date, Prayer::Dhuhr, ctx.now)
             .await
             .unwrap();
 

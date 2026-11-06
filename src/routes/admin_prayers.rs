@@ -17,8 +17,8 @@ use tracing::info;
 
 use crate::AppState;
 use crate::error::AppError;
-use crate::prayer::Prayer;
 use crate::prayer::stats::{Entry, Status, Summary};
+use crate::prayer::{Prayer, checkin};
 use crate::repo::settings as stored;
 use crate::repo::{admin, prayers};
 use crate::reports::{Period, Span};
@@ -259,17 +259,21 @@ pub async fn set_prayer(
     };
 
     let now = Utc::now();
-    let mut conn = state.db.acquire().await?;
-    admin::user_jid(&mut conn, id)
+    // A write transaction (`BEGIN IMMEDIATE`): `checkin::set_status` reads
+    // the log and then writes, and nobody else may change it in between.
+    let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
+    admin::user_jid(&mut tx, id)
         .await?
         .ok_or(AppError::NotFound)?;
-    let today = today_for(&mut conn, &state.apis.prayer_times.defaults, id, now).await?;
+    let today = today_for(&mut tx, &state.apis.prayer_times.defaults, id, now).await?;
     if date > today {
         return Err(AppError::BadRequest(
             "that day hasn't happened yet for them".into(),
         ));
     }
-    prayers::set_status(&mut conn, id, date, prayer, status, now).await?;
+    checkin::set_status(&mut tx, id, date, prayer, status, now).await?;
+    tx.commit().await?;
+    let mut conn = state.db.acquire().await?;
     info!(
         "set user {id}'s {prayer} on {date} to {}",
         status.map_or("no record", |s| s.as_db_str())
