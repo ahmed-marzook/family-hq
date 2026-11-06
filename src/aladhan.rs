@@ -1,10 +1,10 @@
 //! Prayer times from the AlAdhan API (<https://aladhan.com/prayer-times-api>).
 
 use std::collections::HashMap;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::Deserialize;
-use tokio::sync::Mutex;
 use tracing::info;
 
 use crate::error::AppError;
@@ -23,9 +23,13 @@ pub struct PrayerTimes {
     /// The server-wide settings (`.env`), for chats that haven't chosen
     /// their own.
     pub defaults: Settings,
-    /// Fetched days. A `tokio::sync::Mutex` (not `std::sync`) because it's
-    /// held across an `.await` (the HTTP call): a std mutex held over an
-    /// await can block the whole thread, Tokio's can't.
+    /// Fetched days. A plain `std::sync::Mutex` (not Tokio's): it's only
+    /// ever held for a quick look or insert, never across an `.await`, so
+    /// it can't stall the thread while waiting on the network. Tokio's
+    /// async mutex is only needed when a lock must stay held over an await,
+    /// and it's slower. The compiler helps keep it that way: a std guard
+    /// isn't `Send`, so holding one over an await in a spawned task fails
+    /// to build.
     cache: Mutex<HashMap<(Location, NaiveDate), DayTimes>>,
 }
 
@@ -71,14 +75,19 @@ impl PrayerTimes {
         location: &Location,
         date: NaiveDate,
     ) -> Result<DayTimes, AppError> {
-        // `lock().await` waits its turn; the guard unlocks when dropped at
-        // the end of this function.
-        let mut cache = self.cache.lock().await;
         let key = (location.clone(), date);
-        if let Some(day) = cache.get(&key) {
+        // Look in the cache, then let go of the lock *before* fetching.
+        // Holding it over the HTTP call would make every other lookup,
+        // even a cached one for another place, wait for that one fetch.
+        // `self.cache()` gives a guard that unlocks when it's dropped,
+        // which here is the end of this statement.
+        if let Some(day) = self.cache().get(&key) {
             return Ok(day.clone());
         }
 
+        // No lock held here. Two lookups for the same uncached day can now
+        // both fetch it; that's rare (only the first minute of a new day)
+        // and harmless, since the second insert just writes the same times.
         let day = self.fetch(location, date).await?;
         let summary: Vec<String> = day
             .windows
@@ -96,13 +105,28 @@ impl PrayerTimes {
             summary.join(", ")
         );
 
-        // Forget days before yesterday, so the cache can't grow forever.
+        // Lock again, briefly, to store it.
+        let mut cache = self.cache();
+        // Forget this location's days before the one before `date`, so the
+        // cache can't grow forever. Only this location's: other places can
+        // be on a different day (another timezone), or a `/prayers` lookup
+        // may ask for a future date, and neither should throw away days
+        // the reminder loop still needs elsewhere.
         // `retain` keeps only the entries the closure says yes to.
         if let Some(yesterday) = date.pred_opt() {
-            cache.retain(|(_, day), _| *day >= yesterday);
+            cache.retain(|(loc, day), _| loc != location || *day >= yesterday);
         }
         cache.insert(key, day.clone());
         Ok(day)
+    }
+
+    /// Locks the cache. A std mutex is "poisoned" if a thread panicked
+    /// while holding it, in case the data was left half-changed. Nothing
+    /// here can be left half-changed (a map lookup, `retain`, `insert`), so
+    /// `PoisonError::into_inner` just carries on with the data instead of
+    /// panicking too.
+    fn cache(&self) -> MutexGuard<'_, HashMap<(Location, NaiveDate), DayTimes>> {
+        self.cache.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Always by coordinates (`/timings`), never by city name
