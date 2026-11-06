@@ -16,8 +16,8 @@ use sha2::Sha256;
 use tracing::{Span, debug, info, warn};
 
 use crate::AppState;
+use crate::bot::{self, Context, Offline, Outcome, Prepared, Ran};
 use crate::error::AppError;
-use crate::handlers::{self, Context, Offline, Outcome, Prepared, Ran};
 use crate::metrics::{self, Event, ReactionChange};
 use crate::parser::{self, BotCommand, ReplyCommand};
 use crate::person::{Assignee, Person};
@@ -185,7 +185,7 @@ enum Action {
     ListReply(SentList, ReplyCommand),
 }
 
-/// An `Action` with its lookups done (`handlers::prepare`), ready to run
+/// An `Action` with its lookups done (`bot::prepare`), ready to run
 /// inside the transaction.
 ///
 /// `Box` keeps the prepared command on the heap. It holds whole days of
@@ -200,7 +200,7 @@ enum Ready {
 /// whether it's for the bot, act on it, then react and reply.
 ///
 /// In three steps, so that nothing slow happens while the database is
-/// locked for writing (`handlers::prepare` says why that matters):
+/// locked for writing (`bot::prepare` says why that matters):
 /// 1. register the sender and the chat, in a short transaction of its own;
 /// 2. look up what the command needs from outside services, with nothing
 ///    locked;
@@ -360,7 +360,7 @@ async fn handle_message(
             debug!(?command, "running");
             let prepared = {
                 let mut conn = state.db.acquire().await?;
-                handlers::prepare(&mut conn, &ctx, &state.apis, command).await
+                bot::prepare(&mut conn, &ctx, &state.apis, command).await
             };
             match prepared {
                 Ok(prepared) => Ready::Command(Box::new(prepared)),
@@ -396,9 +396,9 @@ async fn handle_message(
 
     let offline = Offline::of(&state.apis);
     let result = match ready {
-        Ready::Command(prepared) => handlers::execute(&mut tx, &ctx, &offline, *prepared).await,
+        Ready::Command(prepared) => bot::execute(&mut tx, &ctx, &offline, *prepared).await,
         Ready::ListReply(list, reply) => {
-            handlers::run_list_reply(&mut tx, &ctx, offline.defaults, &list, reply)
+            bot::run_list_reply(&mut tx, &ctx, offline.defaults, &list, reply)
                 .await
                 .map(Ran::Done)
         }

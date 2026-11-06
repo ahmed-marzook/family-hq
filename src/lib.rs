@@ -6,9 +6,15 @@
 // `pub` in the library might be used by some other crate, so it never warns
 // that a `pub` item is unused. Keeping modules private lets it point out dead
 // code. The tests live inside the crate, so they can still reach everything.
+//
+// A module can be one file (`help.rs`) or a folder (`bot/`). For a folder,
+// `mod bot;` loads `bot/mod.rs`, and that file declares the folder's other
+// files as its own submodules (as `repo/mod.rs` does). Code outside still
+// writes `crate::bot::...` either way.
 
 mod aladhan;
 mod backup;
+mod bot;
 mod cache;
 mod calendar;
 mod cleanup;
@@ -16,7 +22,6 @@ pub mod config;
 pub mod db;
 mod error;
 mod geo;
-mod handlers;
 mod help;
 mod http;
 pub mod logging;

@@ -103,7 +103,7 @@ family-hq/
     ├── error.rs            # AppError (thiserror)
     ├── db.rs               # open the pool, run migrations
     ├── parser.rs           # text → BotCommand (pure, heavily tested)
-    ├── handlers.rs         # BotCommand → database changes → reply
+    ├── bot/                # BotCommand → database changes → reply
     ├── help.rs             # /help pages
     ├── person.rs           # Person and Assignee
     ├── settings.rs         # per-chat settings and defaults

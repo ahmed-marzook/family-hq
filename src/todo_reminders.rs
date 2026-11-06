@@ -247,7 +247,7 @@ mod tests {
 
     // ---- whose settings apply (`settings_for`) ----
     //
-    // Pinning tests, like `my_settings`'s in `handlers`: what the code does
+    // Pinning tests, like `my_settings`'s in `bot`: what the code does
     // today. Defaults Europe/London, the group Asia/Colombo, Bilal's own
     // (from his DM) America/New_York.
 
