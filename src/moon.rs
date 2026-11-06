@@ -20,6 +20,8 @@ use crate::settings::Settings;
 const J2000: DateTime<Utc> = DateTime::from_timestamp(946_728_000, 0).unwrap();
 
 /// The average time from one new moon to the next, in days.
+// Only the tests use this.
+#[cfg(test)]
 pub const SYNODIC_MONTH: f64 = 29.530_589;
 
 /// Days (with fractions) since J2000.

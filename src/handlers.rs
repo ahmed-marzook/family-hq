@@ -106,6 +106,8 @@ pub enum Outcome {
 
 impl Outcome {
     /// Just the text, whatever kind of reply it is (handy in tests).
+    // Only the tests use this.
+    #[cfg(test)]
     pub fn into_text(self) -> String {
         match self {
             Outcome::Reply(text)

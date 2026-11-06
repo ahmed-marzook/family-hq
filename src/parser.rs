@@ -174,6 +174,8 @@ pub struct Checkin {
 
 impl Checkin {
     /// Just these prayers, today, timing worked out as usual.
+    // Only the tests use this.
+    #[cfg(test)]
     pub fn today(prayers: Vec<Prayer>) -> Self {
         Checkin {
             prayers,
