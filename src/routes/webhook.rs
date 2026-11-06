@@ -376,9 +376,23 @@ async fn handle_message(
             // Remember what each number in this list means, so replies like
             // `done 2` or `1 3` can find the right rows later.
             if let Some(list_id) = send(state, &msg, &text, &[]).await {
-                let mut conn = state.db.acquire().await?;
-                messages::save_list(&mut conn, &list_id, chat_id, item_type, &item_ids, now)
-                    .await?;
+                // Like `log_failure`: a failed `acquire` and a failed save
+                // end up as the same `Err`, so one `if let` logs either.
+                let saved = match state.db.acquire().await {
+                    Ok(mut conn) => {
+                        messages::save_list(&mut conn, &list_id, chat_id, item_type, &item_ids, now)
+                            .await
+                    }
+                    Err(err) => Err(err),
+                };
+                if let Err(err) = saved {
+                    // The list was sent; only replying to it by number
+                    // (`done 2`) won't work.
+                    warn!(
+                        "couldn't remember list {list_id} in chat {chat_id} (message {}): {err}",
+                        msg.id
+                    );
+                }
             }
         }
     }
