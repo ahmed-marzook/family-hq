@@ -405,7 +405,7 @@ mod tests {
     use crate::prayer::{DayTimes, Prayer, Window};
     use crate::repo::{chats, users};
     use crate::reports::Delivery;
-    use crate::routes::api::{FakeGowa, fake_gowa, test_state};
+    use crate::testkit::{FakeGowa, fake_gowa, test_state};
 
     /// A June day in Milton Keynes (BST, UTC+1; the times here are UTC).
     /// Isha runs to Islamic midnight, 01:00 local, which is already the
@@ -501,9 +501,7 @@ mod tests {
         let (mut state, gowa) = state_with_june(pool.clone()).await;
         // A geocoder that only knows Leicester, so "Nowhereville" fails.
         Arc::get_mut(&mut state).expect("not shared yet").apis.geo =
-            crate::geo::Geo::with_geocoding_url(
-                &crate::settings_edit::tests::fake_geocoder().await,
-            );
+            crate::geo::Geo::with_geocoding_url(&crate::testkit::fake_geocoder().await);
         let chat = {
             let mut conn = pool.acquire().await.unwrap();
             let now = Utc::now();

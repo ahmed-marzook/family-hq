@@ -164,17 +164,14 @@ pub fn check_ending(minutes: i64) -> Result<(), Refused> {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
-    use axum::Json;
-    use axum::extract::Query;
-    use serde_json::{Value, json};
-
+mod tests {
     use super::*;
     use crate::aladhan::PrayerTimes;
     use crate::db::test_pool;
     use crate::geo::Geo;
     use crate::repo::chats;
     use crate::settings::tests::defaults;
+    use crate::testkit::fake_geocoder;
 
     #[test]
     fn checks() {
@@ -191,30 +188,6 @@ pub(crate) mod tests {
         assert_eq!(check_ending(120), Ok(()));
         assert_eq!(check_ending(0), Err(Refused::EndingOutOfRange(0)));
         assert_eq!(check_ending(121), Err(Refused::EndingOutOfRange(121)));
-    }
-
-    /// A fake Open-Meteo geocoder that only knows Leicester. Returns its
-    /// base URL.
-    pub(crate) async fn fake_geocoder() -> String {
-        async fn search(Query(q): Query<Vec<(String, String)>>) -> Json<Value> {
-            let name = q.iter().find(|(k, _)| k == "name").map(|(_, v)| v.as_str());
-            if name.is_some_and(|n| n.eq_ignore_ascii_case("leicester")) {
-                Json(json!({ "results": [{
-                    "name": "Leicester", "country_code": "gb",
-                    "latitude": 52.6369, "longitude": -1.1398,
-                    "timezone": "Europe/London"
-                }] }))
-            } else {
-                Json(json!({}))
-            }
-        }
-        let app = axum::Router::new().route("/search", axum::routing::get(search));
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-            .await
-            .unwrap();
-        let address = listener.local_addr().unwrap();
-        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        format!("http://{address}")
     }
 
     #[tokio::test]

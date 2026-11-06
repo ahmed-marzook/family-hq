@@ -283,7 +283,7 @@ mod tests {
     use crate::person::Person;
     use crate::repo::metrics::{Logged, record};
     use crate::repo::{chats, users};
-    use crate::routes::api::start_server_with;
+    use crate::testkit::start_server_with;
 
     async fn get(url: String) -> (StatusCode, String) {
         let response = reqwest::Client::new()

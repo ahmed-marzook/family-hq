@@ -221,8 +221,8 @@ mod tests {
     use crate::geo::Coordinates;
     use crate::person::Person;
     use crate::repo::{chats, settings as stored, users};
-    use crate::routes::api::start_server_with_geocoder;
-    use crate::settings_edit::tests::fake_geocoder;
+    use crate::testkit::fake_geocoder;
+    use crate::testkit::start_server_with_geocoder;
 
     const GROUP: &str = "120363000000000001@g.us";
 

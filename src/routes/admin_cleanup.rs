@@ -89,7 +89,7 @@ mod tests {
     use crate::cleanup;
     use crate::db::test_pool;
     use crate::repo::{chats, todos};
-    use crate::routes::api::{fake_gowa, serve_state, test_state};
+    use crate::testkit::{fake_gowa, serve_state, test_state};
 
     const GROUP: &str = "120363000000000001@g.us";
     const BILAL: &str = "447700900001@s.whatsapp.net";

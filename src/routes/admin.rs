@@ -494,9 +494,9 @@ mod tests {
     use crate::db::test_pool;
     use crate::geo::Coordinates;
     use crate::person::Person;
-    use crate::routes::api::start_server_with;
     use crate::settings::Overrides;
     use crate::settings::tests::defaults;
+    use crate::testkit::start_server_with;
 
     #[test]
     fn settings_show_defaults_then_own_choices() {

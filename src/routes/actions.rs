@@ -132,7 +132,7 @@ mod tests {
     use crate::person::Person;
     use crate::prayer::Prayer;
     use crate::repo::push::Subscription;
-    use crate::routes::api::start_server_with;
+    use crate::testkit::start_server_with;
     use chrono::NaiveDate;
 
     const TOKEN: &str = "a-token-that-is-at-least-32-characters-long";

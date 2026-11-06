@@ -31,6 +31,8 @@ pub mod reports;
 pub mod routes;
 pub mod settings;
 pub mod settings_edit;
+#[cfg(test)]
+pub(crate) mod testkit;
 pub mod todo_flags;
 pub mod todo_reminders;
 pub mod weather;

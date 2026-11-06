@@ -233,9 +233,9 @@ mod tests {
         const GROUP: &str = "120363000000000001@g.us";
         let pool = test_pool().await;
         // The shared fake GOWA; `sent` is what it was asked to send.
-        let gowa = crate::routes::api::fake_gowa().await;
+        let gowa = crate::testkit::fake_gowa().await;
         let sent = gowa.sent.clone();
-        let state = crate::routes::api::test_state(pool.clone(), &gowa.url);
+        let state = crate::testkit::test_state(pool.clone(), &gowa.url);
         {
             let mut conn = pool.acquire().await.unwrap();
             let now = Utc::now();
