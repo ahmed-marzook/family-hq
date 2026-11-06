@@ -11,7 +11,7 @@ use chrono_tz::Tz;
 
 use crate::help;
 use crate::parser::{
-    BotCommand, Got, PushCommand, ReplyCommand, SettingsCommand, TodoFilter, TodoView,
+    BotCommand, Got, PushCommand, ReplyCommand, SettingsCommand, TodoFilter, TodoView, Toggle,
 };
 use crate::person::Assignee;
 use crate::repo::messages::ListKind;
@@ -143,12 +143,12 @@ pub fn command(command: &BotCommand) -> Event {
         BotCommand::ClearTodos { done_only } => {
             event("todo.clear", Some(if *done_only { "done" } else { "all" }))
         }
-        BotCommand::TodoReminders(on) => event(
+        BotCommand::TodoReminders(toggle) => event(
             "todo.reminders",
-            Some(match on {
-                Some(true) => "on",
-                Some(false) => "off",
-                None => "status",
+            Some(match toggle {
+                Toggle::On => "on",
+                Toggle::Off => "off",
+                Toggle::Show => "status",
             }),
         ),
         BotCommand::Prayers => event("prayers.list", None),

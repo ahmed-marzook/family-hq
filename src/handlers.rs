@@ -20,7 +20,7 @@ use crate::help;
 use crate::moon::{self, Moon};
 use crate::parser::{
     BotCommand, Checkin, Got, PushCommand, ReplyCommand, SettingsCommand, Timing, TodoFilter,
-    TodoView,
+    TodoView, Toggle,
 };
 use crate::person::Assignee;
 use crate::points::{self, Finish, Source};
@@ -413,12 +413,12 @@ async fn run_plain(
                 ),
             }
         }
-        BotCommand::TodoReminders(on) => {
+        BotCommand::TodoReminders(toggle) => {
             let (chat_id, user_id) = (ctx.chat_id, ctx.sender.id);
-            match on {
-                Some(true) => todo_reminders::enable(conn, chat_id, user_id, ctx.now).await?,
-                Some(false) => todo_reminders::disable(conn, chat_id, user_id).await?,
-                None => {}
+            match toggle {
+                Toggle::On => todo_reminders::enable(conn, chat_id, user_id, ctx.now).await?,
+                Toggle::Off => todo_reminders::disable(conn, chat_id, user_id).await?,
+                Toggle::Show => {}
             }
             let is_on = todo_reminders::is_on(conn, chat_id, user_id).await?;
             format_todo_reminders(is_on, ctx.is_group)
@@ -2295,24 +2295,24 @@ mod tests {
         let mut conn = pool.acquire().await.unwrap();
         let ctx = setup(&mut conn).await;
         let apis = Apis::new(times());
-        let mut run = async |on| {
-            run_command(&mut conn, &ctx, &apis, BotCommand::TodoReminders(on))
+        let mut run = async |toggle| {
+            run_command(&mut conn, &ctx, &apis, BotCommand::TodoReminders(toggle))
                 .await
                 .unwrap()
                 .into_text()
         };
 
         assert!(
-            run(None).await.contains("are off for you"),
+            run(Toggle::Show).await.contains("are off for you"),
             "off by default"
         );
         assert!(
-            run(Some(true))
+            run(Toggle::On)
                 .await
                 .contains("are on for you in this group")
         );
-        assert!(run(None).await.contains("are on for you"));
-        assert!(run(Some(false)).await.contains("are off for you"));
+        assert!(run(Toggle::Show).await.contains("are on for you"));
+        assert!(run(Toggle::Off).await.contains("are off for you"));
     }
 
     #[test]

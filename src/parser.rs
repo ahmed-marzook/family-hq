@@ -54,9 +54,9 @@ pub enum BotCommand {
     SkipTodo(Got),
     /// `/todo clear` (everything) or `/todo clear done` (only done and skipped)
     ClearTodos { done_only: bool },
-    /// `/todo reminders on` (true), `off` (false), or just `/todo reminders`
-    /// (`None`, to see which it is): the sender's own, in this chat
-    TodoReminders(Option<bool>),
+    /// `/todo reminders on`, `off`, or just `/todo reminders` (`Show`, to
+    /// see which it is): the sender's own, in this chat
+    TodoReminders(Toggle),
     /// `/prayers`: today's times, and which you've prayed
     Prayers,
     /// `/prayers on` (true) / `/prayers off` (false): reminders in this chat
@@ -91,6 +91,17 @@ pub enum BotCommand {
     PointsReports(Option<Delivery>),
     /// `/help` (overview) or `/help shop` (one topic's page)
     Help(Option<String>),
+}
+
+/// What a setting that is on or off is asked for: to show it, or to turn
+/// it on or off. Three named cases read better than `Option<bool>`, where
+/// it's easy to forget that `None` means "just show me".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Toggle {
+    /// No `on` or `off`: say which it is.
+    Show,
+    On,
+    Off,
 }
 
 /// What `/push` asks for.
@@ -269,9 +280,9 @@ pub fn parse(text: &str) -> Option<BotCommand> {
             "high" => Some(BotCommand::ListTodos(TodoView::Filtered(TodoFilter::High))),
             "clear" => Some(BotCommand::ClearTodos { done_only: false }),
             "clear done" => Some(BotCommand::ClearTodos { done_only: true }),
-            "reminders" | "reminder" => Some(BotCommand::TodoReminders(None)),
-            "reminders on" | "reminder on" => Some(BotCommand::TodoReminders(Some(true))),
-            "reminders off" | "reminder off" => Some(BotCommand::TodoReminders(Some(false))),
+            "reminders" | "reminder" => Some(BotCommand::TodoReminders(Toggle::Show)),
+            "reminders on" | "reminder on" => Some(BotCommand::TodoReminders(Toggle::On)),
+            "reminders off" | "reminder off" => Some(BotCommand::TodoReminders(Toggle::Off)),
             // Anything else is a name. Display names are one word (see
             // `users::base_display_name`), so `/todo fix the tap` isn't one.
             _ => {
@@ -1264,16 +1275,16 @@ mod tests {
 
     #[test]
     fn todo_reminders() {
-        let on = Some(BotCommand::TodoReminders(Some(true)));
+        let on = Some(BotCommand::TodoReminders(Toggle::On));
         assert_eq!(parse("/todo reminders on"), on);
         assert_eq!(parse("/t Reminder ON"), on);
         assert_eq!(
             parse("/todo reminders off"),
-            Some(BotCommand::TodoReminders(Some(false)))
+            Some(BotCommand::TodoReminders(Toggle::Off))
         );
         assert_eq!(
             parse("/todo reminders"),
-            Some(BotCommand::TodoReminders(None))
+            Some(BotCommand::TodoReminders(Toggle::Show))
         );
         assert_eq!(parse("/todo reminders maybe"), None);
     }
