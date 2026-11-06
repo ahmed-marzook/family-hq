@@ -212,6 +212,7 @@ pub async fn metrics(
                 .map(|(_, user)| user)
                 .collect::<HashSet<_>>()
                 .len() as i64,
+            // Groups' only, like the list: `unknown_words` leaves DMs out.
             unknown: unknown.iter().map(|u| u.times).sum(),
             failures: failure_count,
         },

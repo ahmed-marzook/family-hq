@@ -188,6 +188,11 @@ pub struct Unknown {
 }
 
 /// Unknown words, most typed first: the best ideas for new commands.
+///
+/// Groups' only: a word typed in a DM (`+dentist friday` keeps
+/// `+dentist`) is that person's own business, like the DM's lists, so
+/// `is_group = 1` leaves those rows out, even when the filter asks for
+/// that DM.
 pub async fn unknown_words(
     conn: &mut SqliteConnection,
     filter: Filter,
@@ -197,7 +202,7 @@ pub async fn unknown_words(
         r#"SELECT name AS typed, count(*) AS "times!: i64",
                   count(DISTINCT user_id) AS "people!: i64"
            FROM command_log
-           WHERE kind = 'unknown' AND (?1 IS NULL OR datetime(at) >= datetime(?1))
+           WHERE kind = 'unknown' AND is_group = 1 AND (?1 IS NULL OR datetime(at) >= datetime(?1))
              AND (?2 IS NULL OR user_id = ?2) AND (?3 IS NULL OR chat_id = ?3)
            GROUP BY name
            ORDER BY count(*) DESC, name"#,
