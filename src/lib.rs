@@ -1,42 +1,48 @@
 //! Family HQ library: all the logic lives here so tests can reach it.
 //! `main.rs` only wires things together and starts the server.
 
-pub mod aladhan;
-pub mod backup;
-pub mod cache;
-pub mod calendar;
-pub mod cleanup;
+// Modules are private (`mod`, not `pub mod`) unless `main.rs` needs them.
+// In a crate with both a library and a binary, the compiler assumes anything
+// `pub` in the library might be used by some other crate, so it never warns
+// that a `pub` item is unused. Keeping modules private lets it point out dead
+// code. The tests live inside the crate, so they can still reach everything.
+
+mod aladhan;
+mod backup;
+mod cache;
+mod calendar;
+mod cleanup;
 pub mod config;
 pub mod db;
-pub mod error;
-pub mod geo;
-pub mod handlers;
-pub mod help;
-pub mod http;
+mod error;
+mod geo;
+mod handlers;
+mod help;
+mod http;
 pub mod logging;
-pub mod metrics;
-pub mod moon;
-pub mod parser;
-pub mod person;
-pub mod points;
-pub mod points_reports;
-pub mod prayer;
-pub mod prayer_stats;
-pub mod prayer_tracking;
-pub mod progress;
-pub mod push;
+mod metrics;
+mod moon;
+mod parser;
+mod person;
+mod points;
+mod points_reports;
+mod prayer;
+mod prayer_stats;
+mod prayer_tracking;
+mod progress;
+mod push;
 pub mod reminders;
-pub mod repo;
-pub mod reports;
+mod repo;
+mod reports;
 pub mod routes;
-pub mod settings;
-pub mod settings_edit;
+mod settings;
+mod settings_edit;
 #[cfg(test)]
 pub(crate) mod testkit;
-pub mod todo_flags;
-pub mod todo_reminders;
-pub mod weather;
-pub mod whatsapp;
+mod todo_flags;
+mod todo_reminders;
+mod weather;
+mod whatsapp;
 
 use std::sync::Arc;
 
