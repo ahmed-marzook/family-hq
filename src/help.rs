@@ -24,7 +24,7 @@ const OVERVIEW: &str = "🤖 *Family HQ help*
 I keep shared lists for each group I'm in, and private ones when you message me directly. Commands start with + (add) or / (show or change).
 
 🛒 *Shopping*: `+shop milk, eggs` · `/shop` · `+got milk`
-📝 *Todos*: `+todo fix the tap` · `/todo` · `+done 2` or `+done gym`
+📝 *Todos*: `+todo fix the tap -d fri -p high` · `/todo` · `+done 2` or `+done gym` · `+skip 2`
 🕌 *Prayers*: `/prayers` · `/prayers on` · `+prayed asr` · `/prayers week`
 ⚙️ *Settings*: `/settings` · `/settings city Leicester, GB` · or share your location with me
 🌤️ *Weather*: `/weather` · `/weather hourly` · `/weather tomorrow` · `/weather week`
@@ -69,9 +69,18 @@ Each group has its own todos; in a DM with me they're your private ones.
 `+todo fix the tap, call the school, bins`: several at once (commas or new lines).
 `+todo @Khadija book dentist`: assigned to someone in this group. Names are what I show in `/settings everyone`; people appear once they've sent a message here.
 
+*Due date and priority*
+Add them at the end: `+todo renew passport -d fri -p high`.
+`-d` (or `--due`, `--by`): `today`, `tmr`, a day like `fri` (the next one, or today if it's Friday), `15-03`, or `15-03-2027`.
+`-p` (or `--priority`): `high`, `medium` or `low` (or `h`, `m`, `l`).
+With several todos, they're for all of them: `+todo hoover, bins -d sat`.
+To change them later, reply to a `/todo` list: `due 2 fri`, `due 2 none`, `priority 2 high`, `priority 2 none`.
+
 *See them*
 `/todo`: a progress bar (and how much of your day is left), then everyone's todos under their name: ⬜ still to do, ✅ done (with when, and who if someone else did it).
+Open todos come in date order: ⚠️ overdue first, then 📅 the soonest due, then ones with no date. On the same day, 🔴 high comes before 🟠 medium and 🟢 low.
 `/todo all`: the same todos as one list, in order, with who each is for.
+`/todo overdue`, `/todo due`, `/todo high`: just the open todos that are late, have a due date, or are high priority.
 `/todo Khadija` (or `/todo @Khadija`): just one person's, with their own progress. `/todo mine` for yours.
 Every view uses the same numbers, so `+done 5` is the same todo whichever you looked at.
 
@@ -83,9 +92,12 @@ Every view uses the same numbers, so `+done 5` is the same todo whichever you lo
 • Or any time, without replying: `+done 2` (`+d 2`) using the numbers from the latest `/todo`, or `+done gym` using part of the title.
 The reply shows the updated progress bar.
 
+*Skip one*
+For a todo that won't be done: reply `skip 2` to a `/todo` list, or send `+skip 2` or `+skip gym`. It stays on the list as ⏭️ skipped (with who and when), so there's a record, and it doesn't count against the progress bar.
+
 *Delete*
 Reply `remove 2` to a `/todo` list.
-`/todo clear done`: removes the ✅ completed todos.
+`/todo clear done`: removes the ✅ done and ⏭️ skipped todos.
 `/todo clear`: empties the whole list.
 
 The numbers always mean the list you replied to, even if it's old.";
@@ -229,6 +241,10 @@ mod tests {
     fn pages_mention_the_commands_they_explain() {
         assert!(page(Some("shop")).contains("+got"));
         assert!(page(Some("todo")).contains("remove 2"));
+        assert!(page(Some("todo")).contains("+skip gym"));
+        assert!(page(Some("todo")).contains("-d fri -p high"));
+        assert!(page(Some("todo")).contains("due 2 fri"));
+        assert!(page(Some("todo")).contains("/todo overdue"));
         assert!(page(Some("prayers")).contains("+prayed all"));
         assert!(page(Some("settings")).contains("/settings everyone"));
         assert!(page(Some("moon")).contains("`/moon` (or `/m`)"));

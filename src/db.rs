@@ -188,20 +188,20 @@ mod tests {
         pool: &SqlitePool,
         assignee: Option<i64>,
         status: &str,
-        completed_by: Option<i64>,
-        completed_at: Option<&str>,
+        closed_by: Option<i64>,
+        closed_at: Option<&str>,
     ) -> sqlx::Result<()> {
         sqlx::query(
             "INSERT INTO todos (chat_id, title, created_by, assignee_id, status,
-                                completed_by, completed_at, created_at)
+                                closed_by, closed_at, created_at)
              VALUES (?, 'fix the tap', ?, ?, ?, ?, ?, ?)",
         )
         .bind(FAMILY_GROUP)
         .bind(BILAL)
         .bind(assignee)
         .bind(status)
-        .bind(completed_by)
-        .bind(completed_at)
+        .bind(closed_by)
+        .bind(closed_at)
         .bind(NOW)
         .execute(pool)
         .await
@@ -388,18 +388,53 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn todo_status_matches_completion_fields() {
+    async fn todo_status_matches_closed_fields() {
         let pool = seeded_db().await;
         let who = Some(KHADIJA);
         let when = Some(LATER);
 
         assert!(add_todo(&pool, who, "pending", None, None).await.is_ok());
         assert!(add_todo(&pool, who, "completed", who, when).await.is_ok());
+        assert!(add_todo(&pool, who, "skipped", who, when).await.is_ok());
 
         assert!(add_todo(&pool, who, "completed", None, None).await.is_err());
         assert!(add_todo(&pool, who, "pending", who, when).await.is_err());
         assert!(add_todo(&pool, who, "completed", None, when).await.is_err());
         assert!(add_todo(&pool, who, "skipped", None, None).await.is_err());
+        assert!(add_todo(&pool, who, "abandoned", who, when).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn todo_due_date_and_priority_are_checked() {
+        let pool = seeded_db().await;
+        let insert = |due: Option<&'static str>, priority: Option<&'static str>| {
+            sqlx::query(
+                "INSERT INTO todos (chat_id, title, created_by, due_date, priority, created_at)
+                 VALUES (?, 'bins', ?, ?, ?, ?)",
+            )
+            .bind(FAMILY_GROUP)
+            .bind(BILAL)
+            .bind(due)
+            .bind(priority)
+            .bind(NOW)
+            .execute(&pool)
+        };
+
+        assert!(insert(None, None).await.is_ok());
+        assert!(insert(Some("2026-11-13"), Some("high")).await.is_ok());
+        assert!(insert(Some("2028-02-29"), Some("low")).await.is_ok());
+
+        assert!(
+            insert(Some("2026-02-30"), None).await.is_err(),
+            "no such day"
+        );
+        assert!(insert(Some("13/11"), None).await.is_err());
+        assert!(
+            insert(Some("2026-11-13T10:00:00Z"), None).await.is_err(),
+            "a time"
+        );
+        assert!(insert(None, Some("urgent")).await.is_err());
+        assert!(insert(None, Some("High")).await.is_err(), "lowercase only");
     }
 
     #[tokio::test]

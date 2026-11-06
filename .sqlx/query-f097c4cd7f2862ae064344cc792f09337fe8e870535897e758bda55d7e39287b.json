@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "INSERT INTO todos (chat_id, title, created_by, assignee_id, created_at)\n           VALUES (?, ?, ?, ?, ?)\n           RETURNING id AS \"id!\"",
+  "query": "INSERT INTO todos (chat_id, title, created_by, assignee_id, due_date, priority,\n                              created_at)\n           VALUES (?, ?, ?, ?, ?, ?, ?)\n           RETURNING id AS \"id!\"",
   "describe": {
     "columns": [
       {
@@ -16,11 +16,11 @@
       }
     ],
     "parameters": {
-      "Right": 5
+      "Right": 7
     },
     "nullable": [
       null
     ]
   },
-  "hash": "f55fabe07e3fcf8807501c25ff6e86ecc6b271f2a8ac0de04ac4bd1cb9cc32e9"
+  "hash": "f097c4cd7f2862ae064344cc792f09337fe8e870535897e758bda55d7e39287b"
 }

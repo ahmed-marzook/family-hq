@@ -1,8 +1,8 @@
 # Todo & Shop (Phase 1)
 
 > **Goal:** each WhatsApp group has a working shared shopping list and todo list, and each person can keep private lists in a DM.
-> **Status:** Done and in daily use (1.1–1.6, archived). Planned: due dates (1.7).
-> **Last updated:** 2026-11-03
+> **Status:** Done and in daily use (1.1–1.7 and 1.9, archived). Nothing open; ideas under Open questions.
+> **Last updated:** 2026-11-06
 
 ## Phase 1: Todo & Shop
 
@@ -25,6 +25,10 @@ Every command works in a group or a DM and acts on **that chat's** lists.
 | `+todo @Khadija book dentist`                                     | Adds a todo assigned to Khadija (a member of this group)               |
 | `/todo` (`/t`)                                                    | Numbered list of this chat's open todos                                |
 | reply `done 2` / `remove 2` to a `/todo` list                     | Completes / deletes todo 2                                             |
+| `+todo bins, hoover -d fri -p high`                               | Adds todos with a due date and priority (for all of them)              |
+| reply `skip 2`, or `+skip 2` / `+skip gym`                        | Closes a todo as "won't be done", kept on record as ⏭️ skipped         |
+| reply `due 2 fri` / `due 2 none` / `priority 2 high`              | Changes an open todo's due date or priority                            |
+| `/todo overdue` / `/todo due` / `/todo high`                      | Only the open todos that are late / have a date / are high priority    |
 | `/help` (`/h`)                                                    | Overview, plus a full page per topic                                   |
 
 The bot reacts 👍 to every message it understands as a command, so the
@@ -33,42 +37,6 @@ sender knows it was seen.
 Numbers always refer to **the list message being replied to**, never
 "whatever the list looks like now" (see `wa_message_context` below). That
 avoids the number-shifting problem from the CLI MVP.
-
-### Stage 1.7: Todo due dates and priority flags (planned)
-
-Bring the CLI MVP's flags (`cli.rs`'s `parse_flags`, `dates.rs`,
-`priority.rs`) to WhatsApp todos.
-
-Build:
-
-- Flags after the title, as in the CLI:
-  - `+todo renew passport -d 15-03` / `--due fri` / `--by tmr`
-    (`dd-mm-yyyy`, `dd-mm`, `today`, `tmr`, weekday names)
-  - `-p high` / `--priority h` (`high`, `medium`, `low`)
-  - Both: `+t @Khadija book dentist -d mon -p high`
-- Dates are worked out in the **sender's own timezone**, with `today`
-  passed in (CLAUDE.md rule; the CLI's `parse_due_date` read the clock
-  itself). A date in the past is an error, as in the CLI.
-- `/todo` sorts as the CLI did: overdue first, then by due date, then
-  priority. Each line shows `📅 Fri 15 Mar` and `🔴`/`🟠`/`🟢` for priority,
-  and `⚠️ overdue` when it's late.
-- Filters: `/todo overdue`, `/todo due`, `/todo high`, like the CLI's
-  `-f` (`/todo mine` and `/todo <name>` already exist).
-- Change after adding, by replying to a `/todo` list: `due 2 fri`,
-  `due 2 none`, `priority 2 high`.
-- A new migration: `todos.due_date` (`date(due_date) IS due_date` CHECK,
-  as in the CLI's `db.rs`) and `todos.priority` (`CHECK IN (...)`).
-
-New concepts: porting your own CLI code, a second migration, sorting with
-tuple keys (`sorted_tasks` again).
-
-Done when:
-
-- [ ] `+todo … -d fri -p high` saves both, and `/todo` shows them
-- [ ] Overdue todos come first and are marked
-- [ ] `due 2 …` / `priority 2 …` replies change them
-- [ ] The parser has tests for every flag and date form, including bad
-      ones (`-d`, `-p urgent`, a past date)
 
 ## Open questions
 
@@ -79,6 +47,9 @@ Done when:
   in a DM only yourself.)
 - Backups: which disk should the daily copies live on (`BACKUP_PATH`)?
   And Kopia should back up that folder rather than the live database.
+- Should todo reminders show due dates and "⚠️ overdue"? They're already
+  sorted overdue first (they use `todos::list_all`), but the lines don't
+  show dates yet.
 - Notes (`+note`, `/notes`): dropped for now (2026-11-03). Bring back if
   the family asks for it during the two-week test; the old plan is in git
   history.

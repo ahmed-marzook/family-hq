@@ -219,8 +219,11 @@ export type Todo = {
   id: number;
   title: string;
   assignee: string | null;
+  /** Who closed it and when: ticked off, or skipped if `skipped`. */
   done_by: string | null;
   done_at: string | null;
+  /** Closed as "won't be done" rather than done. */
+  skipped: boolean;
 };
 
 export type GroupTodos = { group: Group; todos: Todo[] };

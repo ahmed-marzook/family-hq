@@ -14,7 +14,7 @@ family for at least two weeks**. The admin dashboard is outside this rule.
 
 ## Now
 
-- **Todo & Shop (Phase 1)**: done (1.1–1.6) and in daily use; the
+- **Todo & Shop (Phase 1)**: done (1.1–1.7) and in daily use; the
   two-week family test passed, so Phase 2 can start →
   [roadmap/todo-shop.md](roadmap/todo-shop.md)
 - **Admin dashboard**: A1–A5 done (0.15.0), nothing open →
@@ -24,8 +24,6 @@ family for at least two weeks**. The admin dashboard is outside this rule.
 
 ## Next
 
-- **Todo due dates (Stage 1.7)**: planned →
-  [roadmap/todo-shop.md](roadmap/todo-shop.md)
 - **Reminders & Prayer Coach (Phase 2)**: prayer reminders, missed
   tracking and reports done early; ntfy push built, deploy check to do
   (2.1); `+remind`, the shared reminder engine and ticking off by reaction
@@ -41,6 +39,6 @@ family for at least two weeks**. The admin dashboard is outside this rule.
 
 ## Done
 
-- **Finished stages**: 1.1–1.6, 1.9, "Built beyond the original plan",
+- **Finished stages**: 1.1–1.7, 1.9, "Built beyond the original plan",
   admin A1–A5, answered open questions →
   [roadmap/archive.md](roadmap/archive.md) (read only when asked)

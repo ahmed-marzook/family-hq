@@ -13,7 +13,7 @@ use crate::geo::Coordinates;
 use crate::help;
 use crate::moon::{self, Moon};
 use crate::parser::{
-    BotCommand, Got, PushCommand, ReplyCommand, SettingsCommand, Timing, TodoView,
+    BotCommand, Got, PushCommand, ReplyCommand, SettingsCommand, Timing, TodoFilter, TodoView,
 };
 use crate::person::Assignee;
 use crate::prayer::{self, DayTimes, Prayer};
@@ -27,16 +27,20 @@ use crate::repo::reports as stored_reports;
 use crate::repo::settings::{self as stored, MemberSettings};
 use crate::repo::shop::{self, ShopItem};
 use crate::repo::todo_reminders;
-use crate::repo::todos::{self, ListedTodo};
+use crate::repo::todos::{self, Details, ListedTodo};
 use crate::repo::users::{self, User};
 use crate::reports::{Delivery, Feature, Period, Span};
 use crate::settings::Settings;
 use crate::settings_edit::{self, Change, Refused, Saved};
+use crate::todo_flags::{self, Due, Priority};
 use crate::weather::{self, When};
 
 const ADDED: &str = "📝";
 const LIST: &str = "📋";
 const DONE: &str = "✅";
+const SKIPPED: &str = "⏭️";
+const DUE: &str = "📅";
+const OVERDUE: &str = "⚠️";
 const REMOVED: &str = "🗑️";
 const PROBLEM: &str = "❓";
 const MUTED: &str = "🔕";
@@ -116,12 +120,18 @@ pub async fn run_command(
 ) -> Result<Outcome, AppError> {
     let prayer_times = &apis.prayer_times;
     let text = match command {
-        BotCommand::AddTodo { titles, assignee } => add_todo(conn, ctx, &titles, assignee).await?,
+        BotCommand::AddTodo {
+            titles,
+            assignee,
+            due,
+            priority,
+        } => add_todo(conn, ctx, prayer_times, &titles, assignee, due, priority).await?,
         BotCommand::ListTodos(view) => {
             let layout = match view {
                 TodoView::ByPerson => Layout::ByPerson,
                 TodoView::All => Layout::All,
                 TodoView::Mine => Layout::Only(ctx.sender.display_name.clone()),
+                TodoView::Filtered(filter) => Layout::Filtered(filter),
                 // Checked against the chat's members, so a typo gets the
                 // list of names rather than "Bilql has no todos".
                 TodoView::Person(name) => {
@@ -145,16 +155,19 @@ pub async fn run_command(
                 item_ids: items.iter().map(|t| t.id).collect(),
             });
         }
+        BotCommand::BadTodo(err) => format!("{PROBLEM} {err}"),
         BotCommand::DoneTodo(Got::Numbers(numbers)) => {
-            // Same as replying `1 3` to the newest `/todo` list here.
-            let items = messages::latest_list_items(conn, ctx.chat_id, TODO_ITEM).await?;
-            if items.is_empty() {
-                format!("{PROBLEM} No todo list sent here yet. Send /todo, then `+done 2`.")
-            } else {
-                return run_list_reply(conn, ctx, &items, ReplyCommand::Tick(numbers)).await;
-            }
+            return close_by_numbers(conn, ctx, &numbers, Action::Tick).await;
         }
-        BotCommand::DoneTodo(Got::Names(names)) => done_by_name(conn, ctx, &names).await?,
+        BotCommand::DoneTodo(Got::Names(names)) => {
+            close_by_name(conn, ctx, &names, Action::Tick).await?
+        }
+        BotCommand::SkipTodo(Got::Numbers(numbers)) => {
+            return close_by_numbers(conn, ctx, &numbers, Action::Skip).await;
+        }
+        BotCommand::SkipTodo(Got::Names(names)) => {
+            close_by_name(conn, ctx, &names, Action::Skip).await?
+        }
         BotCommand::ClearTodos { done_only: false } => {
             match todos::clear_all(conn, ctx.chat_id).await? {
                 0 => format!("{LIST} There are no todos to clear."),
@@ -163,10 +176,16 @@ pub async fn run_command(
             }
         }
         BotCommand::ClearTodos { done_only: true } => {
-            match todos::clear_done(conn, ctx.chat_id).await? {
-                0 => format!("{LIST} No completed todos to clear."),
-                1 => format!("{CLEARED} Cleared 1 completed todo."),
-                n => format!("{CLEARED} Cleared {n} completed todos."),
+            // Counted first, to say how many of each went.
+            let skipped = todos::progress(conn, ctx.chat_id).await?.skipped;
+            match (todos::clear_done(conn, ctx.chat_id).await?, skipped) {
+                (0, _) => format!("{LIST} No completed todos to clear."),
+                (1, 0) => format!("{CLEARED} Cleared 1 completed todo."),
+                (n, 0) => format!("{CLEARED} Cleared {n} completed todos."),
+                (n, skipped) => format!(
+                    "{CLEARED} Cleared {} completed and {skipped} skipped.",
+                    n - skipped as u64
+                ),
             }
         }
         BotCommand::TodoReminders(on) => {
@@ -194,7 +213,7 @@ pub async fn run_command(
             if items.is_empty() {
                 format!("{PROBLEM} No shopping list sent here yet. Send /shop, then `+got 1 3`.")
             } else {
-                return run_list_reply(conn, ctx, &items, ReplyCommand::Tick(numbers)).await;
+                return run_list_reply(conn, ctx, apis, &items, ReplyCommand::Tick(numbers)).await;
             }
         }
         BotCommand::GotShop(Got::Names(names)) => return got_by_name(conn, ctx, &names).await,
@@ -728,8 +747,11 @@ async fn settings_command(
 async fn add_todo(
     conn: &mut SqliteConnection,
     ctx: &Context,
+    prayer_times: &PrayerTimes,
     titles: &[String],
     assignee: Option<Assignee>,
+    due: Option<Due>,
+    priority: Option<Priority>,
 ) -> Result<String, AppError> {
     let assignee = match assignee {
         // No `@name` (the webhook fills in the sender) → the sender.
@@ -745,6 +767,17 @@ async fn add_todo(
         }
     };
 
+    // "fri" → a date, counting from the sender's own today (their
+    // timezone, even in a group set to another one).
+    let today = my_settings(conn, ctx, prayer_times).await?.today(ctx.now);
+    // `transpose` turns `Option<Result<..>>` into `Result<Option<..>>`, so
+    // one `match` covers "no date", "a date" and "a bad date".
+    let due = match due.map(|due| due.resolve(today)).transpose() {
+        Ok(due) => due,
+        Err(err) => return Ok(format!("{PROBLEM} {err}")),
+    };
+    let details = Details { due, priority };
+
     // All in the webhook's one transaction: if one fails, none are added.
     for title in titles {
         todos::add(
@@ -753,17 +786,24 @@ async fn add_todo(
             title,
             ctx.sender.id,
             Some(assignee.id),
+            details,
             ctx.now,
         )
         .await?;
     }
-    Ok(format_todos_added(titles, &assignee.display_name))
+    Ok(format_todos_added(
+        titles,
+        &assignee.display_name,
+        details,
+        today,
+    ))
 }
 
 /// "📝 Added *fix the tap* for Bilal", or for several:
-/// "📝 Added 2 todos for Bilal:" and one line each.
-fn format_todos_added(titles: &[String], name: &str) -> String {
-    match titles {
+/// "📝 Added 2 todos for Bilal:" and one line each. Then the due date and
+/// priority, if given, on a line of their own (they're for all of them).
+fn format_todos_added(titles: &[String], name: &str, details: Details, today: NaiveDate) -> String {
+    let mut text = match titles {
         [title] => format!("{ADDED} Added *{title}* for {name}"),
         _ => {
             let lines: Vec<String> = titles.iter().map(|t| format!("• {t}")).collect();
@@ -773,35 +813,175 @@ fn format_todos_added(titles: &[String], name: &str) -> String {
                 lines.join("\n")
             )
         }
+    };
+    if let Some(line) = details_line(details, today) {
+        text.push('\n');
+        text.push_str(&line);
     }
+    text
+}
+
+/// "📅 Due Fri 13 Nov · 🔴 High priority", either half, or `None`.
+fn details_line(details: Details, today: NaiveDate) -> Option<String> {
+    let due = details
+        .due
+        .map(|date| format!("{DUE} Due {}", todo_flags::show_date(date, today)));
+    let priority = details.priority.map(|p| {
+        let name = match p {
+            Priority::High => "High",
+            Priority::Medium => "Medium",
+            Priority::Low => "Low",
+        };
+        format!("{} {name} priority", p.emoji())
+    });
+    // `[a, b].into_iter().flatten()` keeps only the `Some`s.
+    let parts: Vec<String> = [due, priority].into_iter().flatten().collect();
+    (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
 /// Runs a reply to one of the bot's numbered lists. `items` is what that
 /// list showed (never empty: the webhook only calls this for real lists).
+/// `apis` is for the sender's settings (their "today", for `due 2 fri`).
 pub async fn run_list_reply(
     conn: &mut SqliteConnection,
     ctx: &Context,
+    apis: &Apis,
     items: &[ListItem],
     reply: ReplyCommand,
+) -> Result<Outcome, AppError> {
+    // `done 2` and `1 3` both tick off; `remove` deletes; `skip` closes a
+    // todo as "won't be done". The rest change a todo and return here.
+    let (numbers, action) = match reply {
+        ReplyCommand::Done(n) => (vec![n], Action::Tick),
+        ReplyCommand::Tick(numbers) => (numbers, Action::Tick),
+        ReplyCommand::Remove(n) => (vec![n], Action::Remove),
+        ReplyCommand::Skip(n) => (vec![n], Action::Skip),
+        ReplyCommand::SetDue(n, due) => {
+            return change_todo(conn, ctx, apis, items, n, TodoChange::Due(due)).await;
+        }
+        ReplyCommand::SetPriority(n, priority) => {
+            return change_todo(conn, ctx, apis, items, n, TodoChange::Priority(priority)).await;
+        }
+        ReplyCommand::BadChange(err) => return Ok(Outcome::Reply(format!("{PROBLEM} {err}"))),
+    };
+    act_on_list(conn, ctx, items, &numbers, action).await
+}
+
+/// A change to one todo, from a reply (`due 2 fri`, `priority 2 none`).
+#[derive(Debug, Clone, Copy)]
+enum TodoChange {
+    Due(Option<Due>),
+    Priority(Option<Priority>),
+}
+
+/// `due 2 fri` / `priority 2 high` (or `none`): changes todo 2 in the list
+/// that was replied to.
+async fn change_todo(
+    conn: &mut SqliteConnection,
+    ctx: &Context,
+    apis: &Apis,
+    items: &[ListItem],
+    n: usize,
+    change: TodoChange,
+) -> Result<Outcome, AppError> {
+    let reply = |text: String| Ok(Outcome::Reply(text));
+    if items
+        .first()
+        .is_some_and(|item| item.item_type == SHOP_ITEM)
+    {
+        return reply(format!(
+            "{PROBLEM} Due dates and priorities are for todos, not the shopping list."
+        ));
+    }
+    let id = match item_at(items, n) {
+        Ok(id) => id,
+        Err(problem) => return reply(problem),
+    };
+
+    let text = match change {
+        TodoChange::Due(due) => {
+            // As with `+todo -d`: counted from the sender's own today.
+            let today = my_settings(conn, ctx, &apis.prayer_times)
+                .await?
+                .today(ctx.now);
+            let date = match due.map(|due| due.resolve(today)).transpose() {
+                Ok(date) => date,
+                Err(err) => return reply(format!("{PROBLEM} {err}")),
+            };
+            let Some(title) = todos::set_due(conn, id, ctx.chat_id, date).await? else {
+                return reply(not_open(n));
+            };
+            match date {
+                Some(date) => format!(
+                    "{DUE} *{title}* is now due {}.",
+                    todo_flags::show_date(date, today)
+                ),
+                None => format!("{DUE} *{title}* has no due date now."),
+            }
+        }
+        TodoChange::Priority(priority) => {
+            let Some(title) = todos::set_priority(conn, id, ctx.chat_id, priority).await? else {
+                return reply(not_open(n));
+            };
+            match priority {
+                Some(p) => format!("{} *{title}* is now {} priority.", p.emoji(), p.as_str()),
+                None => format!("*{title}* has no priority now."),
+            }
+        }
+    };
+    reply(text)
+}
+
+/// Why todo `n` can't be changed: it's closed or gone.
+fn not_open(n: usize) -> String {
+    format!("{PROBLEM} Todo {n} is already done, skipped or removed, so there's nothing to change.")
+}
+
+/// What a reply (or `+done` / `+skip`) does to the items it numbers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Action {
+    /// Tick off: a todo done, a shopping item bought.
+    Tick,
+    Remove,
+    /// Todos only: closed as "won't be done".
+    Skip,
+}
+
+impl Action {
+    /// The `+` command that does this without replying.
+    fn command(self) -> &'static str {
+        match self {
+            Action::Skip => "+skip",
+            Action::Tick | Action::Remove => "+done",
+        }
+    }
+}
+
+/// Does `action` to the items at `numbers` in a list that showed `items`.
+async fn act_on_list(
+    conn: &mut SqliteConnection,
+    ctx: &Context,
+    items: &[ListItem],
+    numbers: &[usize],
+    action: Action,
 ) -> Result<Outcome, AppError> {
     // Every row of one list has the same type; the first one says which.
     let is_shop = items
         .first()
         .is_some_and(|item| item.item_type == SHOP_ITEM);
-
-    // `done 2` and `1 3` both tick off; `remove` deletes.
-    let (numbers, removing) = match reply {
-        ReplyCommand::Done(n) => (vec![n], false),
-        ReplyCommand::Tick(numbers) => (numbers, false),
-        ReplyCommand::Remove(n) => (vec![n], true),
-    };
+    if is_shop && action == Action::Skip {
+        return Ok(Outcome::Reply(format!(
+            "{PROBLEM} `skip` is for todos. To take something off the shopping \
+             list, reply `remove 2`."
+        )));
+    }
 
     let mut lines = Vec::new();
     // Shopping items ticked off: reported together, mentioning the buyer.
     let mut bought = Vec::new();
-    // Any todo completed: the reply ends with the updated progress bar.
-    let mut completed_any = false;
-    for n in numbers {
+    // Any todo done or skipped: the reply ends with the updated progress bar.
+    let mut closed_any = false;
+    for &n in numbers {
         let id = match item_at(items, n) {
             Ok(id) => id,
             Err(problem) => {
@@ -811,83 +991,122 @@ pub async fn run_list_reply(
         };
         // The repo call that matches the list type and the action. Each
         // returns the item's name, or `None` if it's already gone.
-        let name = match (is_shop, removing) {
-            (false, false) => {
-                todos::complete(conn, id, ctx.chat_id, ctx.sender.id, ctx.now).await?
-            }
-            (false, true) => todos::remove(conn, id, ctx.chat_id).await?,
-            (true, false) => {
-                shop::mark_bought(conn, id, ctx.chat_id, ctx.sender.id, ctx.now).await?
-            }
-            (true, true) => shop::remove(conn, id, ctx.chat_id).await?,
+        let (chat, by, now) = (ctx.chat_id, ctx.sender.id, ctx.now);
+        let name = match (is_shop, action) {
+            (false, Action::Tick) => todos::complete(conn, id, chat, by, now).await?,
+            (false, Action::Skip) => todos::skip(conn, id, chat, by, now).await?,
+            (false, Action::Remove) => todos::remove(conn, id, chat).await?,
+            (true, Action::Tick) => shop::mark_bought(conn, id, chat, by, now).await?,
+            (true, Action::Remove) => shop::remove(conn, id, chat).await?,
+            // Can't happen: answered before the loop.
+            (true, Action::Skip) => None,
         };
-        match (name, is_shop, removing) {
+        match (name, is_shop, action) {
             (None, _, _) => lines.push(gone(n)),
-            (Some(name), _, true) => lines.push(format!("{REMOVED} Removed *{name}*")),
-            (Some(name), false, false) => {
+            (Some(name), _, Action::Remove) => lines.push(format!("{REMOVED} Removed *{name}*")),
+            (Some(name), false, Action::Tick) => {
                 lines.push(format!("{DONE} Done: *{name}*"));
-                completed_any = true;
+                closed_any = true;
             }
-            (Some(name), true, false) => bought.push(name),
+            (Some(name), false, Action::Skip) => {
+                lines.push(format!("{SKIPPED} Skipped: *{name}*"));
+                closed_any = true;
+            }
+            (Some(name), true, _) => bought.push(name),
         }
     }
-    if is_shop && !removing {
+    if is_shop && action == Action::Tick {
         return Ok(bought_reply(ctx, &bought, &lines));
     }
-    if completed_any {
-        let (done, total) = todos::progress(conn, ctx.chat_id).await?;
-        lines.push(progress_bar(done, total));
+    if closed_any {
+        let p = todos::progress(conn, ctx.chat_id).await?;
+        lines.push(progress_bar(p.done, p.skipped, p.total));
     }
     Ok(Outcome::Reply(lines.join("\n")))
 }
 
-/// `+done gym`: completes the open todo whose title matches each name.
-/// Several matches is a question back rather than a guess.
-async fn done_by_name(
+/// `+done 2` / `+skip 1 3`: the same as replying to the newest `/todo`
+/// list sent in this chat.
+async fn close_by_numbers(
+    conn: &mut SqliteConnection,
+    ctx: &Context,
+    numbers: &[usize],
+    action: Action,
+) -> Result<Outcome, AppError> {
+    let items = messages::latest_list_items(conn, ctx.chat_id, TODO_ITEM).await?;
+    if items.is_empty() {
+        let command = action.command();
+        return Ok(Outcome::Reply(format!(
+            "{PROBLEM} No todo list sent here yet. Send /todo, then `{command} 2`."
+        )));
+    }
+    act_on_list(conn, ctx, &items, numbers, action).await
+}
+
+/// `+done gym` / `+skip gym`: closes the open todo whose title matches each
+/// name. Several matches is a question back rather than a guess.
+async fn close_by_name(
     conn: &mut SqliteConnection,
     ctx: &Context,
     names: &[String],
+    action: Action,
 ) -> Result<String, AppError> {
     let mut lines = Vec::new();
-    let mut completed_any = false;
+    let mut closed_any = false;
     for name in names {
         let matches = todos::find_open(conn, ctx.chat_id, name).await?;
         // A slice pattern: exactly one match, bound as `(id, title)`.
         match matches.as_slice() {
             [] => lines.push(format!("{PROBLEM} No open todo matches \"{name}\".")),
             [(id, title)] => {
-                if todos::complete(conn, *id, ctx.chat_id, ctx.sender.id, ctx.now)
-                    .await?
-                    .is_some()
-                {
-                    lines.push(format!("{DONE} Done: *{title}*"));
-                    completed_any = true;
+                let (id, chat, by, now) = (*id, ctx.chat_id, ctx.sender.id, ctx.now);
+                let (closed, line) = if action == Action::Skip {
+                    let closed = todos::skip(conn, id, chat, by, now).await?;
+                    (closed, format!("{SKIPPED} Skipped: *{title}*"))
+                } else {
+                    let closed = todos::complete(conn, id, chat, by, now).await?;
+                    (closed, format!("{DONE} Done: *{title}*"))
+                };
+                if closed.is_some() {
+                    lines.push(line);
+                    closed_any = true;
                 }
             }
             several => {
                 let titles: Vec<&str> = several.iter().map(|(_, t)| t.as_str()).collect();
                 lines.push(format!(
                     "{PROBLEM} \"{name}\" matches {}: {}. Say more of the title, or use \
-                     the number from /todo (`+done 2`).",
+                     the number from /todo (`{} 2`).",
                     titles.len(),
-                    titles.join(", ")
+                    titles.join(", "),
+                    action.command()
                 ));
             }
         }
     }
-    if completed_any {
-        let (done, total) = todos::progress(conn, ctx.chat_id).await?;
-        lines.push(progress_bar(done, total));
+    if closed_any {
+        let p = todos::progress(conn, ctx.chat_id).await?;
+        lines.push(progress_bar(p.done, p.skipped, p.total));
     }
     Ok(lines.join("\n"))
 }
 
-/// "■■■■□□□□□□ 4/10 done" (the bar itself is `progress::bar`).
-fn progress_bar(done: i64, total: i64) -> String {
-    if total == 0 {
-        return String::new();
+/// "■■■■□□□□□□ 4/10 done" (the bar itself is `progress::bar`), and
+/// "· 1 skipped" after it if any were. `total` counts the skipped ones,
+/// but the bar leaves them out: a todo that won't be done isn't one still
+/// to do.
+fn progress_bar(done: i64, skipped: i64, total: i64) -> String {
+    let counted = total - skipped;
+    let skipped_note = (skipped > 0).then(|| format!("{skipped} skipped"));
+    if counted == 0 {
+        // Nothing left to count: all skipped, or no todos at all.
+        return skipped_note.unwrap_or_default();
     }
-    format!("{} {done}/{total} done", progress::bar(done, total))
+    let bar = format!("{} {done}/{counted} done", progress::bar(done, counted));
+    match skipped_note {
+        Some(note) => format!("{bar} · {note}"),
+        None => bar,
+    }
 }
 
 /// The row id at list number `n`, or the message to send if there's no
@@ -1129,6 +1348,8 @@ enum Layout {
     All,
     /// Only this person's (their display name, as stored).
     Only(String),
+    /// Only the open todos that match, everyone's (`format_filtered_list`).
+    Filtered(TodoFilter),
 }
 
 /// The heading for todos nobody is assigned to (made before todos had to
@@ -1144,6 +1365,10 @@ fn format_todo_list(
     settings: &Settings,
     now: DateTime<Utc>,
 ) -> String {
+    // A filtered view is laid out differently enough to be its own function.
+    if let Layout::Filtered(filter) = layout {
+        return format_filtered_list(items, *filter, settings, now);
+    }
     // One person's view says whose list is empty (below), even if all are.
     if items.is_empty() && !matches!(layout, Layout::Only(_)) {
         return format!("{LIST} No todos. Add one with `+todo fix the tap`.");
@@ -1162,12 +1387,19 @@ fn format_todo_list(
             }
             (format!("*{name}'s todos*"), theirs)
         }
-        Layout::ByPerson | Layout::All => ("*Todos*".to_string(), numbered),
+        // (`Filtered` returned at the top.)
+        Layout::ByPerson | Layout::All | Layout::Filtered(_) => ("*Todos*".to_string(), numbered),
     };
 
     let total = shown.len() as i64;
-    let done = shown.iter().filter(|(_, t)| t.done.is_some()).count() as i64;
-    let mut text = format!("{LIST} {title}\n{}\n", progress_bar(done, total));
+    let done = shown.iter().filter(|(_, t)| t.is_done()).count() as i64;
+    let skipped = shown.iter().filter(|(_, t)| t.is_skipped()).count() as i64;
+    let mut text = format!("{LIST} {title}\n{}\n", progress_bar(done, skipped, total));
+    let today = settings.today(now);
+    let overdue = shown.iter().filter(|(_, t)| t.is_overdue(today)).count();
+    if overdue > 0 {
+        text.push_str(&format!("{OVERDUE} {overdue} overdue\n"));
+    }
     // How much of the sender's day is left to do them in.
     if let Some(day) = calendar::day_line(now, settings.timezone) {
         text.push_str(&day);
@@ -1177,7 +1409,7 @@ fn format_todo_list(
     let groups = match layout {
         Layout::ByPerson => group_by_person(&shown),
         // One group, with no heading.
-        Layout::All | Layout::Only(_) => vec![(None, shown.clone())],
+        Layout::All | Layout::Only(_) | Layout::Filtered(_) => vec![(None, shown.clone())],
     };
     // A heading over each person's todos, unless they're all one person's
     // (in a DM, say), where it would only repeat the obvious.
@@ -1195,7 +1427,7 @@ fn format_todo_list(
         }
     }
 
-    if done < total {
+    if done + skipped < total {
         text.push_str(
             "\nFinish one: reply to this message with `done 2`, or send `+done 2` or \
              `+done gym` any time.",
@@ -1203,9 +1435,62 @@ fn format_todo_list(
     } else {
         text.push_str("\nAll done! 🎉");
     }
-    if done > 0 {
-        text.push_str(" `/todo clear done` removes the ✅ ones; `/todo clear` empties the list.");
+    match (done > 0, skipped > 0) {
+        (false, false) => {}
+        (true, false) => text
+            .push_str(" `/todo clear done` removes the ✅ ones; `/todo clear` empties the list."),
+        (_, true) => text.push_str(
+            " `/todo clear done` removes the ✅ and ⏭️ ones; `/todo clear` empties the list.",
+        ),
     }
+    text
+}
+
+/// `/todo overdue`, `/todo due`, `/todo high`: only the open todos that
+/// match, with who each is for and their numbers in the whole list (so
+/// `done 3` here means the same todo as in `/todo`). No progress bar: it's
+/// a slice of the list, not the list.
+fn format_filtered_list(
+    items: &[ListedTodo],
+    filter: TodoFilter,
+    settings: &Settings,
+    now: DateTime<Utc>,
+) -> String {
+    let today = settings.today(now);
+    let shown: Vec<Numbered> = (1..)
+        .zip(items)
+        .filter(|(_, todo)| match filter {
+            TodoFilter::Overdue => todo.is_overdue(today),
+            TodoFilter::Due => todo.closed.is_none() && todo.due.is_some(),
+            TodoFilter::High => todo.closed.is_none() && todo.priority == Some(Priority::High),
+        })
+        .collect();
+
+    let heading = match (filter, shown.is_empty()) {
+        (TodoFilter::Overdue, true) => return format!("{LIST} Nothing is overdue. 🎉"),
+        (TodoFilter::Due, true) => {
+            return format!(
+                "{LIST} No open todos have a due date. Add one with `+todo bins -d fri`."
+            );
+        }
+        (TodoFilter::High, true) => {
+            return format!(
+                "{LIST} No open todos are high priority. Add one with `+todo bins -p high`."
+            );
+        }
+        (TodoFilter::Overdue, false) => "Overdue",
+        (TodoFilter::Due, false) => "Todos with a due date",
+        (TodoFilter::High, false) => "High priority",
+    };
+
+    let mut text = format!("{LIST} *{heading}* ({})\n\n", shown.len());
+    for (number, todo) in &shown {
+        text.push_str(&todo_line(*number, todo, true, settings, now));
+        text.push('\n');
+    }
+    text.push_str(
+        "\nReply `done 2`, `skip 2` or `due 2 fri` to this message. `/todo` shows the whole list.",
+    );
     text
 }
 
@@ -1239,9 +1524,40 @@ fn group_by_person<'a>(shown: &[Numbered<'a>]) -> Vec<(Option<&'a str>, Vec<Numb
     groups
 }
 
-/// "⬜ 4. fix the tap", or "✅ 2. ~bins~ · Bilal 14:05" when done. The
-/// "Bilal" (who did it) is left out when it was the assignee themselves,
-/// since they're already named. `show_assignee` adds " (Khadija)".
+/// The end of an open todo's line: " · 📅 Fri 13 Nov · 🔴", or
+/// " · ⚠️ overdue (Wed 4 Nov)" once it's late, " · 📅 today" / "tomorrow"
+/// when it's that close. Empty with no date or priority. `today` is the
+/// reader's own.
+fn due_note(todo: &ListedTodo, today: NaiveDate) -> String {
+    let mut note = String::new();
+    if let Some(due) = todo.due {
+        let day = todo_flags::show_date(due, today);
+        // `succ_opt`: the next day (`None` only at the end of time).
+        let tomorrow = today.succ_opt();
+        let text = if due < today {
+            format!("{OVERDUE} overdue ({day})")
+        } else if due == today {
+            format!("{DUE} today")
+        } else if Some(due) == tomorrow {
+            format!("{DUE} tomorrow")
+        } else {
+            format!("{DUE} {day}")
+        };
+        note.push_str(" · ");
+        note.push_str(&text);
+    }
+    if let Some(priority) = todo.priority {
+        note.push_str(" · ");
+        note.push_str(priority.emoji());
+    }
+    note
+}
+
+/// "⬜ 4. fix the tap", "✅ 2. ~bins~ · Bilal 14:05" when done, or
+/// "⏭️ 3. ~hoover~ · skipped by Bilal 14:05" when skipped. The "Bilal" (who
+/// closed it) is left out when it was the assignee themselves, since
+/// they're already named. `show_assignee` adds " (Khadija)". Open todos
+/// end with their due date and priority, if they have them (`due_note`).
 fn todo_line(
     number: usize,
     todo: &ListedTodo,
@@ -1253,21 +1569,33 @@ fn todo_line(
         Some(name) if show_assignee => format!(" ({name})"),
         _ => String::new(),
     };
-    let Some(done) = &todo.done else {
-        return format!("{NOT_YET} {number}. {}{assignee}", todo.title);
+    let Some(closed) = &todo.closed else {
+        let note = due_note(todo, settings.today(now));
+        return format!("{NOT_YET} {number}. {}{assignee}{note}", todo.title);
     };
     // "14:05" if it was today (their today), else "Tue 14:05".
-    let when = if settings.today(done.at) == settings.today(now) {
-        settings.clock(done.at)
+    let when = if settings.today(closed.at) == settings.today(now) {
+        settings.clock(closed.at)
     } else {
-        let local = done.at.with_timezone(&settings.timezone);
+        let local = closed.at.with_timezone(&settings.timezone);
         local.format("%a %H:%M").to_string()
     };
-    let by_themselves = !show_assignee && is_for(todo, &done.by);
+    let by_themselves = !show_assignee && is_for(todo, &closed.by);
+    if closed.skipped {
+        let by = if by_themselves {
+            String::new()
+        } else {
+            format!("by {} ", closed.by)
+        };
+        return format!(
+            "{SKIPPED} {number}. ~{}~{assignee} · skipped {by}{when}",
+            todo.title
+        );
+    }
     let by = if by_themselves {
         String::new()
     } else {
-        format!("{} ", done.by)
+        format!("{} ", closed.by)
     };
     format!("{DONE} {number}. ~{}~{assignee} · {by}{when}", todo.title)
 }
@@ -1346,25 +1674,33 @@ mod tests {
                 id: 7,
                 title: "go gym".to_string(),
                 assignee: Some("Bilal".to_string()),
-                done: None,
+                closed: None,
+                due: None,
+                priority: None,
             },
             ListedTodo {
                 id: 3,
                 title: "fix the tap".to_string(),
                 assignee: None,
-                done: Some(todos::Completion {
+                closed: Some(todos::Closed {
                     by: "Khadija".to_string(),
                     at: at("2026-10-28T14:05:00Z"),
+                    skipped: false,
                 }),
+                due: None,
+                priority: None,
             },
             ListedTodo {
                 id: 4,
                 title: "bins".to_string(),
                 assignee: None,
-                done: Some(todos::Completion {
+                closed: Some(todos::Closed {
                     by: "Bilal".to_string(),
                     at: at("2026-10-27T08:30:00Z"),
+                    skipped: false,
                 }),
+                due: None,
+                priority: None,
             },
         ];
         let text = format_todo_list(&items, &Layout::All, &defaults(), now);
@@ -1386,10 +1722,13 @@ mod tests {
             id,
             title: title.to_string(),
             assignee: assignee.map(str::to_string),
-            done: done_by.map(|by| todos::Completion {
+            closed: done_by.map(|by| todos::Closed {
                 by: by.to_string(),
                 at: at("2026-10-28T14:05:00Z"),
+                skipped: false,
             }),
+            due: None,
+            priority: None,
         };
         vec![
             todo(11, "hoover", Some("Bilal"), None),
@@ -1494,10 +1833,19 @@ mod tests {
 
     #[test]
     fn progress_bar_rounds_and_handles_edges() {
-        assert_eq!(progress_bar(0, 4), "□□□□□□□□□□ 0/4 done");
-        assert_eq!(progress_bar(1, 3), "■■■□□□□□□□ 1/3 done");
-        assert_eq!(progress_bar(4, 4), "■■■■■■■■■■ 4/4 done");
-        assert_eq!(progress_bar(0, 0), "");
+        assert_eq!(progress_bar(0, 0, 4), "□□□□□□□□□□ 0/4 done");
+        assert_eq!(progress_bar(1, 0, 3), "■■■□□□□□□□ 1/3 done");
+        assert_eq!(progress_bar(4, 0, 4), "■■■■■■■■■■ 4/4 done");
+        assert_eq!(progress_bar(0, 0, 0), "");
+    }
+
+    #[test]
+    fn progress_bar_leaves_skipped_todos_out_but_says_so() {
+        // 4 todos, 1 skipped: 1 of the other 3 done.
+        assert_eq!(progress_bar(1, 1, 4), "■■■□□□□□□□ 1/3 done · 1 skipped");
+        assert_eq!(progress_bar(3, 1, 4), "■■■■■■■■■■ 3/3 done · 1 skipped");
+        // Nothing left that counts.
+        assert_eq!(progress_bar(0, 2, 2), "2 skipped");
     }
 
     #[test]
@@ -1553,6 +1901,8 @@ mod tests {
         BotCommand::AddTodo {
             titles: vec![title.to_string()],
             assignee,
+            due: None,
+            priority: None,
         }
     }
 
@@ -1568,6 +1918,8 @@ mod tests {
                 jid: ctx.sender.wa_jid.clone(),
                 lid: None,
             })),
+            due: None,
+            priority: None,
         };
         let reply = run_command(&mut conn, &ctx, &Apis::new(times()), command)
             .await
@@ -1586,8 +1938,453 @@ mod tests {
 
     #[test]
     fn one_todo_added_reads_as_before() {
-        let one = format_todos_added(&["go gym".to_string()], "Bilal");
+        let one = format_todos_added(
+            &["go gym".to_string()],
+            "Bilal",
+            Details::default(),
+            friday(),
+        );
         assert_eq!(one, "📝 Added *go gym* for Bilal");
+    }
+
+    /// Friday 6 November 2026.
+    fn friday() -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 11, 6).unwrap()
+    }
+
+    #[test]
+    fn added_todos_show_their_due_date_and_priority() {
+        let details = Details {
+            due: NaiveDate::from_ymd_opt(2026, 11, 13),
+            priority: Some(Priority::High),
+        };
+        let one = format_todos_added(&["bins".to_string()], "Bilal", details, friday());
+        assert_eq!(
+            one,
+            "📝 Added *bins* for Bilal\n📅 Due Fri 13 Nov · 🔴 High priority"
+        );
+
+        // For several, one line at the end: it's the same for all of them.
+        let titles = ["hoover".to_string(), "bins".to_string()];
+        let low = Details {
+            due: None,
+            priority: Some(Priority::Low),
+        };
+        assert_eq!(
+            format_todos_added(&titles, "Bilal", low, friday()),
+            "📝 Added 2 todos for Bilal:\n• hoover\n• bins\n🟢 Low priority"
+        );
+    }
+
+    /// Runs a typed message, as the webhook would (`+todo` with no
+    /// `@name` is for the sender: `add_todo` treats `None` that way too).
+    async fn typed(conn: &mut SqliteConnection, ctx: &Context, text: &str) -> Outcome {
+        let command = crate::parser::parse(text).expect("should parse");
+        run_command(conn, ctx, &Apis::new(times()), command)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn several_todos_share_the_flags() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let mut ctx = setup(&mut conn).await;
+        // Friday lunchtime in London.
+        ctx.now = "2026-11-06T12:00:00Z".parse().unwrap();
+
+        let reply = typed(&mut conn, &ctx, "+todo hoover, bins -d tmr -p high").await;
+        assert_eq!(
+            reply.into_text(),
+            "📝 Added 2 todos for Bilal:\n• hoover\n• bins\n📅 Due Sat 7 Nov · 🔴 High priority"
+        );
+        let rows = sqlx::query!("SELECT title, due_date, priority FROM todos ORDER BY id")
+            .fetch_all(&mut *conn)
+            .await
+            .unwrap();
+        let saved: Vec<(&str, Option<&str>, Option<&str>)> = rows
+            .iter()
+            .map(|r| {
+                (
+                    r.title.as_str(),
+                    r.due_date.as_deref(),
+                    r.priority.as_deref(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            saved,
+            [
+                ("hoover", Some("2026-11-07"), Some("high")),
+                ("bins", Some("2026-11-07"), Some("high"))
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn due_dates_count_from_the_senders_own_today() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let mut ctx = setup(&mut conn).await;
+        // 23:30 UTC on Friday 3 July is already 00:30 on Saturday in London
+        // (summer time, UTC+1), so "today" there is Saturday.
+        ctx.now = "2026-07-03T23:30:00Z".parse().unwrap();
+
+        let reply = typed(&mut conn, &ctx, "+todo bins -d today").await;
+        assert!(
+            reply.into_text().ends_with("📅 Due Sat 4 Jul"),
+            "Saturday on the sender's clock"
+        );
+    }
+
+    #[tokio::test]
+    async fn bad_and_past_dates_add_nothing() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let mut ctx = setup(&mut conn).await;
+        ctx.now = "2026-11-06T12:00:00Z".parse().unwrap();
+
+        let past = typed(&mut conn, &ctx, "+todo bins -d 01-01-2026").await;
+        assert_eq!(
+            past.into_text(),
+            "❓ That date has already passed (Thu 1 Jan 2026)."
+        );
+        let bad = typed(&mut conn, &ctx, "+todo bins -p urgent").await;
+        assert_eq!(
+            bad.into_text(),
+            "❓ Priority can be `high`, `medium` or `low`, not \"urgent\"."
+        );
+        assert!(
+            todos::list_all(&mut conn, ctx.chat_id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn skipping_by_reply_by_number_and_by_name() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let ctx = setup(&mut conn).await;
+        typed(&mut conn, &ctx, "+todo go gym, fix the tap, bins, hoover").await;
+        let Outcome::List { item_ids, .. } = typed(&mut conn, &ctx, "/todo all").await else {
+            panic!("expected a list");
+        };
+        let items: Vec<ListItem> = item_ids
+            .iter()
+            .zip(1..)
+            .map(|(&id, pos)| item(pos, id))
+            .collect();
+
+        // Reply `skip 1`.
+        let reply = run_list_reply(
+            &mut conn,
+            &ctx,
+            &Apis::new(times()),
+            &items,
+            ReplyCommand::Skip(1),
+        )
+        .await
+        .unwrap()
+        .into_text();
+        assert_eq!(
+            reply,
+            "⏭️ Skipped: *go gym*\n□□□□□□□□□□ 0/3 done · 1 skipped"
+        );
+        // Already closed.
+        let again = run_list_reply(
+            &mut conn,
+            &ctx,
+            &Apis::new(times()),
+            &items,
+            ReplyCommand::Skip(1),
+        )
+        .await
+        .unwrap()
+        .into_text();
+        assert!(again.contains("already"), "{again}");
+
+        // `+skip 2` uses the latest list, which the webhook saved; here
+        // there's none saved, so it says how to get one.
+        let reply = typed(&mut conn, &ctx, "+skip 2").await.into_text();
+        assert!(reply.contains("Send /todo, then `+skip 2`"), "{reply}");
+
+        // `+skip tap`, then `+done bins`.
+        let reply = typed(&mut conn, &ctx, "+skip tap").await.into_text();
+        assert_eq!(
+            reply,
+            "⏭️ Skipped: *fix the tap*\n□□□□□□□□□□ 0/2 done · 2 skipped"
+        );
+        typed(&mut conn, &ctx, "+done bins").await;
+
+        // `/todo` shows them: open, then closed in the order closed.
+        let list = typed(&mut conn, &ctx, "/todo all").await.into_text();
+        assert!(list.contains("■■■■■□□□□□ 1/2 done · 2 skipped"), "{list}");
+        assert!(list.contains("⬜ 1. hoover (Bilal)\n"), "{list}");
+        assert!(
+            list.contains("⏭️ 2. ~go gym~ (Bilal) · skipped by Bilal "),
+            "{list}"
+        );
+        assert!(list.contains("✅ 4. ~bins~ (Bilal) · Bilal "), "{list}");
+        assert!(list.contains("removes the ✅ and ⏭️ ones"), "{list}");
+        // In the person view, "by Bilal" is left out: it's his own.
+        let mine = typed(&mut conn, &ctx, "/todo mine").await.into_text();
+        assert!(mine.contains("⏭️ 2. ~go gym~ · skipped "), "{mine}");
+
+        let reply = typed(&mut conn, &ctx, "/todo clear done").await.into_text();
+        assert_eq!(reply, "🧹 Cleared 1 completed and 2 skipped.");
+    }
+
+    #[tokio::test]
+    async fn skip_on_a_shopping_list_says_what_to_do() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let ctx = setup(&mut conn).await;
+        let shop_list = [ListItem {
+            position: 1,
+            item_type: SHOP_ITEM.to_string(),
+            item_id: 1,
+        }];
+        let reply = run_list_reply(
+            &mut conn,
+            &ctx,
+            &Apis::new(times()),
+            &shop_list,
+            ReplyCommand::Skip(1),
+        )
+        .await
+        .unwrap()
+        .into_text();
+        assert!(reply.contains("`skip` is for todos"), "{reply}");
+    }
+
+    #[test]
+    fn due_notes_say_how_soon() {
+        let on = |d: u32, priority| ListedTodo {
+            id: 1,
+            title: "bins".to_string(),
+            assignee: None,
+            closed: None,
+            due: NaiveDate::from_ymd_opt(2026, 11, d),
+            priority,
+        };
+        let today = friday(); // the 6th
+        assert_eq!(due_note(&on(4, None), today), " · ⚠️ overdue (Wed 4 Nov)");
+        assert_eq!(due_note(&on(6, None), today), " · 📅 today");
+        assert_eq!(due_note(&on(7, None), today), " · 📅 tomorrow");
+        assert_eq!(
+            due_note(&on(13, Some(Priority::Medium)), today),
+            " · 📅 Fri 13 Nov · 🟠"
+        );
+        let mut undated = on(1, Some(Priority::High));
+        undated.due = None;
+        assert_eq!(due_note(&undated, today), " · 🔴");
+        undated.priority = None;
+        assert_eq!(due_note(&undated, today), "");
+    }
+
+    #[tokio::test]
+    async fn todo_list_shows_and_sorts_by_due_date() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let mut ctx = setup(&mut conn).await;
+        // Friday 6 November, lunchtime in London.
+        ctx.now = "2026-11-06T12:00:00Z".parse().unwrap();
+
+        typed(&mut conn, &ctx, "+todo hoover").await;
+        typed(&mut conn, &ctx, "+todo passport -d 20-11 -p high").await;
+        typed(&mut conn, &ctx, "+todo dentist -d tmr -p low").await;
+        typed(&mut conn, &ctx, "+todo bins -d today").await;
+        // A command can't add a past date, but a todo becomes overdue as the
+        // days go by: this one was due on Wednesday.
+        let late = Details {
+            due: NaiveDate::from_ymd_opt(2026, 11, 4),
+            priority: Some(Priority::High),
+        };
+        let me = Some(ctx.sender.id);
+        let tax = todos::add(
+            &mut conn,
+            ctx.chat_id,
+            "tax",
+            ctx.sender.id,
+            me,
+            late,
+            ctx.now,
+        )
+        .await
+        .unwrap();
+
+        let Outcome::List { text, item_ids, .. } = typed(&mut conn, &ctx, "/todo all").await else {
+            panic!("expected a list");
+        };
+        assert!(text.contains("⚠️ 1 overdue\n"), "{text}");
+        let lines = "⬜ 1. tax (Bilal) · ⚠️ overdue (Wed 4 Nov) · 🔴\n\
+                     ⬜ 2. bins (Bilal) · 📅 today\n\
+                     ⬜ 3. dentist (Bilal) · 📅 tomorrow · 🟢\n\
+                     ⬜ 4. passport (Bilal) · 📅 Fri 20 Nov · 🔴\n\
+                     ⬜ 5. hoover (Bilal)\n";
+        assert!(text.contains(lines), "{text}");
+        // The numbers saved for replies follow the same order, so `done 1`
+        // is the overdue one.
+        assert_eq!(item_ids[0], tax);
+        let items: Vec<ListItem> = item_ids
+            .iter()
+            .zip(1..)
+            .map(|(&id, pos)| item(pos, id))
+            .collect();
+        let reply = run_list_reply(
+            &mut conn,
+            &ctx,
+            &Apis::new(times()),
+            &items,
+            ReplyCommand::Done(1),
+        )
+        .await
+        .unwrap()
+        .into_text();
+        assert!(reply.starts_with("✅ Done: *tax*"), "{reply}");
+    }
+
+    /// Bilal's todos on Friday 6 November: "tax" was due Wednesday (high
+    /// priority), "bins" is due today, "hoover" has no date, "passport" is
+    /// high priority with no date. Returns the context and the list items
+    /// from `/todo`, as a reply would see them.
+    async fn dated_todos(conn: &mut SqliteConnection) -> (Context, Vec<ListItem>) {
+        let mut ctx = setup(conn).await;
+        ctx.now = "2026-11-06T12:00:00Z".parse().unwrap();
+        let late = Details {
+            due: NaiveDate::from_ymd_opt(2026, 11, 4),
+            priority: Some(Priority::High),
+        };
+        let me = Some(ctx.sender.id);
+        todos::add(conn, ctx.chat_id, "tax", ctx.sender.id, me, late, ctx.now)
+            .await
+            .unwrap();
+        typed(conn, &ctx, "+todo bins -d today").await;
+        typed(conn, &ctx, "+todo hoover").await;
+        typed(conn, &ctx, "+todo passport -p high").await;
+        let Outcome::List { item_ids, .. } = typed(conn, &ctx, "/todo").await else {
+            panic!("expected a list");
+        };
+        let items = item_ids
+            .iter()
+            .zip(1..)
+            .map(|(&id, pos)| item(pos, id))
+            .collect();
+        (ctx, items)
+    }
+
+    #[tokio::test]
+    async fn filtered_lists_keep_the_whole_lists_numbers() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let (ctx, _) = dated_todos(&mut conn).await;
+        // Whole list: 1 tax, 2 bins, 3 passport (high, undated), 4 hoover.
+
+        let overdue = typed(&mut conn, &ctx, "/todo overdue").await.into_text();
+        assert!(
+            overdue.starts_with(
+                "📋 *Overdue* (1)\n\n⬜ 1. tax (Bilal) · ⚠️ overdue (Wed 4 Nov) · 🔴\n"
+            ),
+            "{overdue}"
+        );
+        let due = typed(&mut conn, &ctx, "/todo due").await.into_text();
+        assert!(due.contains("⬜ 1. tax"), "{due}");
+        assert!(due.contains("⬜ 2. bins (Bilal) · 📅 today\n"), "{due}");
+        assert!(!due.contains("hoover"), "{due}");
+        let high = typed(&mut conn, &ctx, "/todo high").await.into_text();
+        assert!(high.contains("*High priority* (2)"), "{high}");
+        assert!(high.contains("⬜ 3. passport (Bilal) · 🔴\n"), "{high}");
+
+        // A filtered list is still a list: replies to it work, and every
+        // todo's id is saved so the numbers match.
+        let Outcome::List { item_ids, .. } = typed(&mut conn, &ctx, "/todo high").await else {
+            panic!("expected a list");
+        };
+        assert_eq!(item_ids.len(), 4);
+
+        // Once it's done, nothing is overdue.
+        typed(&mut conn, &ctx, "+done tax").await;
+        let overdue = typed(&mut conn, &ctx, "/todo overdue").await.into_text();
+        assert_eq!(overdue, "📋 Nothing is overdue. 🎉");
+    }
+
+    #[tokio::test]
+    async fn replies_change_the_due_date_and_priority() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let (ctx, items) = dated_todos(&mut conn).await;
+        let apis = Apis::new(times());
+        let mut change = async |text: &str| {
+            let reply = crate::parser::parse_reply(text).expect("should parse");
+            run_list_reply(&mut conn, &ctx, &apis, &items, reply)
+                .await
+                .unwrap()
+                .into_text()
+        };
+
+        // 4 is hoover (no date, no priority).
+        assert_eq!(
+            change("due 4 mon").await,
+            "📅 *hoover* is now due Mon 9 Nov."
+        );
+        assert_eq!(
+            change("priority 4 low").await,
+            "🟢 *hoover* is now low priority."
+        );
+        assert_eq!(change("due 1 none").await, "📅 *tax* has no due date now.");
+        assert_eq!(
+            change("priority 1 none").await,
+            "*tax* has no priority now."
+        );
+        assert_eq!(
+            change("due 4 01-01-2026").await,
+            "❓ That date has already passed (Thu 1 Jan 2026)."
+        );
+        assert_eq!(
+            change("priority 4 urgent").await,
+            "❓ Priority can be `high`, `medium` or `low`, not \"urgent\"."
+        );
+        assert!(change("due 9 fri").await.contains("only has 4 items"));
+
+        // A closed todo can't be changed.
+        change("done 2").await;
+        assert!(
+            change("due 2 fri")
+                .await
+                .contains("already done, skipped or removed")
+        );
+
+        let saved = todos::list_all(&mut conn, ctx.chat_id).await.unwrap();
+        let hoover = saved.iter().find(|t| t.title == "hoover").unwrap();
+        assert_eq!(hoover.due, NaiveDate::from_ymd_opt(2026, 11, 9));
+        assert_eq!(hoover.priority, Some(Priority::Low));
+        let tax = saved.iter().find(|t| t.title == "tax").unwrap();
+        assert_eq!((tax.due, tax.priority), (None, None));
+    }
+
+    #[tokio::test]
+    async fn changes_are_for_todos_only() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let ctx = setup(&mut conn).await;
+        let shop_list = [ListItem {
+            position: 1,
+            item_type: SHOP_ITEM.to_string(),
+            item_id: 1,
+        }];
+        let reply = run_list_reply(
+            &mut conn,
+            &ctx,
+            &Apis::new(times()),
+            &shop_list,
+            ReplyCommand::SetDue(1, None),
+        )
+        .await
+        .unwrap()
+        .into_text();
+        assert!(reply.contains("not the shopping list"), "{reply}");
     }
 
     #[tokio::test]
@@ -1741,32 +2538,56 @@ mod tests {
             .map(|(&id, pos)| item(pos, id))
             .collect();
 
-        let reply = run_list_reply(&mut conn, &ctx, &items, ReplyCommand::Tick(vec![1, 3]))
-            .await
-            .unwrap()
-            .into_text();
+        let reply = run_list_reply(
+            &mut conn,
+            &ctx,
+            &Apis::new(times()),
+            &items,
+            ReplyCommand::Tick(vec![1, 3]),
+        )
+        .await
+        .unwrap()
+        .into_text();
         assert_eq!(
             reply,
             "✅ Done: *go gym*\n✅ Done: *book dentist*\n■■■■■■■□□□ 2/3 done"
         );
 
         // The numbers still refer to the old list: 2 is "fix the tap".
-        let reply = run_list_reply(&mut conn, &ctx, &items, ReplyCommand::Remove(2))
-            .await
-            .unwrap()
-            .into_text();
+        let reply = run_list_reply(
+            &mut conn,
+            &ctx,
+            &Apis::new(times()),
+            &items,
+            ReplyCommand::Remove(2),
+        )
+        .await
+        .unwrap()
+        .into_text();
         assert_eq!(reply, "🗑️ Removed *fix the tap*");
 
-        let reply = run_list_reply(&mut conn, &ctx, &items, ReplyCommand::Done(1))
-            .await
-            .unwrap()
-            .into_text();
+        let reply = run_list_reply(
+            &mut conn,
+            &ctx,
+            &Apis::new(times()),
+            &items,
+            ReplyCommand::Done(1),
+        )
+        .await
+        .unwrap()
+        .into_text();
         assert!(reply.contains("already ticked off"), "{reply}");
 
-        let reply = run_list_reply(&mut conn, &ctx, &items, ReplyCommand::Done(5))
-            .await
-            .unwrap()
-            .into_text();
+        let reply = run_list_reply(
+            &mut conn,
+            &ctx,
+            &Apis::new(times()),
+            &items,
+            ReplyCommand::Done(5),
+        )
+        .await
+        .unwrap()
+        .into_text();
         assert!(reply.contains("only has 3 items"), "{reply}");
     }
 
@@ -2057,22 +2878,40 @@ Already on the list: milk, Eggs"
         .unwrap();
         let (_, items) = shop_list(&mut conn, &ctx).await;
 
-        let reply = run_list_reply(&mut conn, &ctx, &items, ReplyCommand::Tick(vec![1, 3]))
-            .await
-            .unwrap()
-            .into_text();
+        let reply = run_list_reply(
+            &mut conn,
+            &ctx,
+            &Apis::new(times()),
+            &items,
+            ReplyCommand::Tick(vec![1, 3]),
+        )
+        .await
+        .unwrap()
+        .into_text();
         assert_eq!(reply, "✅ @447700900001 bought *milk*, *bread*");
 
-        let reply = run_list_reply(&mut conn, &ctx, &items, ReplyCommand::Remove(4))
-            .await
-            .unwrap()
-            .into_text();
+        let reply = run_list_reply(
+            &mut conn,
+            &ctx,
+            &Apis::new(times()),
+            &items,
+            ReplyCommand::Remove(4),
+        )
+        .await
+        .unwrap()
+        .into_text();
         assert_eq!(reply, "🗑️ Removed *rice*");
 
-        let reply = run_list_reply(&mut conn, &ctx, &items, ReplyCommand::Done(1))
-            .await
-            .unwrap()
-            .into_text();
+        let reply = run_list_reply(
+            &mut conn,
+            &ctx,
+            &Apis::new(times()),
+            &items,
+            ReplyCommand::Done(1),
+        )
+        .await
+        .unwrap()
+        .into_text();
         assert!(reply.contains("already ticked off"), "{reply}");
 
         // Eggs still to buy first, then milk and bread, bought.

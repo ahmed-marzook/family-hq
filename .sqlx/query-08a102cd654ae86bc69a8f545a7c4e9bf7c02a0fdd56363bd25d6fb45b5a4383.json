@@ -1,0 +1,110 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT t.id, t.title, t.status, t.priority,\n                  t.due_date AS \"due_date: NaiveDate\",\n                  a.display_name AS \"assignee?\",\n                  c.display_name AS \"closed_by?\",\n                  t.closed_at AS \"closed_at?: DateTime<Utc>\"\n           FROM todos t\n           LEFT JOIN users a ON a.id = t.assignee_id\n           LEFT JOIN users c ON c.id = t.closed_by\n           WHERE t.chat_id = ?\n           ORDER BY t.status != 'pending', t.closed_at, t.created_at, t.id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "todos",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "title",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "todos",
+            "name": "title"
+          }
+        }
+      },
+      {
+        "name": "status",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "todos",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "name": "priority",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "todos",
+            "name": "priority"
+          }
+        }
+      },
+      {
+        "name": "due_date: NaiveDate",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "todos",
+            "name": "due_date"
+          }
+        }
+      },
+      {
+        "name": "assignee?",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "display_name"
+          }
+        }
+      },
+      {
+        "name": "closed_by?",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "display_name"
+          }
+        }
+      },
+      {
+        "name": "closed_at?: DateTime<Utc>",
+        "ordinal": 7,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "todos",
+            "name": "closed_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "08a102cd654ae86bc69a8f545a7c4e9bf7c02a0fdd56363bd25d6fb45b5a4383"
+}

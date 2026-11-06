@@ -1,0 +1,35 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT COUNT(*) FILTER (WHERE status = 'completed') AS \"done!: i64\",\n                  COUNT(*) FILTER (WHERE status = 'skipped') AS \"skipped!: i64\",\n                  COUNT(*) AS \"total!: i64\"\n           FROM todos WHERE chat_id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "done!: i64",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "skipped!: i64",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "total!: i64",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "0e010b8193cae38e33e032a12965f4e9877e6deb7f5d5d60a62f4283b1d25ac8"
+}

@@ -10,6 +10,7 @@
 use crate::person::Assignee;
 use crate::prayer::{HANAFI, Prayer, SHAFII};
 use crate::reports::{Delivery, Span};
+use crate::todo_flags::{Due, Flag, FlagError, Priority};
 use crate::weather::When;
 
 /// A command typed as a normal message.
@@ -26,20 +27,32 @@ pub enum BotCommand {
     /// without replying to a list
     GotShop(Got),
     /// `+todo fix the tap`, `+todo @Khadija book dentist`, or several at
-    /// once: `+todo fix the tap, call the school` (one `@name` is for all)
+    /// once: `+todo fix the tap, call the school` (one `@name` is for all).
+    /// Flags at the end are for all of them too: `-d fri -p high`.
     AddTodo {
         titles: Vec<String>,
         /// The parser only ever sets `Assignee::Mentioned` (from `@name`),
         /// or `None` when no name was typed. It can't know who sent the
         /// message, so the webhook replaces `None` with `Assignee::Sender`.
         assignee: Option<Assignee>,
+        /// `-d fri`: as typed. The handler turns it into a date, because
+        /// only it knows what "today" is for the sender.
+        due: Option<Due>,
+        /// `-p high`
+        priority: Option<Priority>,
     },
+    /// A `+todo` whose flags are wrong (`-p urgent`, `-d` with no date).
+    /// Not `None`: the sender clearly meant the bot, so it says what's wrong.
+    BadTodo(FlagError),
     /// `/todo`
     ListTodos(TodoView),
     /// `+done 2`, `+done 1 3` (numbers from the latest `/todo` list) or
     /// `+done gym` (by title): complete todos without replying
     DoneTodo(Got),
-    /// `/todo clear` (everything) or `/todo clear done` (only completed)
+    /// `+skip 2` or `+skip gym`: close todos as "won't be done", like
+    /// `+done` but kept on record as not done
+    SkipTodo(Got),
+    /// `/todo clear` (everything) or `/todo clear done` (only done and skipped)
     ClearTodos { done_only: bool },
     /// `/todo reminders on` (true), `off` (false), or just `/todo reminders`
     /// (`None`, to see which it is): the sender's own, in this chat
@@ -99,6 +112,20 @@ pub enum TodoView {
     Mine,
     /// `/todo Bilal` or `/todo @Bilal`: one person's, by the name as typed.
     Person(String),
+    /// `/todo overdue`, `/todo due`, `/todo high`: only the open todos that
+    /// match, everyone's.
+    Filtered(TodoFilter),
+}
+
+/// Which open todos a filtered `/todo` shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TodoFilter {
+    /// `/todo overdue` (or `late`): due before today.
+    Overdue,
+    /// `/todo due`: any with a due date.
+    Due,
+    /// `/todo high`: high priority.
+    High,
 }
 
 /// What a `/settings` message asks for. Values are only parsed here; the
@@ -182,6 +209,15 @@ pub enum ReplyCommand {
     Done(usize),
     /// `remove 2`
     Remove(usize),
+    /// `skip 2`: a todo that won't be done
+    Skip(usize),
+    /// `due 2 fri` (`Some`), or `due 2 none` (`None`) to take the date off
+    SetDue(usize, Option<Due>),
+    /// `priority 2 high` (`Some`), or `priority 2 none` (`None`)
+    SetPriority(usize, Option<Priority>),
+    /// `due 2 friyay`, `priority 2`: clearly a change, but the value is
+    /// wrong or missing, so the bot says what's wrong
+    BadChange(FlagError),
 }
 
 /// Parses a normal message. `None` means "not for the bot".
@@ -201,6 +237,7 @@ pub fn parse(text: &str) -> Option<BotCommand> {
         "+shop" | "+buy" => parse_items(rest).map(BotCommand::AddShop),
         "+got" | "+bought" => parse_got(rest).map(BotCommand::GotShop),
         "+done" => parse_got(rest).map(BotCommand::DoneTodo),
+        "+skip" => parse_got(rest).map(BotCommand::SkipTodo),
         "+todo" => parse_add_todo(rest),
         "+prayed" => parse_prayed(rest).map(BotCommand::Prayed),
 
@@ -216,6 +253,12 @@ pub fn parse(text: &str) -> Option<BotCommand> {
             "" => Some(BotCommand::ListTodos(TodoView::ByPerson)),
             "all" => Some(BotCommand::ListTodos(TodoView::All)),
             "mine" | "me" => Some(BotCommand::ListTodos(TodoView::Mine)),
+            // Before the name arm below, so these words win over a name.
+            "overdue" | "late" => Some(BotCommand::ListTodos(TodoView::Filtered(
+                TodoFilter::Overdue,
+            ))),
+            "due" => Some(BotCommand::ListTodos(TodoView::Filtered(TodoFilter::Due))),
+            "high" => Some(BotCommand::ListTodos(TodoView::Filtered(TodoFilter::High))),
             "clear" => Some(BotCommand::ClearTodos { done_only: false }),
             "clear done" => Some(BotCommand::ClearTodos { done_only: true }),
             "reminders" | "reminder" => Some(BotCommand::TodoReminders(None)),
@@ -358,6 +401,21 @@ pub fn parse_reply(text: &str) -> Option<ReplyCommand> {
         [action, number] if action.eq_ignore_ascii_case("remove") => {
             parse_item_number(number).map(ReplyCommand::Remove)
         }
+        [action, number] if action.eq_ignore_ascii_case("skip") => {
+            parse_item_number(number).map(ReplyCommand::Skip)
+        }
+        // `due 2 fri`, `priority 2 high`, or with the value missing.
+        // `rest @ ..` binds whatever words follow the number, as a slice
+        // (plain `..` would match them without naming them).
+        [action, number, rest @ ..] if change_kind(action).is_some() => {
+            // `?`: "due in 2 days" has no list number, so it's just chat.
+            let n = parse_item_number(number)?;
+            // Several words ("next fri") are kept together, so the reply
+            // can say what it didn't understand.
+            let value = rest.join(" ");
+            let value = (!value.is_empty()).then_some(value.as_str());
+            change_reply(change_kind(action)?, n, value)
+        }
         [] => None,
         numbers => {
             // Every word must be a number. Collecting an iterator of
@@ -373,6 +431,36 @@ pub fn parse_reply(text: &str) -> Option<ReplyCommand> {
             Some(ReplyCommand::Tick(numbers))
         }
     }
+}
+
+/// Which flag a reply word changes: `due` or `priority` (`prio`).
+fn change_kind(word: &str) -> Option<Flag> {
+    match word.to_lowercase().as_str() {
+        "due" => Some(Flag::Due),
+        "priority" | "prio" => Some(Flag::Priority),
+        _ => None,
+    }
+}
+
+/// The reply for `due 2 <value>` / `priority 2 <value>`. `none` (or
+/// `clear`, `off`) takes it off; a missing or bad value is `BadChange`.
+fn change_reply(kind: Flag, n: usize, value: Option<&str>) -> Option<ReplyCommand> {
+    let cleared =
+        value.is_some_and(|v| matches!(v.to_lowercase().as_str(), "none" | "clear" | "off"));
+    Some(match (kind, value) {
+        (Flag::Due, _) if cleared => ReplyCommand::SetDue(n, None),
+        (Flag::Priority, _) if cleared => ReplyCommand::SetPriority(n, None),
+        (Flag::Due, None) => ReplyCommand::BadChange(FlagError::MissingDate),
+        (Flag::Priority, None) => ReplyCommand::BadChange(FlagError::MissingPriority),
+        (Flag::Due, Some(v)) => match Due::parse(v) {
+            Some(due) => ReplyCommand::SetDue(n, Some(due)),
+            None => ReplyCommand::BadChange(FlagError::BadDate(v.to_string())),
+        },
+        (Flag::Priority, Some(v)) => match Priority::parse(v) {
+            Some(p) => ReplyCommand::SetPriority(n, Some(p)),
+            None => ReplyCommand::BadChange(FlagError::BadPriority(v.to_string())),
+        },
+    })
 }
 
 /// "1 3" → numbers; "milk, eggs" → names. Numbers only when *every* word
@@ -410,7 +498,8 @@ fn parse_items(rest: &str) -> Option<Vec<String>> {
 /// "@Khadija book dentist" → assignee `Mentioned("Khadija")`, title "book dentist".
 /// "fix the tap" → no assignee. "fix the tap, call the school" → two todos
 /// (split like `+shop`'s items; an `@name` first is for all of them).
-/// `None` if there's no title or no name.
+/// "bins -d fri -p high" → a due date and priority (also for all of them).
+/// `None` if there's no title or no name; `BadTodo` if the flags are wrong.
 fn parse_add_todo(rest: &str) -> Option<BotCommand> {
     let (assignee, title) = match rest.strip_prefix('@') {
         Some(after_at) => {
@@ -425,9 +514,99 @@ fn parse_add_todo(rest: &str) -> Option<BotCommand> {
         None => (None, rest),
     };
 
-    // `?`: no titles at all (empty, or only commas) is `None`.
+    let (title, flags) = split_flags(title);
+    // `?`: no titles at all (empty, or only commas) is `None`, even with
+    // flags: "+todo -d fri" isn't a todo.
     let titles = parse_items(title)?;
-    Some(BotCommand::AddTodo { titles, assignee })
+    match parse_flags(flags) {
+        Ok((due, priority)) => Some(BotCommand::AddTodo {
+            titles,
+            assignee,
+            due,
+            priority,
+        }),
+        Err(err) => Some(BotCommand::BadTodo(err)),
+    }
+}
+
+/// "fix the tap, bins -d fri -p high" → ("fix the tap, bins ", "-d fri -p high").
+/// Everything from the first flag on is flags; with no flag, it's all title.
+///
+/// `split_inclusive` keeps the whitespace on the end of each piece
+/// ("bins " rather than "bins"), so adding up the pieces' lengths gives
+/// where each word starts. The title keeps its commas and new lines, which
+/// is what separates several todos.
+fn split_flags(text: &str) -> (&str, &str) {
+    let mut start = 0;
+    for piece in text.split_inclusive(char::is_whitespace) {
+        if flag_kind(piece.trim_end()).is_some() {
+            return (&text[..start], &text[start..]);
+        }
+        start += piece.len();
+    }
+    (text, "")
+}
+
+/// Which flag a word is: `-d`, `--due`, `--by` or `-p`, `--priority`.
+/// Phones often turn a typed `--` into a dash (— or –), so those count too.
+/// `None` for any other word, including `-` alone and "t-shirt".
+fn flag_kind(word: &str) -> Option<Flag> {
+    let word = word.to_lowercase();
+    // `or_else` only tries the next prefix if the one before didn't match.
+    // "--due" must be tried before "-", or it would leave "-due".
+    let name = word
+        .strip_prefix("--")
+        .or_else(|| word.strip_prefix('—'))
+        .or_else(|| word.strip_prefix('–'))
+        .or_else(|| word.strip_prefix('-'))?;
+    match name {
+        "d" | "due" | "by" => Some(Flag::Due),
+        "p" | "priority" | "prio" => Some(Flag::Priority),
+        _ => None,
+    }
+}
+
+/// "-d fri -p high" → (Some(fri), Some(High)). Each flag needs a value
+/// after it, at most once each, in either order; nothing else is allowed.
+fn parse_flags(text: &str) -> Result<(Option<Due>, Option<Priority>), FlagError> {
+    let mut due = None;
+    let mut priority = None;
+    let mut words = text.split_whitespace();
+
+    // `while let` keeps going as long as `next()` gives `Some`. Calling
+    // `words.next()` again inside the loop takes the flag's value, so the
+    // loop skips over it.
+    while let Some(word) = words.next() {
+        let kind = flag_kind(word).ok_or_else(|| FlagError::NotAFlag(word.to_string()))?;
+        // The value: the next word, unless it's another flag ("-d -p high"),
+        // without a comma or full stop on the end ("-d fri.").
+        let value = words
+            .next()
+            .filter(|value| flag_kind(value).is_none())
+            .map(|value| value.trim_end_matches(['.', ',', '!']));
+
+        match kind {
+            Flag::Due => {
+                if due.is_some() {
+                    return Err(FlagError::Twice(Flag::Due));
+                }
+                let value = value.ok_or(FlagError::MissingDate)?;
+                let parsed =
+                    Due::parse(value).ok_or_else(|| FlagError::BadDate(value.to_string()))?;
+                due = Some(parsed);
+            }
+            Flag::Priority => {
+                if priority.is_some() {
+                    return Err(FlagError::Twice(Flag::Priority));
+                }
+                let value = value.ok_or(FlagError::MissingPriority)?;
+                let parsed = Priority::parse(value)
+                    .ok_or_else(|| FlagError::BadPriority(value.to_string()))?;
+                priority = Some(parsed);
+            }
+        }
+    }
+    Ok((due, priority))
 }
 
 /// "asr" → [Asr], "fajr, dhuhr" → [Fajr, Dhuhr], "all" → all five, with
@@ -548,10 +727,178 @@ mod tests {
     }
 
     fn todos(titles: &[&str], mentioned: Option<&str>) -> Option<BotCommand> {
+        flagged(titles, mentioned, None, None)
+    }
+
+    /// A `+todo` with flags.
+    fn flagged(
+        titles: &[&str],
+        mentioned: Option<&str>,
+        due: Option<Due>,
+        priority: Option<Priority>,
+    ) -> Option<BotCommand> {
         Some(BotCommand::AddTodo {
             titles: titles.iter().map(|t| t.to_string()).collect(),
             assignee: mentioned.map(|name| Assignee::Mentioned(name.to_string())),
+            due,
+            priority,
         })
+    }
+
+    fn bad(err: FlagError) -> Option<BotCommand> {
+        Some(BotCommand::BadTodo(err))
+    }
+
+    // ---- +todo flags ----
+
+    #[test]
+    fn todo_due_date_flag() {
+        use chrono::Weekday;
+        let fri = Some(Due::Weekday(Weekday::Fri));
+        let passport = |due| flagged(&["renew passport"], None, due, None);
+        assert_eq!(
+            parse("+todo renew passport -d 15-03"),
+            passport(Some(Due::DayMonth { day: 15, month: 3 }))
+        );
+        assert_eq!(parse("+todo renew passport --due fri"), passport(fri));
+        assert_eq!(
+            parse("+todo renew passport --by tmr"),
+            passport(Some(Due::Tomorrow))
+        );
+        assert_eq!(
+            parse("+todo renew passport -d today"),
+            passport(Some(Due::Today))
+        );
+        assert_eq!(
+            parse("+todo renew passport -D FRI"),
+            passport(fri),
+            "any case"
+        );
+        assert_eq!(
+            parse("+todo renew passport -d fri."),
+            passport(fri),
+            "a full stop"
+        );
+        assert_eq!(
+            parse("+todo renew passport -d 15/03/2027"),
+            passport(Some(Due::Date(
+                chrono::NaiveDate::from_ymd_opt(2027, 3, 15).unwrap()
+            )))
+        );
+    }
+
+    #[test]
+    fn phones_turn_double_dashes_into_one_long_dash() {
+        let fri = Some(Due::Weekday(chrono::Weekday::Fri));
+        let bins = flagged(&["bins"], None, fri, None);
+        assert_eq!(parse("+todo bins —due fri"), bins, "em dash");
+        assert_eq!(parse("+todo bins –due fri"), bins, "en dash");
+    }
+
+    #[test]
+    fn todo_priority_flag() {
+        let bins = |p| flagged(&["bins"], None, None, Some(p));
+        assert_eq!(parse("+todo bins -p high"), bins(Priority::High));
+        assert_eq!(parse("+todo bins --priority h"), bins(Priority::High));
+        assert_eq!(parse("+todo bins -p Med"), bins(Priority::Medium));
+        assert_eq!(parse("+todo bins -p low"), bins(Priority::Low));
+    }
+
+    #[test]
+    fn todo_with_both_flags_and_a_name() {
+        let expected = flagged(
+            &["book dentist"],
+            Some("Khadija"),
+            Some(Due::Weekday(chrono::Weekday::Mon)),
+            Some(Priority::High),
+        );
+        assert_eq!(parse("+t @Khadija book dentist -d mon -p high"), expected);
+        assert_eq!(
+            parse("+t @Khadija book dentist -p high -d mon"),
+            expected,
+            "either order"
+        );
+    }
+
+    #[test]
+    fn flags_are_for_every_todo_in_the_message() {
+        let fri = Some(Due::Weekday(chrono::Weekday::Fri));
+        let low = Some(Priority::Low);
+        assert_eq!(
+            parse("+todo hoover, bins, and mop -d fri -p low"),
+            flagged(&["hoover", "bins", "mop"], None, fri, low)
+        );
+        assert_eq!(
+            parse("+t @Khadija hoover\nbins\n-d fri"),
+            flagged(&["hoover", "bins"], Some("Khadija"), fri, None),
+            "new lines, flags on their own line"
+        );
+    }
+
+    #[test]
+    fn dashes_in_titles_are_not_flags() {
+        assert_eq!(parse("+todo buy a t-shirt"), todo("buy a t-shirt", None));
+        assert_eq!(parse("+todo call mum - dad"), todo("call mum - dad", None));
+        assert_eq!(parse("+todo watch -dune"), todo("watch -dune", None));
+        assert_eq!(parse("+todo pay -£5 refund"), todo("pay -£5 refund", None));
+    }
+
+    #[test]
+    fn flags_without_a_title_is_not_a_todo() {
+        assert_eq!(parse("+todo -d fri"), None);
+        assert_eq!(parse("+todo @Khadija -p high"), None);
+    }
+
+    #[test]
+    fn bad_todo_flags_say_what_is_wrong() {
+        assert_eq!(parse("+todo bins -d"), bad(FlagError::MissingDate));
+        assert_eq!(parse("+todo bins -d -p high"), bad(FlagError::MissingDate));
+        assert_eq!(parse("+todo bins -p"), bad(FlagError::MissingPriority));
+        assert_eq!(
+            parse("+todo bins -p urgent"),
+            bad(FlagError::BadPriority("urgent".to_string()))
+        );
+        assert_eq!(
+            parse("+todo bins -d friyay"),
+            bad(FlagError::BadDate("friyay".to_string()))
+        );
+        assert_eq!(
+            parse("+todo bins -d 31-13"),
+            bad(FlagError::BadDate("31-13".to_string()))
+        );
+        assert_eq!(
+            parse("+todo bins -d fri -d sat"),
+            bad(FlagError::Twice(Flag::Due))
+        );
+        assert_eq!(
+            parse("+todo bins -p high --priority low"),
+            bad(FlagError::Twice(Flag::Priority))
+        );
+        // Anything after the flags that isn't a flag.
+        assert_eq!(
+            parse("+todo bins -d fri please"),
+            bad(FlagError::NotAFlag("please".to_string()))
+        );
+        // Flags in the middle: the todos after them would be lost.
+        assert_eq!(
+            parse("+todo hoover -d fri, bins"),
+            bad(FlagError::NotAFlag("bins".to_string()))
+        );
+    }
+
+    // ---- +skip ----
+
+    #[test]
+    fn skip_todos() {
+        assert_eq!(
+            parse("+skip 2"),
+            Some(BotCommand::SkipTodo(Got::Numbers(vec![2])))
+        );
+        assert_eq!(
+            parse("+skip go gym"),
+            Some(BotCommand::SkipTodo(Got::Names(vec!["go gym".to_string()])))
+        );
+        assert_eq!(parse("+skip"), None);
     }
 
     #[test]
@@ -933,6 +1280,13 @@ mod tests {
             parse("/todo clear"),
             Some(BotCommand::ClearTodos { done_only: false })
         );
+
+        let filtered = |f| Some(TodoView::Filtered(f));
+        assert_eq!(view("/todo overdue"), filtered(TodoFilter::Overdue));
+        assert_eq!(view("/t late"), filtered(TodoFilter::Overdue));
+        assert_eq!(view("/todo due"), filtered(TodoFilter::Due));
+        assert_eq!(view("/todo HIGH"), filtered(TodoFilter::High));
+        assert_eq!(view("/todo due soon"), None, "two words isn't a name");
     }
 
     #[test]
@@ -1164,12 +1518,68 @@ mod tests {
         assert_eq!(parse_reply("done 2"), Some(ReplyCommand::Done(2)));
         assert_eq!(parse_reply("Done 2"), Some(ReplyCommand::Done(2)));
         assert_eq!(parse_reply("remove 2"), Some(ReplyCommand::Remove(2)));
+        assert_eq!(parse_reply("skip 2"), Some(ReplyCommand::Skip(2)));
+        assert_eq!(parse_reply("Skip 3"), Some(ReplyCommand::Skip(3)));
+    }
+
+    #[test]
+    fn reply_changes_due_date_and_priority() {
+        use chrono::Weekday;
+        let due = |n, d| Some(ReplyCommand::SetDue(n, d));
+        assert_eq!(
+            parse_reply("due 2 fri"),
+            due(2, Some(Due::Weekday(Weekday::Fri)))
+        );
+        assert_eq!(parse_reply("Due 1 TMR"), due(1, Some(Due::Tomorrow)));
+        assert_eq!(
+            parse_reply("due 3 15/03"),
+            due(3, Some(Due::DayMonth { day: 15, month: 3 }))
+        );
+        assert_eq!(parse_reply("due 2 none"), due(2, None));
+        assert_eq!(parse_reply("due 2 clear"), due(2, None));
+
+        let priority = |n, p| Some(ReplyCommand::SetPriority(n, p));
+        assert_eq!(
+            parse_reply("priority 2 high"),
+            priority(2, Some(Priority::High))
+        );
+        assert_eq!(parse_reply("prio 4 l"), priority(4, Some(Priority::Low)));
+        assert_eq!(parse_reply("priority 2 off"), priority(2, None));
+    }
+
+    #[test]
+    fn reply_changes_with_a_bad_value_say_so() {
+        let bad = |e| Some(ReplyCommand::BadChange(e));
+        assert_eq!(parse_reply("due 2"), bad(FlagError::MissingDate));
+        assert_eq!(parse_reply("priority 2"), bad(FlagError::MissingPriority));
+        assert_eq!(
+            parse_reply("due 2 friyay"),
+            bad(FlagError::BadDate("friyay".to_string()))
+        );
+        assert_eq!(
+            parse_reply("due 2 next fri"),
+            bad(FlagError::BadDate("next fri".to_string()))
+        );
+        assert_eq!(
+            parse_reply("priority 1 urgent"),
+            bad(FlagError::BadPriority("urgent".to_string()))
+        );
+    }
+
+    #[test]
+    fn chat_that_starts_with_due_is_not_a_change() {
+        // No list number after the word: an ordinary reply.
+        assert_eq!(parse_reply("due in 2 days"), None);
+        assert_eq!(parse_reply("due tomorrow"), None);
+        assert_eq!(parse_reply("priority is the tap"), None);
+        assert_eq!(parse_reply("due 0 fri"), None, "lists start at 1");
     }
 
     #[test]
     fn reply_that_is_not_a_list_action_is_none() {
         for text in [
             "", "thanks", "1 apple", "0", "-1", "done", "done 0", "done two", "done 2 3", "remove",
+            "skip", "skip 0", "skip it",
         ] {
             assert_eq!(
                 parse_reply(text),

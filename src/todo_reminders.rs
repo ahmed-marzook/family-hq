@@ -58,7 +58,7 @@ pub fn open_for<'a>(
 ) -> Vec<(usize, &'a ListedTodo)> {
     (1..)
         .zip(items)
-        .filter(|(_, todo)| todo.done.is_none())
+        .filter(|(_, todo)| todo.closed.is_none())
         .filter(|(_, todo)| match todo.assignee.as_deref() {
             Some(assignee) => assignee.eq_ignore_ascii_case(name),
             None => is_dm,
@@ -169,7 +169,7 @@ async fn check_subscriber(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::repo::todos::Completion;
+    use crate::repo::todos::Closed;
 
     fn utc(s: &str) -> DateTime<Utc> {
         s.parse().unwrap()
@@ -209,10 +209,13 @@ mod tests {
             id: 1,
             title: title.to_string(),
             assignee: assignee.map(str::to_string),
-            done: done.then(|| Completion {
+            closed: done.then(|| Closed {
                 by: "Bilal".to_string(),
                 at: utc("2026-11-02T08:00:00Z"),
+                skipped: false,
             }),
+            due: None,
+            priority: None,
         }
     }
 

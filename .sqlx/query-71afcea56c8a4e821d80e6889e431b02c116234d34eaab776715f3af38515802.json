@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM todos WHERE chat_id = ? AND status != 'pending'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "71afcea56c8a4e821d80e6889e431b02c116234d34eaab776715f3af38515802"
+}

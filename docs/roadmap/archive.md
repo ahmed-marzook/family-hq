@@ -184,6 +184,70 @@ All of these are released and tested:
 - **Prayer times, reminders and `/weather`**, from Phases 2 and 4 (see the
   notes there).
 
+### Stage 1.7: Todo due dates, priority flags and skipping ✅
+
+Due dates and priorities for WhatsApp todos, and skipping a todo that won't
+be done. The command style follows the old CLI MVP, but its code is out of
+date and doesn't fit this program, so this was built fresh, not ported.
+
+Built (2026-11-06):
+
+- Flags at the end, for every todo in the message (`src/todo_flags.rs`,
+  `parser.rs`):
+  - `+todo renew passport -d 15-03` / `--due fri` / `--by tmr`
+    (`dd-mm-yyyy`, `dd-mm`, `/` too, `today`, `tmr`, weekday names; a
+    weekday is the next one, or today if it's that day)
+  - `-p high` / `--priority h` (`high`, `medium`, `low`)
+  - Both: `+t @Khadija book dentist -d mon -p high`;
+    several: `+todo hoover, bins -d sat`
+  - A phone's `—` (from a typed `--`) works too.
+  - Bad flags get a ❓ reply saying what's wrong (`BotCommand::BadTodo`),
+    not silence. Flags must come last: anything after them is an error.
+- The parser keeps the date as typed (`Due`); the handler resolves it
+  against the **sender's own today** (their timezone). A past date is an
+  error. The "Added" reply shows `📅 Due Sat 7 Nov · 🔴 High priority`.
+- Skipping (at the owner's request): reply `skip 2`, or `+skip 2` /
+  `+skip gym`. Status `skipped`, with who and when. `/todo` shows
+  `⏭️ 2. ~go gym~ · skipped by Bilal 14:05`; the progress bar leaves
+  skipped todos out of the total and adds "· 1 skipped". `/todo clear done`
+  removes them too. The admin dashboard shows "Skipped by …".
+- Migration `0009` rebuilds `todos` (a CHECK can't be changed in place):
+  `status` allows `skipped`; `completed_by`/`completed_at` became
+  `closed_by`/`closed_at`; new `due_date` (`date(due_date, '+0 days') IS
+  due_date`, which also rejects 30 February) and `priority`
+  (`CHECK IN (...)`). The AUTOINCREMENT counter is carried over so old
+  list replies can't hit a reused id.
+- `/todo` shows the due date and priority on each open todo
+  (`· 📅 Fri 13 Nov · 🔴`, `📅 today` / `tomorrow`, `⚠️ overdue (Wed 4 Nov)`
+  when late, against the reader's own today) and a "⚠️ 2 overdue" line
+  under the progress bar. Open todos are sorted in `todos::list_all`
+  (`sort_for_list`, a stable sort on a tuple key): soonest due first (so
+  overdue first), undated last, then high → medium/none → low, then
+  oldest. The numbers, `item_ids` and todo reminders all follow that
+  order.
+- Filters: `/todo overdue` (or `late`), `/todo due`, `/todo high`. Only the
+  open todos that match, everyone's, keeping their numbers from the whole
+  list, so replies to a filtered list work like any other.
+- Changes by replying to a `/todo` list: `due 2 fri`, `due 2 none`,
+  `priority 2 high`, `priority 2 none` (`clear` / `off` work too). Only
+  open todos can be changed. A bad or missing value gets a ❓ reply
+  (`ReplyCommand::BadChange`); `due in 2 days` (no list number) is just
+  chat. `run_list_reply` now takes `&Apis`, for the sender's today.
+
+New concepts: parsing optional flags out of free text, rebuilding a SQLite
+table in a migration, `Option::transpose`, sorting with tuple keys, slice
+patterns with `rest @ ..`.
+
+Done when:
+
+- [x] `+todo … -d fri -p high` saves both, and `/todo` shows them
+- [x] Overdue todos come first and are marked
+- [x] `due 2 …` / `priority 2 …` replies change them
+- [x] The parser has tests for every flag and date form, including bad
+      ones (`-d`, `-p urgent`, a past date)
+- [x] A todo can be skipped by reply, number or name, and `/todo` shows it
+      as skipped, apart from the done ones
+
 ### Stage 1.9: Clearing data nobody uses ✅ (0.12.0; on by default: `INACTIVE_DAYS=14`)
 
 After `INACTIVE_DAYS` without using the bot, a person's or group's data is

@@ -423,12 +423,28 @@ mod tests {
             .await
             .unwrap();
 
-        let tap = todos::add(&mut conn, group, "fix the tap", bilal.id, None, now)
-            .await
-            .unwrap();
-        todos::add(&mut conn, group, "bins", bilal.id, None, now)
-            .await
-            .unwrap();
+        let tap = todos::add(
+            &mut conn,
+            group,
+            "fix the tap",
+            bilal.id,
+            None,
+            Default::default(),
+            now,
+        )
+        .await
+        .unwrap();
+        todos::add(
+            &mut conn,
+            group,
+            "bins",
+            bilal.id,
+            None,
+            Default::default(),
+            now,
+        )
+        .await
+        .unwrap();
         todos::complete(&mut conn, tap, group, bilal.id, now)
             .await
             .unwrap();
@@ -527,9 +543,17 @@ mod tests {
         let dm = chats::find_or_create(&mut conn, &bilal.wa_jid, Some(bilal.id), now)
             .await
             .unwrap();
-        todos::add(&mut conn, family, "bins", bilal.id, None, now)
-            .await
-            .unwrap();
+        todos::add(
+            &mut conn,
+            family,
+            "bins",
+            bilal.id,
+            None,
+            Default::default(),
+            now,
+        )
+        .await
+        .unwrap();
         shop::add(&mut conn, family, "milk", bilal.id, now)
             .await
             .unwrap();

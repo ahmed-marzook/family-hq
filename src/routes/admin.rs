@@ -238,8 +238,11 @@ struct TodoView {
     id: i64,
     title: String,
     assignee: Option<String>,
+    /// Who closed it and when: ticked off, or skipped if `skipped`.
     done_by: Option<String>,
     done_at: Option<DateTime<Utc>>,
+    /// Closed as "won't be done" rather than done.
+    skipped: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -338,13 +341,16 @@ pub async fn group_todos(
         todos: todos
             .into_iter()
             .map(|t| TodoView {
+                // Before `title` and `assignee` are moved out of `t`: a
+                // method call needs the whole `t`.
+                skipped: t.is_skipped(),
                 id: t.id,
                 title: t.title,
                 assignee: t.assignee,
-                // `as_ref` borrows inside the `Option`, so `t.done` can be
+                // `as_ref` borrows inside the `Option`, so `t.closed` can be
                 // read twice without being moved out.
-                done_by: t.done.as_ref().map(|d| d.by.clone()),
-                done_at: t.done.as_ref().map(|d| d.at),
+                done_by: t.closed.as_ref().map(|d| d.by.clone()),
+                done_at: t.closed.as_ref().map(|d| d.at),
             })
             .collect(),
     }))
@@ -613,13 +619,22 @@ mod tests {
             "fix the tap",
             bilal.id,
             Some(khadija.id),
+            Default::default(),
             now,
         )
         .await
         .unwrap();
-        todos::add(&mut conn, group, "bins", bilal.id, Some(bilal.id), now)
-            .await
-            .unwrap();
+        todos::add(
+            &mut conn,
+            group,
+            "bins",
+            bilal.id,
+            Some(bilal.id),
+            Default::default(),
+            now,
+        )
+        .await
+        .unwrap();
         todos::complete(&mut conn, tap, group, khadija.id, now)
             .await
             .unwrap();
@@ -634,6 +649,7 @@ mod tests {
             "SECRET dentist",
             bilal.id,
             Some(bilal.id),
+            Default::default(),
             now,
         )
         .await
@@ -709,6 +725,7 @@ mod tests {
         assert_eq!(list[1]["title"], "fix the tap");
         assert_eq!(list[1]["assignee"], "Khadija");
         assert_eq!(list[1]["done_by"], "Khadija");
+        assert_eq!(list[1]["skipped"], false);
         assert!(list[1]["done_at"].is_string());
 
         let (status, body) = get(format!("{server}/api/chats/{group}/shop")).await;

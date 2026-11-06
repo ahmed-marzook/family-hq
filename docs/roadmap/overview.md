@@ -13,7 +13,7 @@ unticked ones aren't yet.
 
 | Phase                           | What it delivers                                                      | Status                                                                                             |
 | ------------------------------- | --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| **1. Todo & Shop**              | Shared shopping list and todos, driven from WhatsApp                  | Done and in daily use; two-week family test passed. Next: due dates                                |
+| **1. Todo & Shop**              | Shared shopping list and todos, driven from WhatsApp                  | Done and in daily use; two-week family test passed. Due dates, priorities and skipping done (1.7)                               |
 | **2. Reminders & Prayer Coach** | `+remind`, ntfy pushes, prayer windows, escalation, reflections       | Prayer reminders done early; habits brought forward (Stage 2.5, H1–H6); `+remind` planned          |
 | **3. Dashboard**                | React web app served by the Rust binary                               | Later                                                                                              |
 | **4. AI & Extras**              | Weekly coaching, natural language, weather, calendars, Home Assistant | `/weather` and per-person timezones done early                                                     |
@@ -67,7 +67,7 @@ new file. In short:
 | `chat_members`       | Who is in which group, so `@name` only matches people in that group                                                    |
 | `chat_settings`      | Per-chat settings: timezone, city and its coordinates (`0003`), prayer method/school/reminder timing, reminders on/off |
 | `shopping_items`     | Items on a chat's list: `chat_id`, `name`, `added_by`, `bought_by` + `bought_at`                                       |
-| `todos`              | Todos on a chat's list: `chat_id`, `title`, `created_by`, `assignee_id`, `status`, `completed_by` + `completed_at`     |
+| `todos`              | Todos on a chat's list: `chat_id`, `title`, `created_by`, `assignee_id`, `status` (pending, completed, skipped), `closed_by` + `closed_at`, `due_date`, `priority` (`0009`) |
 | `prayer_reminders`   | Each prayer reminder sent, per chat, day, prayer, kind (start/ending) and place (`0002`)                               |
 | `prayer_log`         | Who prayed what, per person per day                                                                                    |
 | `processed_messages` | WhatsApp message IDs already handled, so webhook retries can't add things twice                                        |

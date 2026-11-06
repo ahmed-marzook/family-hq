@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "UPDATE todos\n         SET status = 'completed', completed_by = ?, completed_at = ?\n         WHERE id = ? AND chat_id = ? AND status = 'pending'\n         RETURNING title",
+  "query": "UPDATE todos SET due_date = ?\n         WHERE id = ? AND chat_id = ? AND status = 'pending'\n         RETURNING title",
   "describe": {
     "columns": [
       {
@@ -16,11 +16,11 @@
       }
     ],
     "parameters": {
-      "Right": 4
+      "Right": 3
     },
     "nullable": [
       false
     ]
   },
-  "hash": "3d902a9bd845f88da6a5d8b2c27ed01f88f6b1675780fc6ead516c2ce9e67924"
+  "hash": "975b1730044288b6ceaa4d407bf72b8ab55c9d6cda6f35631977a99821c42225"
 }

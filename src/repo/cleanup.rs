@@ -274,7 +274,7 @@ pub async fn delete_if_unnamed(
 ) -> Result<bool, sqlx::Error> {
     let named = sqlx::query_scalar!(
         r#"SELECT EXISTS(SELECT 1 FROM todos
-                         WHERE created_by = ?1 OR assignee_id = ?1 OR completed_by = ?1)
+                         WHERE created_by = ?1 OR assignee_id = ?1 OR closed_by = ?1)
                OR EXISTS(SELECT 1 FROM shopping_items
                          WHERE added_by = ?1 OR bought_by = ?1) AS "named!: bool""#,
         user_id
@@ -338,9 +338,17 @@ mod tests {
         }
 
         // Bilal's private things.
-        todos::add(conn, dm, "dentist", bilal, Some(bilal), now)
-            .await
-            .unwrap();
+        todos::add(
+            conn,
+            dm,
+            "dentist",
+            bilal,
+            Some(bilal),
+            Default::default(),
+            now,
+        )
+        .await
+        .unwrap();
         shop::add(conn, dm, "gift", bilal, now).await.unwrap();
         let home = Coordinates {
             latitude: 51.1,
@@ -384,9 +392,17 @@ mod tests {
             record(conn, &row).await.unwrap();
         }
         // Khadija's group todo, which must survive.
-        todos::add(conn, group, "bins", khadija, Some(khadija), now)
-            .await
-            .unwrap();
+        todos::add(
+            conn,
+            group,
+            "bins",
+            khadija,
+            Some(khadija),
+            Default::default(),
+            now,
+        )
+        .await
+        .unwrap();
         (bilal, khadija, group, dm)
     }
 
@@ -451,9 +467,17 @@ mod tests {
         let mut conn = pool.acquire().await.unwrap();
         let now = Utc::now();
         let (bilal, _, group, _) = seed(&mut conn, now).await;
-        let tap = todos::add(&mut conn, group, "fix the tap", bilal, None, now)
-            .await
-            .unwrap();
+        let tap = todos::add(
+            &mut conn,
+            group,
+            "fix the tap",
+            bilal,
+            None,
+            Default::default(),
+            now,
+        )
+        .await
+        .unwrap();
 
         let cleared = clear(&mut conn, bilal, now).await.unwrap();
         assert_eq!(

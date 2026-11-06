@@ -14,8 +14,9 @@ in features from later phases (ntfy, React, AI, and the rest of the
 reminder/prayer work) while Phase 1 (todo and shop) is still in progress.
 Exception, at the owner's request: basic prayer times, reminders and
 tracking were brought forward and already exist (see the note at the top
-of `docs/roadmap/reminders-prayer.md`), and so were habits and group goals
-(Stage 2.5, built as H1–H6). The admin dashboard (React, in `web/`) is also
+of `docs/roadmap/reminders-prayer.md`). Habits and group goals (Stage 2.5,
+H1–H6) were brought forward too, but are planned only and not started.
+The admin dashboard (React, in `web/`) is also
 at the owner's request, and has its own file in the roadmap. It isn't the
 family-facing dashboard in Phase 3, which is still later.
 

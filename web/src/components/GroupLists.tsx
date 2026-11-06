@@ -56,7 +56,7 @@ function Todos({ groupId }: { groupId: number }) {
     <ul className={listClass}>
       {data.todos.map((todo) => (
         <li key={todo.id} className="flex items-start gap-2">
-          <Tick done={todo.done_at !== null} />
+          <Tick done={todo.done_at !== null && !todo.skipped} />
           <span>
             <span className={todo.done_at ? "text-stone-500 line-through" : ""}>
               {todo.title}
@@ -66,7 +66,8 @@ function Todos({ groupId }: { groupId: number }) {
             )}
             {todo.done_at && (
               <span className="block text-xs text-stone-500">
-                Done by {todo.done_by}, {dateTime(todo.done_at, data.group.timezone)}
+                {todo.skipped ? "Skipped" : "Done"} by {todo.done_by},{" "}
+                {dateTime(todo.done_at, data.group.timezone)}
               </span>
             )}
           </span>

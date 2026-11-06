@@ -317,7 +317,7 @@ async fn handle_message(
         }
         Action::ListReply(items, reply) => {
             debug!(?reply, "list reply");
-            handlers::run_list_reply(&mut tx, &ctx, &items, reply).await
+            handlers::run_list_reply(&mut tx, &ctx, &state.apis, &items, reply).await
         }
     };
     // `try_from` because `as_millis` is a u128; anything that doesn't fit
@@ -560,9 +560,13 @@ fn assign_to_sender(command: BotCommand, sender: Person) -> BotCommand {
         BotCommand::AddTodo {
             titles,
             assignee: None,
+            due,
+            priority,
         } => BotCommand::AddTodo {
             titles,
             assignee: Some(Assignee::Sender(sender)),
+            due,
+            priority,
         },
         other => other,
     }
@@ -717,15 +721,21 @@ mod tests {
 
     #[test]
     fn todo_without_assignee_goes_to_sender() {
+        use crate::todo_flags::{Due, Priority};
+        // The flags come through unchanged.
         let command = BotCommand::AddTodo {
             titles: vec!["go gym".to_string()],
             assignee: None,
+            due: Some(Due::Tomorrow),
+            priority: Some(Priority::High),
         };
         assert_eq!(
             assign_to_sender(command, bilal()),
             BotCommand::AddTodo {
                 titles: vec!["go gym".to_string()],
                 assignee: Some(Assignee::Sender(bilal())),
+                due: Some(Due::Tomorrow),
+                priority: Some(Priority::High),
             }
         );
     }
@@ -736,6 +746,8 @@ mod tests {
         let command = BotCommand::AddTodo {
             titles: vec!["book dentist".to_string()],
             assignee: khadija.clone(),
+            due: None,
+            priority: None,
         };
         let BotCommand::AddTodo { assignee, .. } = assign_to_sender(command, bilal()) else {
             panic!("expected AddTodo");

@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE todos SET priority = ?\n         WHERE id = ? AND chat_id = ? AND status = 'pending'\n         RETURNING title",
+  "describe": {
+    "columns": [
+      {
+        "name": "title",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "todos",
+            "name": "title"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "37a84bab2ad82e607273eb9fbb9fd230c2e71a71629441e72cbeb2588c1aa652"
+}

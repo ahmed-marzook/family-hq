@@ -10,7 +10,9 @@ use chrono::{DateTime, NaiveDate, Timelike, Utc};
 use chrono_tz::Tz;
 
 use crate::help;
-use crate::parser::{BotCommand, Got, PushCommand, ReplyCommand, SettingsCommand, TodoView};
+use crate::parser::{
+    BotCommand, Got, PushCommand, ReplyCommand, SettingsCommand, TodoFilter, TodoView,
+};
 use crate::person::Assignee;
 use crate::reports::Span;
 use crate::weather::When;
@@ -120,6 +122,10 @@ pub fn command(command: &BotCommand) -> Event {
             };
             event("todo.add", Some(whose))
         }
+        // Flags that didn't make sense: worth seeing if people keep
+        // getting them wrong.
+        BotCommand::BadTodo(_) => event("todo.add", Some("bad_flags")),
+        BotCommand::SkipTodo(g) => event("todo.skip", Some(got(g))),
         BotCommand::ListTodos(view) => event(
             "todo.list",
             Some(match view {
@@ -127,6 +133,9 @@ pub fn command(command: &BotCommand) -> Event {
                 TodoView::All => "all",
                 TodoView::Mine => "mine",
                 TodoView::Person(_) => "person",
+                TodoView::Filtered(TodoFilter::Overdue) => "overdue",
+                TodoView::Filtered(TodoFilter::Due) => "due",
+                TodoView::Filtered(TodoFilter::High) => "high",
             }),
         ),
         BotCommand::DoneTodo(g) => event("todo.done", Some(got(g))),
@@ -221,6 +230,10 @@ pub fn list_reply(item_type: &str, reply: &ReplyCommand) -> Event {
         ReplyCommand::Tick(_) => "tick",
         ReplyCommand::Done(_) => "done",
         ReplyCommand::Remove(_) => "remove",
+        ReplyCommand::Skip(_) => "skip",
+        ReplyCommand::SetDue(..) => "due",
+        ReplyCommand::SetPriority(..) => "priority",
+        ReplyCommand::BadChange(_) => "bad_change",
     };
     let list = if item_type == "shop" { "shop" } else { "todo" };
     Event::new(Kind::ListReply, &format!("{list}.reply_{action}"), None)
