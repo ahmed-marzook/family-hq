@@ -382,16 +382,16 @@ async fn run_plain(
         }
         BotCommand::BadTodo(err) => format!("{PROBLEM} {err}"),
         BotCommand::DoneTodo(Got::Numbers(numbers)) => {
-            return close_by_numbers(conn, ctx, defaults, &numbers, Action::Tick).await;
+            return close_by_numbers(conn, ctx, defaults, &numbers, Finish::Done).await;
         }
         BotCommand::DoneTodo(Got::Names(names)) => {
-            close_by_name(conn, ctx, defaults, &names, Action::Tick).await?
+            close_by_name(conn, ctx, defaults, &names, Finish::Done).await?
         }
         BotCommand::SkipTodo(Got::Numbers(numbers)) => {
-            return close_by_numbers(conn, ctx, defaults, &numbers, Action::Skip).await;
+            return close_by_numbers(conn, ctx, defaults, &numbers, Finish::Skipped).await;
         }
         BotCommand::SkipTodo(Got::Names(names)) => {
-            close_by_name(conn, ctx, defaults, &names, Action::Skip).await?
+            close_by_name(conn, ctx, defaults, &names, Finish::Skipped).await?
         }
         BotCommand::ClearTodos { done_only: false } => {
             match todos::clear_all(conn, ctx.chat_id).await? {
@@ -1290,23 +1290,36 @@ enum Action {
     Skip,
 }
 
-impl Action {
-    /// How a todo ends up, for its points: `None` for `Remove`, which
-    /// neither earns nor costs anything.
-    fn finish(self) -> Option<Finish> {
-        match self {
-            Action::Tick => Some(Finish::Done),
-            Action::Skip => Some(Finish::Skipped),
-            Action::Remove => None,
+/// `impl From<A> for B` is the standard way to say "an A can always be
+/// turned into a B": here `Action::from(Finish::Done)` is `Action::Tick`.
+impl From<Finish> for Action {
+    fn from(finish: Finish) -> Self {
+        match finish {
+            Finish::Done => Action::Tick,
+            Finish::Skipped => Action::Skip,
         }
     }
+}
 
-    /// The `+` command that does this without replying.
-    fn command(self) -> &'static str {
-        match self {
-            Action::Skip => "+skip",
-            Action::Tick | Action::Remove => "+done",
-        }
+/// What happens to one item of a list: the list's kind and the `Action`
+/// together. There's no "skip a shopping item" here at all, so the code
+/// that works through the items never has to handle one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ListStep {
+    /// A todo done or skipped, which earns or costs points.
+    CloseTodo(Finish),
+    /// A todo removed: it neither earns nor costs anything.
+    RemoveTodo,
+    /// A shopping item ticked off.
+    Buy,
+    RemoveShop,
+}
+
+/// The `+` command that closes a todo as `finish` without replying.
+fn close_command(finish: Finish) -> &'static str {
+    match finish {
+        Finish::Done => "+done",
+        Finish::Skipped => "+skip",
     }
 }
 
@@ -1319,17 +1332,25 @@ async fn act_on_list(
     numbers: &[usize],
     action: Action,
 ) -> Result<Outcome, AppError> {
-    let is_shop = list.kind == ListKind::Shop;
-    if is_shop && action == Action::Skip {
-        return Ok(Outcome::Reply(format!(
-            "{PROBLEM} `skip` is for todos. To take something off the shopping \
-             list, reply `remove 2`."
-        )));
-    }
+    // Every pair of list kind and action, so the compiler checks none is
+    // missed. Skipping a shopping item is the one that makes no sense.
+    let step = match (list.kind, action) {
+        (ListKind::Todo, Action::Tick) => ListStep::CloseTodo(Finish::Done),
+        (ListKind::Todo, Action::Skip) => ListStep::CloseTodo(Finish::Skipped),
+        (ListKind::Todo, Action::Remove) => ListStep::RemoveTodo,
+        (ListKind::Shop, Action::Tick) => ListStep::Buy,
+        (ListKind::Shop, Action::Remove) => ListStep::RemoveShop,
+        (ListKind::Shop, Action::Skip) => {
+            return Ok(Outcome::Reply(format!(
+                "{PROBLEM} `skip` is for todos. To take something off the shopping \
+                 list, reply `remove 2`."
+            )));
+        }
+    };
 
     // The closer's own today, for "done by its due date?". Only todos earn
     // points, so a shopping list doesn't need to look it up.
-    let today = if is_shop {
+    let today = if list.kind == ListKind::Shop {
         ctx.now.date_naive()
     } else {
         my_settings(conn, ctx, defaults).await?.today(ctx.now)
@@ -1348,13 +1369,13 @@ async fn act_on_list(
                 continue;
             }
         };
-        // The repo call that matches the list type and the action. Each
-        // returns the item's name, or `None` if it's already gone.
+        // The repo call that matches the step. Each returns the item's
+        // name, or `None` if it's already gone.
         let (chat, by, now) = (ctx.chat_id, ctx.sender.id, ctx.now);
         // The points a closed todo earned, for its line.
         let mut earned = None;
-        let name = match (is_shop, action.finish()) {
-            (false, Some(finish)) => {
+        let name = match step {
+            ListStep::CloseTodo(finish) => {
                 // `map` with a closure that also sets `earned`: the title
                 // goes on to the `match` below, the points to the line.
                 close_todo(conn, ctx, id, finish, today)
@@ -1364,30 +1385,30 @@ async fn act_on_list(
                         title
                     })
             }
-            (false, None) => todos::remove(conn, id, chat).await?,
-            (true, Some(Finish::Done)) => shop::mark_bought(conn, id, chat, by, now).await?,
-            (true, None) => shop::remove(conn, id, chat).await?,
-            // Can't happen: answered before the loop.
-            (true, Some(Finish::Skipped)) => None,
+            ListStep::RemoveTodo => todos::remove(conn, id, chat).await?,
+            ListStep::Buy => shop::mark_bought(conn, id, chat, by, now).await?,
+            ListStep::RemoveShop => shop::remove(conn, id, chat).await?,
         };
-        match (name, is_shop, action) {
-            (None, _, _) => lines.push(gone(n)),
-            (Some(name), _, Action::Remove) => lines.push(format!("{REMOVED} Removed *{name}*")),
-            (Some(name), false, Action::Tick) => {
+        match (name, step) {
+            (None, _) => lines.push(gone(n)),
+            (Some(name), ListStep::RemoveTodo | ListStep::RemoveShop) => {
+                lines.push(format!("{REMOVED} Removed *{name}*"));
+            }
+            (Some(name), ListStep::CloseTodo(Finish::Done)) => {
                 lines.push(format!("{DONE} Done: *{name}*{}", earned_text(earned)));
                 closed_any = true;
             }
-            (Some(name), false, Action::Skip) => {
+            (Some(name), ListStep::CloseTodo(Finish::Skipped)) => {
                 lines.push(format!(
                     "{SKIPPED} Skipped: *{name}*{}",
                     earned_text(earned)
                 ));
                 closed_any = true;
             }
-            (Some(name), true, _) => bought.push(name),
+            (Some(name), ListStep::Buy) => bought.push(name),
         }
     }
-    if is_shop && action == Action::Tick {
+    if step == ListStep::Buy {
         return Ok(bought_reply(ctx, &bought, &lines));
     }
     if closed_any {
@@ -1404,15 +1425,15 @@ async fn close_by_numbers(
     ctx: &Context,
     defaults: &Settings,
     numbers: &[usize],
-    action: Action,
+    finish: Finish,
 ) -> Result<Outcome, AppError> {
     let Some(list) = messages::latest_list_items(conn, ctx.chat_id, ListKind::Todo).await? else {
-        let command = action.command();
+        let command = close_command(finish);
         return Ok(Outcome::Reply(format!(
             "{PROBLEM} No todo list sent here yet. Send /todo, then `{command} 2`."
         )));
     };
-    act_on_list(conn, ctx, defaults, &list, numbers, action).await
+    act_on_list(conn, ctx, defaults, &list, numbers, Action::from(finish)).await
 }
 
 /// Closes todo `id` in this chat as `finish` (done or skipped) and records
@@ -1509,10 +1530,8 @@ async fn close_by_name(
     ctx: &Context,
     defaults: &Settings,
     names: &[String],
-    action: Action,
+    finish: Finish,
 ) -> Result<String, AppError> {
-    // `+done` / `+skip` only ever tick or skip, never remove.
-    let finish = action.finish().unwrap_or(Finish::Done);
     // The closer's own today, for "done by its due date?".
     let today = my_settings(conn, ctx, defaults).await?.today(ctx.now);
     let mut lines = Vec::new();
@@ -1540,7 +1559,7 @@ async fn close_by_name(
                      the number from /todo (`{} 2`).",
                     titles.len(),
                     titles.join(", "),
-                    action.command()
+                    close_command(finish)
                 ));
             }
         }
