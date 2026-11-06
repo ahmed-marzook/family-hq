@@ -23,7 +23,7 @@ pub struct Gowa {
 impl Gowa {
     /// `basic_auth` is GOWA's `user:password`, the same as `GOWA_BASIC_AUTH`.
     pub fn new(base_url: &str, basic_auth: &str) -> Self {
-        Gowa::with_client(base_url, basic_auth, reqwest::Client::new())
+        Gowa::with_client(base_url, basic_auth, crate::http::client())
     }
 
     /// For tests: the same, but giving up on a request after `timeout`, so
@@ -32,9 +32,9 @@ impl Gowa {
     pub(crate) fn with_timeout(
         base_url: &str,
         basic_auth: &str,
-        _timeout: std::time::Duration,
+        timeout: std::time::Duration,
     ) -> Self {
-        Gowa::with_client(base_url, basic_auth, reqwest::Client::new())
+        Gowa::with_client(base_url, basic_auth, crate::http::client_with(timeout))
     }
 
     /// Builds a `Gowa` around an HTTP client made elsewhere, so `new` and
