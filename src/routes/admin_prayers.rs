@@ -393,4 +393,133 @@ mod tests {
         let base = pago_pago_defaults();
         assert_today_on(&mut conn, family.bilal.id, &base, KIRITIMATI, PAGO_PAGO).await;
     }
+
+    // ---- the admin calendar, for someone with no chat in the request ----
+    //
+    // The calendar has a person but no chat, so it uses their one active
+    // group, if they're in exactly one, and the defaults otherwise. These
+    // go through the real API, with the server's defaults on Pago Pago's
+    // clock and the group on Kiritimati's (always a day or two ahead).
+
+    use crate::repo::chats;
+    use crate::testkit::{
+        ADMIN_PASSWORD, ADMIN_USER, admin_get, fake_gowa, serve_state, test_state,
+    };
+
+    /// A second group, for people in more than one.
+    const OTHER_GROUP: &str = "120363000000000002@g.us";
+
+    /// The real app on `pool`, with Pago Pago defaults. `Arc::get_mut`
+    /// works because nothing else holds the state yet.
+    async fn serve_on_pago_pago(pool: sqlx::SqlitePool) -> String {
+        let mut state = test_state(pool, &fake_gowa().await.url);
+        let inner = Arc::get_mut(&mut state).expect("not shared yet");
+        inner.config.defaults = pago_pago_defaults();
+        inner.apis.prayer_times = crate::aladhan::PrayerTimes::new(pago_pago_defaults());
+        serve_state(state).await
+    }
+
+    /// Today on `tz`'s clock, read before and after a request.
+    fn today_on(tz: Tz, before: chrono::DateTime<Utc>) -> [NaiveDate; 2] {
+        [before, Utc::now()].map(|now| now.with_timezone(&tz).date_naive())
+    }
+
+    /// The calendar's `today` for `user_id`, and when the clock was read.
+    async fn calendar_today(server: &str, user_id: i64) -> (NaiveDate, chrono::DateTime<Utc>) {
+        let before = Utc::now();
+        let (status, page) = admin_get(server, &format!("/api/users/{user_id}/prayers")).await;
+        assert_eq!(status, 200, "{page}");
+        (page["today"].as_str().unwrap().parse().unwrap(), before)
+    }
+
+    #[tokio::test]
+    async fn admin_calendar_uses_the_one_group_timezone() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let family = seed_family(&mut conn, utc("2026-11-01T12:00:00Z")).await;
+        stored::set_timezone(&mut conn, family.group, "Pacific/Kiritimati")
+            .await
+            .unwrap();
+        // Another group the bot has left doesn't count.
+        let old = chats::find_or_create(&mut conn, OTHER_GROUP, None, utc("2026-11-01T12:00:00Z"))
+            .await
+            .unwrap();
+        chats::add_member(
+            &mut conn,
+            old,
+            family.khadija.id,
+            utc("2026-11-01T12:00:00Z"),
+        )
+        .await
+        .unwrap();
+        let left = Some(utc("2026-11-01T13:00:00Z"));
+        crate::repo::cleanup::set_left(&mut conn, old, left)
+            .await
+            .unwrap();
+        drop(conn);
+        let server = serve_on_pago_pago(pool).await;
+
+        // Khadija has no settings of her own: the group's clock.
+        let (today, before) = calendar_today(&server, family.khadija.id).await;
+        assert!(today_on(KIRITIMATI, before).contains(&today), "{today}");
+    }
+
+    #[tokio::test]
+    async fn admin_calendar_with_several_groups_uses_the_defaults() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let family = seed_family(&mut conn, utc("2026-11-01T12:00:00Z")).await;
+        stored::set_timezone(&mut conn, family.group, "Pacific/Kiritimati")
+            .await
+            .unwrap();
+        let other =
+            chats::find_or_create(&mut conn, OTHER_GROUP, None, utc("2026-11-01T12:00:00Z"))
+                .await
+                .unwrap();
+        stored::set_timezone(&mut conn, other, "Pacific/Kiritimati")
+            .await
+            .unwrap();
+        chats::add_member(
+            &mut conn,
+            other,
+            family.khadija.id,
+            utc("2026-11-01T12:00:00Z"),
+        )
+        .await
+        .unwrap();
+        drop(conn);
+        let server = serve_on_pago_pago(pool).await;
+
+        // Two groups: no single one to pick, so the defaults.
+        let (today, before) = calendar_today(&server, family.khadija.id).await;
+        assert!(today_on(PAGO_PAGO, before).contains(&today), "{today}");
+    }
+
+    #[tokio::test]
+    async fn admin_can_correct_a_prayer_on_the_groups_today() {
+        // The bot logs Khadija's ticks on the group's date, so the admin
+        // must be able to correct that date, even when it's already
+        // "tomorrow" on the server's default clock.
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let family = seed_family(&mut conn, utc("2026-11-01T12:00:00Z")).await;
+        stored::set_timezone(&mut conn, family.group, "Pacific/Kiritimati")
+            .await
+            .unwrap();
+        drop(conn);
+        let server = serve_on_pago_pago(pool).await;
+
+        let today = Utc::now().with_timezone(&KIRITIMATI).date_naive();
+        let response = reqwest::Client::new()
+            .put(format!(
+                "{server}/api/users/{}/prayers/{today}/asr",
+                family.khadija.id
+            ))
+            .basic_auth(ADMIN_USER, Some(ADMIN_PASSWORD))
+            .json(&serde_json::json!({ "status": "prayed" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    }
 }
