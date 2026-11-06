@@ -76,6 +76,10 @@ pub struct Message {
     /// "use `false` if the field is missing".
     #[serde(default)]
     pub is_from_me: bool,
+    /// When it was sent, e.g. `2026-10-27T14:40:30Z`. Nothing reads it
+    /// yet, but it's a required field, so a payload without it is rejected.
+    /// `allow(dead_code)` quiets the "never read" warning on purpose.
+    #[allow(dead_code)]
     pub timestamp: String,
 }
 
