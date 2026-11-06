@@ -21,8 +21,7 @@ use crate::error::AppError;
 use crate::metrics::{self, Event, ReactionChange};
 use crate::parser::{self, BotCommand, ReplyCommand};
 use crate::person::{Assignee, Person};
-use crate::prayer::stats::Status;
-use crate::prayer::{self, Tick};
+use crate::prayer::{self, checkin};
 use crate::repo::messages::{self, SentList};
 use crate::repo::metrics::Logged;
 use crate::repo::{self, chats, prayers, users};
@@ -565,20 +564,8 @@ async fn handle_reaction(
 
     // `None` if nothing changed.
     let tick = match change {
-        ReactionChange::Removed => {
-            let changed = prayers::unmark_prayed(&mut tx, user.id, date, prayer).await?;
-            info!("unticked {prayer} on {date}");
-            changed.then_some(Tick::Unticked)
-        }
-        ReactionChange::Added => {
-            let status = prayers::mark_prayed(&mut tx, user.id, date, prayer, now).await?;
-            info!("prayed {prayer} on {date}");
-            // Its time had ended and it was marked missed: made up.
-            status.map(|s| match s {
-                Status::Late => Tick::MadeUp,
-                _ => Tick::Prayed,
-            })
-        }
+        ReactionChange::Removed => checkin::untick(&mut tx, user.id, date, prayer).await?,
+        ReactionChange::Added => checkin::tick(&mut tx, user.id, date, prayer, now).await?,
     };
     let prayed = prayers::prayed_on(&mut tx, user.id, date).await?.len();
     tx.commit().await?;
@@ -1061,5 +1048,185 @@ mod tests {
             (reqwest::StatusCode::OK, reqwest::StatusCode::OK)
         );
         assert_eq!(todos, 1);
+    }
+
+    /// Posts a reaction (or, with `""`, its removal) from `phone` in the
+    /// family group, signed; returns the status.
+    async fn post_reaction(
+        server: &str,
+        id: &str,
+        phone: &str,
+        on: &str,
+        emoji: &str,
+    ) -> reqwest::StatusCode {
+        let payload = serde_json::json!({
+            "id": id, "chat_id": crate::testkit::GROUP,
+            "from": crate::testkit::jid(phone), "is_from_me": false,
+            "reacted_message_id": on, "reaction": emoji,
+            "timestamp": "2026-10-27T20:00:00Z"
+        });
+        let body = serde_json::json!({ "event": "message.reaction", "payload": payload });
+        let body = body.to_string();
+        reqwest::Client::new()
+            .post(format!("{server}/webhook/whatsapp"))
+            .header("x-hub-signature-256", sign(b"test", body.as_bytes()))
+            .header("content-type", "application/json")
+            .body(body)
+            .send()
+            .await
+            .unwrap()
+            .status()
+    }
+
+    /// The three ways to tick a prayer off (a reaction on its reminder, the
+    /// button on its push, `+prayed`) all go through `prayer::checkin`, so
+    /// from the same start they leave the same log: Fajr not yet logged
+    /// becomes prayed, Asr already marked missed becomes made up (keeping
+    /// when it was marked missed). Taking the reaction off undoes it.
+    #[tokio::test]
+    async fn reaction_button_and_command_tick_alike() {
+        use crate::Apis;
+        use crate::bot::tests::times;
+        use crate::parser::Checkin;
+        use crate::prayer::{Prayer, ReminderKind};
+        use crate::push::Action;
+        use crate::repo::prayers::NewReminder;
+        use crate::repo::push::Subscription;
+        use crate::testkit::{GROUP, fake_gowa, register, serve_state, test_state, utc};
+
+        let pool = crate::db::test_pool().await;
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 10, 27).unwrap();
+        let (marked_missed, now) = (utc("2026-10-27T16:44:00Z"), utc("2026-10-27T20:00:00Z"));
+        let token = "a-token-that-is-at-least-32-characters-long";
+        let mut conn = pool.acquire().await.unwrap();
+        let group = chats::find_or_create(&mut conn, GROUP, None, now)
+            .await
+            .unwrap();
+        // Bilal reacts, Khadija taps the button, Amina types `+prayed`.
+        let mut people = Vec::new();
+        for (name, phone) in [
+            ("Bilal", "447700900001"),
+            ("Khadija", "447700900002"),
+            ("Amina", "447700900003"),
+        ] {
+            let user = register(&mut conn, name, phone, now).await;
+            chats::add_member(&mut conn, group, user.id, now)
+                .await
+                .unwrap();
+            sqlx::query(
+                "INSERT INTO prayer_log (user_id, prayer_date, prayer, status, missed_at)
+                 VALUES (?, ?, 'asr', 'missed', ?)",
+            )
+            .bind(user.id)
+            .bind(day)
+            .bind(marked_missed)
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+            people.push(user);
+        }
+        let (bilal, khadija, amina) = (&people[0], &people[1], &people[2]);
+        for (prayer, message_id) in [(Prayer::Fajr, "R-FAJR"), (Prayer::Asr, "R-ASR")] {
+            let reminder = NewReminder {
+                chat_id: group,
+                date: day,
+                prayer,
+                kind: ReminderKind::Start,
+                place: "uk",
+                prayer_time: now,
+            };
+            let id = prayers::claim_reminder(&mut conn, &reminder, now)
+                .await
+                .unwrap()
+                .unwrap();
+            prayers::set_reminder_message(&mut conn, id, message_id)
+                .await
+                .unwrap();
+        }
+        let sub = Subscription {
+            topic: "fhq-".to_string() + &"k".repeat(32),
+            token: token.to_string(),
+        };
+        crate::repo::push::subscribe(&mut conn, khadija.id, &sub, now)
+            .await
+            .unwrap();
+
+        // `+prayed fajr asr`, at 20:00 that day.
+        let ctx = Context {
+            chat_id: group,
+            is_group: true,
+            sender: amina.clone(),
+            now,
+        };
+        let command = BotCommand::Prayed(Checkin::today(vec![Prayer::Fajr, Prayer::Asr]));
+        bot::run_command(&mut conn, &ctx, &Apis::new(times()), command)
+            .await
+            .unwrap();
+        // The test pool has one connection, and the server needs it.
+        drop(conn);
+
+        let gowa = fake_gowa().await;
+        let server = serve_state(test_state(pool.clone(), &gowa.url)).await;
+        for (id, on) in [("X1", "R-FAJR"), ("X2", "R-ASR")] {
+            let status = post_reaction(&server, id, "447700900001", on, "👍").await;
+            assert_eq!(status, reqwest::StatusCode::OK);
+        }
+        for prayer in [Prayer::Fajr, Prayer::Asr] {
+            let action = Action::Prayed { date: day, prayer };
+            let status = reqwest::Client::new()
+                .post(format!("{server}/actions/{}", action.path()))
+                .bearer_auth(token)
+                .send()
+                .await
+                .unwrap()
+                .status();
+            assert_eq!(status, reqwest::StatusCode::OK);
+        }
+
+        // Each person's log, without the check-in time itself (the command
+        // ran at `now`, the others at the real time).
+        let log = async |user: i64| -> Vec<(String, String, Option<String>, bool)> {
+            sqlx::query_as(
+                "SELECT prayer, status, missed_at, prayed_at IS NOT NULL FROM prayer_log
+                 WHERE user_id = ? ORDER BY prayer",
+            )
+            .bind(user)
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+        };
+        let by_reaction = log(bilal.id).await;
+        let missed_at = Some(marked_missed);
+        let expected: Vec<(String, String, Option<DateTime<Utc>>, bool)> = vec![
+            ("asr".into(), "late".into(), missed_at, true),
+            ("fajr".into(), "prayed".into(), None, true),
+        ];
+        let read = |rows: &[(String, String, Option<String>, bool)]| {
+            rows.iter()
+                .map(|(p, s, m, at)| {
+                    let m = m.as_deref().map(|m| m.parse::<DateTime<Utc>>().unwrap());
+                    (p.clone(), s.clone(), m, *at)
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(read(&by_reaction), expected, "by reaction");
+        assert_eq!(log(khadija.id).await, by_reaction, "by button");
+        assert_eq!(log(amina.id).await, by_reaction, "by command");
+        // Each reaction got its reply: one ✅, one 🕐 made up.
+        let sent = gowa.sent.lock().unwrap().clone();
+        assert_eq!(sent.len(), 2, "{sent:?}");
+        assert!(sent[1].1.contains("made up"), "{sent:?}");
+
+        // Taking the reaction off: Asr goes back to missed, Fajr is gone.
+        let status = post_reaction(&server, "X3", "447700900001", "R-ASR", "").await;
+        assert_eq!(status, reqwest::StatusCode::OK);
+        let status = post_reaction(&server, "X4", "447700900001", "R-FAJR", "").await;
+        assert_eq!(status, reqwest::StatusCode::OK);
+        let after = read(&log(bilal.id).await);
+        assert_eq!(
+            after,
+            [("asr".into(), "missed".into(), missed_at, false)],
+            "unticked"
+        );
     }
 }

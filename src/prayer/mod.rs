@@ -5,6 +5,8 @@
 //!
 //! The rest of the prayer feature is in this folder too:
 //!
+//! * `checkin`: ticking a prayer off (or back), the same way for a
+//!   reaction, a push button and `+prayed`.
 //! * `commands`: the prayer commands (`/prayers`, `+prayed`, ...) and
 //!   their replies.
 //! * `stats`: completion, streaks and report text from a prayer log (pure).
@@ -14,6 +16,7 @@
 // This file is the `prayer` module itself (`mod.rs` is what `mod prayer;`
 // loads for a folder), so the folder's other files are its submodules,
 // declared here. Other code reaches them as `crate::prayer::stats`.
+pub mod checkin;
 pub mod commands;
 pub mod stats;
 pub mod tracking;

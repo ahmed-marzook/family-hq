@@ -11,14 +11,15 @@ use std::sync::Arc;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use chrono::{DateTime, Duration, Utc};
-use tracing::{Span, info, warn};
+use tracing::{Span, warn};
 
 use crate::AppState;
 use crate::error::AppError;
 use crate::metrics::{self, Event};
+use crate::prayer::checkin;
 use crate::push::Action;
 use crate::repo::metrics::Logged;
-use crate::repo::{self, chats, prayers, push as push_repo, users};
+use crate::repo::{self, chats, push as push_repo, users};
 
 /// The token from `Authorization: Bearer <token>`, if there is one.
 fn bearer(headers: &HeaderMap) -> Option<&str> {
@@ -73,9 +74,8 @@ pub async fn action(
             if date > (now + Duration::days(1)).date_naive() {
                 return Ok((StatusCode::BAD_REQUEST, "That day hasn't come yet"));
             }
-            let status = prayers::mark_prayed(&mut tx, user_id, date, prayer, now).await?;
-            info!("prayed {prayer} on {date}");
-            let reply = if status.is_some() {
+            let tick = checkin::tick(&mut tx, user_id, date, prayer, now).await?;
+            let reply = if tick.is_some() {
                 "Marked as prayed"
             } else {
                 "Already marked"
@@ -131,6 +131,7 @@ mod tests {
     use super::*;
     use crate::db::test_pool;
     use crate::prayer::Prayer;
+    use crate::repo::prayers;
     use crate::repo::push::Subscription;
     use crate::testkit::{fake_gowa, register, serve_state, start_server_with, test_state};
     use chrono::NaiveDate;

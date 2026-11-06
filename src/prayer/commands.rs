@@ -17,7 +17,7 @@ use crate::error::AppError;
 use crate::moon::Moon;
 use crate::parser::{Checkin, Timing};
 use crate::prayer::stats::{self, Status, Summary};
-use crate::prayer::{self, DayTimes, Prayer};
+use crate::prayer::{self, DayTimes, Prayer, checkin};
 use crate::repo::prayers;
 use crate::repo::reports as stored_reports;
 use crate::repo::settings as stored;
@@ -254,7 +254,7 @@ async fn prayed(
         let user = ctx.sender.id;
         match checkin.timing {
             Timing::Auto => {
-                prayers::mark_prayed(conn, user, date, prayer, ctx.now).await?;
+                checkin::tick(conn, user, date, prayer, ctx.now).await?;
             }
             Timing::OnTime => {
                 prayers::set_prayed(conn, user, date, prayer, true, ctx.now).await?;
