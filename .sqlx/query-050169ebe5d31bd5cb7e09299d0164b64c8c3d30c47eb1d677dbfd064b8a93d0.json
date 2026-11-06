@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT status, prayed_at AS \"prayed_at: DateTime<Utc>\",\n                      missed_at AS \"missed_at: DateTime<Utc>\"\n               FROM prayer_log WHERE user_id = ? AND prayer_date = ? AND prayer = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "status",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "prayer_log",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "name": "prayed_at: DateTime<Utc>",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "prayer_log",
+            "name": "prayed_at"
+          }
+        }
+      },
+      {
+        "name": "missed_at: DateTime<Utc>",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "prayer_log",
+            "name": "missed_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "050169ebe5d31bd5cb7e09299d0164b64c8c3d30c47eb1d677dbfd064b8a93d0"
+}

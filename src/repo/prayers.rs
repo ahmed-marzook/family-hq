@@ -465,6 +465,7 @@ mod tests {
     use crate::db::test_pool;
     use crate::repo::{chats, settings};
     use crate::testkit::register;
+    use chrono::TimeZone;
 
     fn date() -> NaiveDate {
         NaiveDate::from_ymd_opt(2026, 10, 27).unwrap()
@@ -757,6 +758,179 @@ mod tests {
                 .await
                 .unwrap()
         );
+    }
+
+    /// One prayer_log row, exactly as stored: `(status, prayed_at,
+    /// missed_at)`. `None` is no row at all.
+    type Row = Option<(&'static str, Option<DateTime<Utc>>, Option<DateTime<Utc>>)>;
+
+    /// Something that can happen to one prayer in the log, for the table
+    /// below: each one is a way the code changes it.
+    #[derive(Debug, Clone, Copy)]
+    enum Happens {
+        /// Its time ended unticked (the reminder loop).
+        MarkMissed,
+        /// A reaction, the push button, or `+prayed` with no timing.
+        Tick,
+        /// `+prayed asr on time`.
+        OnTime,
+        /// `+prayed asr late`.
+        Late,
+        /// The reaction was taken off.
+        Untick,
+        /// The admin dashboard sets it to exactly this, or (`None`) clears it.
+        Set(Option<Status>),
+    }
+
+    /// Puts a row in place, whatever is there.
+    async fn seed(conn: &mut SqliteConnection, user: i64, row: Row) {
+        let prayer = Prayer::Asr.as_db_str();
+        let day = date();
+        sqlx::query!(
+            "DELETE FROM prayer_log WHERE user_id = ? AND prayer_date = ? AND prayer = ?",
+            user,
+            day,
+            prayer
+        )
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+        if let Some((status, prayed_at, missed_at)) = row {
+            sqlx::query!(
+                "INSERT INTO prayer_log (user_id, prayer_date, prayer, status, prayed_at, missed_at)
+                 VALUES (?, ?, ?, ?, ?, ?)",
+                user,
+                day,
+                prayer,
+                status,
+                prayed_at,
+                missed_at
+            )
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+        }
+    }
+
+    /// The row as it's stored now.
+    async fn stored(conn: &mut SqliteConnection, user: i64) -> Row {
+        let prayer = Prayer::Asr.as_db_str();
+        let day = date();
+        let row = sqlx::query!(
+            r#"SELECT status, prayed_at AS "prayed_at: DateTime<Utc>",
+                      missed_at AS "missed_at: DateTime<Utc>"
+               FROM prayer_log WHERE user_id = ? AND prayer_date = ? AND prayer = ?"#,
+            user,
+            day,
+            prayer
+        )
+        .fetch_optional(conn)
+        .await
+        .unwrap()?;
+        let status = ["prayed", "late", "missed"]
+            .into_iter()
+            .find(|s| *s == row.status)
+            .expect("the CHECK allows only these");
+        Some((status, row.prayed_at, row.missed_at))
+    }
+
+    /// Makes `happens` happen to Asr on `date()`, at `now`, the way the
+    /// code does it.
+    async fn fire(conn: &mut SqliteConnection, user: i64, happens: Happens, now: DateTime<Utc>) {
+        let (day, asr) = (date(), Prayer::Asr);
+        match happens {
+            Happens::MarkMissed => {
+                mark_missed(conn, user, day, asr, now).await.unwrap();
+            }
+            Happens::Tick => {
+                mark_prayed(conn, user, day, asr, now).await.unwrap();
+            }
+            Happens::OnTime => set_prayed(conn, user, day, asr, true, now).await.unwrap(),
+            Happens::Late => set_prayed(conn, user, day, asr, false, now).await.unwrap(),
+            Happens::Untick => {
+                unmark_prayed(conn, user, day, asr).await.unwrap();
+            }
+            Happens::Set(status) => set_status(conn, user, day, asr, status, now).await.unwrap(),
+        }
+    }
+
+    /// Every way a prayer's log entry can change, from every state it can
+    /// be in. (No other state can be stored: the table's CHECKs allow only
+    /// these three shapes of row.) This pins the rules down, so moving them
+    /// from SQL into Rust can be checked to change nothing.
+    #[tokio::test]
+    async fn every_change_from_every_state() {
+        use Happens::*;
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let user = bilal(&mut conn).await;
+        let at = |h| Some(Utc.with_ymd_and_hms(2026, 10, 27, h, 0, 0).unwrap());
+        // When it was prayed or marked missed before (t0, m0), and now.
+        let (t0, m0, now) = (at(15), at(17), at(20));
+        let none: Row = None;
+        let missed = Some(("missed", None, m0));
+        let prayed = Some(("prayed", t0, None));
+        let late = Some(("late", t0, m0));
+
+        let rows: [(Row, Happens, Row); 36] = [
+            // Nothing logged yet.
+            (none, MarkMissed, Some(("missed", None, now))),
+            (none, Tick, Some(("prayed", now, None))),
+            (none, OnTime, Some(("prayed", now, None))),
+            (none, Late, Some(("late", now, now))),
+            (none, Untick, none),
+            (none, Set(Some(Status::Prayed)), Some(("prayed", now, None))),
+            (none, Set(Some(Status::Late)), Some(("late", now, now))),
+            (none, Set(Some(Status::Missed)), Some(("missed", None, now))),
+            (none, Set(None), none),
+            // Marked missed.
+            (missed, MarkMissed, missed),
+            (missed, Tick, Some(("late", now, m0))),
+            (missed, OnTime, Some(("prayed", now, None))),
+            (missed, Late, Some(("late", now, m0))),
+            (missed, Untick, missed),
+            (
+                missed,
+                Set(Some(Status::Prayed)),
+                Some(("prayed", now, None)),
+            ),
+            (missed, Set(Some(Status::Late)), Some(("late", now, m0))),
+            (missed, Set(Some(Status::Missed)), missed),
+            (missed, Set(None), none),
+            // Prayed on time.
+            (prayed, MarkMissed, prayed),
+            (prayed, Tick, prayed),
+            (prayed, OnTime, prayed),
+            (prayed, Late, Some(("late", t0, now))),
+            (prayed, Untick, none),
+            (prayed, Set(Some(Status::Prayed)), prayed),
+            (prayed, Set(Some(Status::Late)), Some(("late", t0, now))),
+            (
+                prayed,
+                Set(Some(Status::Missed)),
+                Some(("missed", None, now)),
+            ),
+            (prayed, Set(None), none),
+            // Made up.
+            (late, MarkMissed, late),
+            (late, Tick, late),
+            (late, OnTime, Some(("prayed", t0, None))),
+            (late, Late, late),
+            (late, Untick, missed),
+            (late, Set(Some(Status::Prayed)), Some(("prayed", t0, None))),
+            (late, Set(Some(Status::Late)), late),
+            (late, Set(Some(Status::Missed)), missed),
+            (late, Set(None), none),
+        ];
+        for (before, happens, after) in rows {
+            seed(&mut conn, user, before).await;
+            fire(&mut conn, user, happens, now.unwrap()).await;
+            assert_eq!(
+                stored(&mut conn, user).await,
+                after,
+                "{happens:?} from {before:?}"
+            );
+        }
     }
 
     #[tokio::test]
