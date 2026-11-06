@@ -309,7 +309,7 @@ pub(crate) async fn detail(
     let personal = stored::personal(conn, id).await?;
     let chats = admin::chats_of(conn, id).await?;
     let defaults = &state.apis.prayer_times.defaults;
-    let today = today_for(conn, id, defaults).await?;
+    let today = today_for(conn, defaults, id, now).await?;
     let prayers = prayer_view(conn, id, today).await?;
     let dm = existing_dm(conn, id).await?;
     let reports = reports_view(conn, dm).await?;
@@ -387,8 +387,8 @@ async fn group_view(
     id: i64,
 ) -> Result<GroupView, AppError> {
     let group = admin::group(conn, id).await?.ok_or(AppError::NotFound)?;
-    let stored = stored::get(conn, group.id).await?;
-    let settings = stored.overrides.apply(&state.apis.prayer_times.defaults);
+    let defaults = &state.apis.prayer_times.defaults;
+    let settings = stored::effective(conn, defaults, group.id, None).await?;
     Ok(GroupView {
         id: group.id,
         name: group.name,

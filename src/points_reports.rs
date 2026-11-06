@@ -50,10 +50,9 @@ async fn check_group(
     now: DateTime<Utc>,
 ) -> Result<(), AppError> {
     let mut conn = state.db.acquire().await?;
-    let settings = stored_settings::get(&mut conn, group.id)
-        .await?
-        .overrides
-        .apply(&state.apis.prayer_times.defaults);
+    // The whole group's summary, so the group's clock: no one person's.
+    let defaults = &state.apis.prayer_times.defaults;
+    let settings = stored_settings::effective(&mut conn, defaults, group.id, None).await?;
     let today = settings.today(now);
     let Some(at) = summary_time(settings.timezone, today) else {
         return Ok(());

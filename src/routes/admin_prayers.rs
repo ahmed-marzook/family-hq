@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use chrono::{NaiveDate, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::SqliteConnection;
 use tracing::info;
@@ -22,7 +22,7 @@ use crate::prayer_stats::{Entry, Status, Summary};
 use crate::repo::settings as stored;
 use crate::repo::{admin, prayers};
 use crate::reports::{Period, Span};
-use crate::settings::Settings;
+use crate::settings::{self, Overrides, Settings};
 
 /// One person's prayers this week and this month, so far.
 #[derive(Debug, Serialize)]
@@ -149,18 +149,30 @@ pub(crate) async fn prayer_view(
     })
 }
 
-/// Today for this person: on their own timezone if they set one,
-/// otherwise `base`'s (the server default, or their group's).
+/// The date at `now` for this person, for the admin pages that have a
+/// person but no chat (the user page and the prayer calendar). If they're
+/// in exactly one group the bot is still in, it's that group's date for
+/// them (their own settings on top of the group's), the same date the bot
+/// logs their prayers on. In no group, or several, there's no one group to
+/// pick, so it's their own settings on top of `defaults`.
+///
+/// The group page doesn't use this: it has the group, so it asks
+/// `stored::effective` for that group directly.
 pub(crate) async fn today_for(
     conn: &mut SqliteConnection,
+    defaults: &Settings,
     user_id: i64,
-    base: &Settings,
+    now: DateTime<Utc>,
 ) -> Result<NaiveDate, sqlx::Error> {
-    let settings = match stored::personal(conn, user_id).await? {
-        Some(own) => own.overrides.apply(base),
-        None => base.clone(),
+    let settings = match stored::home_chat(conn, user_id).await? {
+        Some(group) => stored::effective(conn, defaults, group, Some(user_id)).await?,
+        None => {
+            let own = stored::personal(conn, user_id).await?;
+            let own = own.as_ref().map(|own| &own.overrides);
+            settings::layered(defaults, &Overrides::default(), own)
+        }
     };
-    Ok(settings.today(Utc::now()))
+    Ok(settings.today(now))
 }
 
 /// One month of someone's prayers, for the calendar.
@@ -184,16 +196,17 @@ fn parse_month(text: &str) -> Option<NaiveDate> {
     NaiveDate::from_ymd_opt(year.parse().ok()?, month.parse().ok()?, 1)
 }
 
-/// The month `date` is in, with `today` for this person.
+/// The month `date` is in, with `today` (at `now`) for this person.
 async fn month_of(
     conn: &mut SqliteConnection,
     state: &AppState,
     id: i64,
     date: Option<NaiveDate>,
+    now: DateTime<Utc>,
 ) -> Result<PrayerMonth, AppError> {
     // 404 for someone who isn't there.
     admin::user_jid(conn, id).await?.ok_or(AppError::NotFound)?;
-    let today = today_for(conn, id, &state.apis.prayer_times.defaults).await?;
+    let today = today_for(conn, &state.apis.prayer_times.defaults, id, now).await?;
     let month = span_view(conn, id, Span::Month, date.unwrap_or(today)).await?;
     Ok(PrayerMonth { today, month })
 }
@@ -211,7 +224,9 @@ pub async fn user_month(
         None => None,
     };
     let mut conn = state.db.acquire().await?;
-    Ok(Json(month_of(&mut conn, &state, id, date).await?))
+    Ok(Json(
+        month_of(&mut conn, &state, id, date, Utc::now()).await?,
+    ))
 }
 
 /// The body of `PUT /api/users/{id}/prayers/{date}/{prayer}`.
@@ -243,22 +258,25 @@ pub async fn set_prayer(
         None => None,
     };
 
+    let now = Utc::now();
     let mut conn = state.db.acquire().await?;
     admin::user_jid(&mut conn, id)
         .await?
         .ok_or(AppError::NotFound)?;
-    let today = today_for(&mut conn, id, &state.apis.prayer_times.defaults).await?;
+    let today = today_for(&mut conn, &state.apis.prayer_times.defaults, id, now).await?;
     if date > today {
         return Err(AppError::BadRequest(
             "that day hasn't happened yet for them".into(),
         ));
     }
-    prayers::set_status(&mut conn, id, date, prayer, status, Utc::now()).await?;
+    prayers::set_status(&mut conn, id, date, prayer, status, now).await?;
     info!(
         "set user {id}'s {prayer} on {date} to {}",
         status.map_or("no record", |s| s.as_db_str())
     );
-    Ok(Json(month_of(&mut conn, &state, id, Some(date)).await?))
+    Ok(Json(
+        month_of(&mut conn, &state, id, Some(date), now).await?,
+    ))
 }
 
 #[cfg(test)]
@@ -313,15 +331,11 @@ mod tests {
         expected: Tz,
         other: Tz,
     ) {
-        let before = Utc::now();
-        let today = today_for(conn, user_id, base).await.unwrap();
-        let after = Utc::now();
-        let on = |tz: Tz| [before, after].map(|now| now.with_timezone(&tz).date_naive());
-        assert!(
-            on(expected).contains(&today),
-            "{today} isn't today on {expected}"
-        );
-        assert!(!on(other).contains(&today), "{today} is today on {other}");
+        let now = Utc::now();
+        let today = today_for(conn, base, user_id, now).await.unwrap();
+        let on = |tz: Tz| now.with_timezone(&tz).date_naive();
+        assert_eq!(today, on(expected), "{today} isn't today on {expected}");
+        assert_ne!(today, on(other), "{today} is today on {other}");
     }
 
     #[tokio::test]

@@ -176,12 +176,11 @@ pub(crate) async fn check_patch(
     patch: SettingsPatch,
 ) -> Result<(Vec<Change>, Vec<Checked>), AppError> {
     let defaults = &state.apis.prayer_times.defaults;
+    // The chat's own settings (no person on top): they're what's edited.
     let current_country = match chat_id {
         Some(chat_id) => {
-            stored::get(conn, chat_id)
+            stored::effective(conn, defaults, chat_id, None)
                 .await?
-                .overrides
-                .apply(defaults)
                 .country
         }
         None => defaults.country.clone(),
@@ -208,7 +207,7 @@ pub(crate) async fn save_patch(
     let defaults = &state.apis.prayer_times.defaults;
     for change in checked {
         // Each change sees the ones before it (a new town's timezone, say).
-        let current = stored::get(conn, chat_id).await?.overrides.apply(defaults);
+        let current = stored::effective(conn, defaults, chat_id, None).await?;
         settings_edit::save(conn, chat_id, &current, change).await?;
     }
     Ok(())

@@ -21,7 +21,7 @@ use crate::prayer_tracking;
 use crate::push::{self, Feature};
 use crate::repo::prayers::{self, NewReminder, ReminderChat};
 use crate::repo::settings::{self as stored, MemberSettings};
-use crate::settings::Settings;
+use crate::settings::{self, Overrides, Settings};
 use crate::todo_reminders;
 
 /// How often to check. Reminders go out at most this late.
@@ -98,12 +98,12 @@ async fn check_chat(
     chat: &ReminderChat,
     now: DateTime<Utc>,
 ) -> Result<(), AppError> {
-    let chat_settings = chat.overrides.apply(&state.apis.prayer_times.defaults);
+    let defaults = &state.apis.prayer_times.defaults;
 
     let places = if let Some(owner) = chat.dm_user_id {
         // A DM: just its owner, on the DM's settings (theirs), no mention.
         vec![Place {
-            settings: chat_settings,
+            settings: settings::layered(defaults, &chat.overrides, None),
             recipients: vec![Recipient {
                 user_id: owner,
                 phone: String::new(),
@@ -115,7 +115,7 @@ async fn check_chat(
             let mut conn = state.db.acquire().await?;
             stored::members(&mut conn, chat.id).await?
         };
-        places_for_group(&chat_settings, &members)
+        places_for_group(defaults, &chat.overrides, &members)
     };
 
     // In a group with members in more than one place, say which place each
@@ -154,14 +154,20 @@ async fn check_place(
 /// bot has just been added) gets one reminder on the group's settings with
 /// nobody mentioned.
 ///
+/// `group` is what the group itself changed from `defaults`; each member's
+/// own settings go on top (`settings::layered`, the same rule as `/todo`
+/// and `/prayers`).
+///
 /// Pure (no database, no network), so it's tested directly.
-pub fn places_for_group(group: &Settings, members: &[MemberSettings]) -> Vec<Place> {
+pub fn places_for_group(
+    defaults: &Settings,
+    group: &Overrides,
+    members: &[MemberSettings],
+) -> Vec<Place> {
     let mut places: Vec<Place> = Vec::new();
     for member in members {
-        let settings = match &member.settings {
-            Some(own) => own.overrides.apply(group),
-            None => group.clone(),
-        };
+        let own = member.settings.as_ref().map(|own| &own.overrides);
+        let settings = settings::layered(defaults, group, own);
         let recipient = Recipient {
             user_id: member.user_id,
             phone: member
@@ -185,7 +191,7 @@ pub fn places_for_group(group: &Settings, members: &[MemberSettings]) -> Vec<Pla
     }
     if places.is_empty() {
         places.push(Place {
-            settings: group.clone(),
+            settings: settings::layered(defaults, group, None),
             recipients: Vec::new(),
         });
     }
@@ -359,7 +365,7 @@ mod tests {
             member(2, "94770000002", Some(colombo())), // Sri Lanka
             member(3, "447700900003", None),           // UK too
         ];
-        let places = places_for_group(&defaults(), &members);
+        let places = places_for_group(&defaults(), &Overrides::default(), &members);
 
         assert_eq!(places.len(), 2);
         assert_eq!(places[0].settings.city, "Milton Keynes");
@@ -384,12 +390,15 @@ mod tests {
             member(1, "447700900001", None),
             member(2, "447700900002", Some(hanafi)),
         ];
-        assert_eq!(places_for_group(&defaults(), &members).len(), 2);
+        assert_eq!(
+            places_for_group(&defaults(), &Overrides::default(), &members).len(),
+            2
+        );
     }
 
     #[test]
     fn a_group_with_no_known_members_still_gets_one_reminder() {
-        let places = places_for_group(&defaults(), &[]);
+        let places = places_for_group(&defaults(), &Overrides::default(), &[]);
         assert_eq!(places.len(), 1);
         assert!(places[0].recipients.is_empty());
     }

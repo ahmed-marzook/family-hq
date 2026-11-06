@@ -39,7 +39,7 @@ use crate::repo::todo_reminders;
 use crate::repo::todos::{self, Details, ListedTodo};
 use crate::repo::users::{self, User};
 use crate::reports::{Delivery, Feature, Period, Span};
-use crate::settings::Settings;
+use crate::settings::{self, Settings};
 use crate::settings_edit::{self, Change, Checked, Refused, Saved};
 use crate::todo_flags::{self, Due, Priority};
 use crate::weather::{self, When};
@@ -720,7 +720,10 @@ async fn chat_settings(
     defaults: &Settings,
 ) -> Result<(Settings, bool), AppError> {
     let stored = stored::get(conn, ctx.chat_id).await?;
-    Ok((stored.overrides.apply(defaults), stored.prayer_reminders))
+    // No person: these are the chat's own (what `/settings` shows and
+    // changes), not the sender's.
+    let settings = settings::layered(defaults, &stored.overrides, None);
+    Ok((settings, stored.prayer_reminders))
 }
 
 /// Why a `/settings` change wasn't made, as the bot says it.
@@ -905,14 +908,8 @@ async fn my_settings(
     ctx: &Context,
     defaults: &Settings,
 ) -> Result<Settings, AppError> {
-    let (here, _) = chat_settings(conn, ctx, defaults).await?;
-    if !ctx.is_group {
-        return Ok(here);
-    }
-    Ok(match stored::personal(conn, ctx.sender.id).await? {
-        Some(own) => own.overrides.apply(&here),
-        None => here,
-    })
+    let person = Some(ctx.sender.id);
+    Ok(stored::effective(conn, defaults, ctx.chat_id, person).await?)
 }
 
 /// The prayer times for these settings on `date`: from the cache, or

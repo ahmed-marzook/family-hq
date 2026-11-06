@@ -107,15 +107,9 @@ async fn settings_for(
     conn: &mut sqlx::SqliteConnection,
     subscriber: &Subscriber,
 ) -> Result<Settings, AppError> {
-    let chat = stored::get(conn, subscriber.chat_id).await?;
-    let here = chat.overrides.apply(&state.apis.prayer_times.defaults);
-    if subscriber.dm_user_id.is_some() {
-        return Ok(here);
-    }
-    Ok(match stored::personal(conn, subscriber.user_id).await? {
-        Some(own) => own.overrides.apply(&here),
-        None => here,
-    })
+    let defaults = &state.apis.prayer_times.defaults;
+    let person = Some(subscriber.user_id);
+    Ok(stored::effective(conn, defaults, subscriber.chat_id, person).await?)
 }
 
 async fn check_subscriber(

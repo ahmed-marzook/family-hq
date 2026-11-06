@@ -24,7 +24,7 @@ use crate::reports::Span;
 use crate::routes::admin::{
     CleanupView, RECENT_DAYS, SettingsView, leaves_on, refresh_group_names, settings_view,
 };
-use crate::routes::admin_prayers::{SpanView, span_view, today_for};
+use crate::routes::admin_prayers::{SpanView, span_view};
 use crate::routes::admin_reports::{ReportsView, reports_view};
 use crate::routes::admin_settings::{SettingsPatch, Switch, check_patch, on_off, save_patch};
 
@@ -196,13 +196,17 @@ pub(crate) async fn detail(
         .pop()
         .ok_or(AppError::NotFound)?;
     let settings = stored::get(conn, id).await?;
-    let group_settings = settings.overrides.apply(&state.apis.prayer_times.defaults);
+    let defaults = &state.apis.prayer_times.defaults;
     let reports = reports_view(conn, Some(id)).await?;
     // A `for` loop rather than `map`: each member needs two `.await`s,
     // and a closure can't `.await` inside a plain `map`.
     let mut members = Vec::new();
     for m in admin::members_of(conn, id).await? {
-        let today = today_for(conn, m.id, &group_settings).await?;
+        // Their week as it is in this group: their own settings on top of
+        // the group's, the same as the bot uses for them here.
+        let today = stored::effective(conn, defaults, id, Some(m.id))
+            .await?
+            .today(now);
         members.push(MemberView {
             id: m.id,
             name: m.name,
@@ -213,7 +217,7 @@ pub(crate) async fn detail(
         recent_days: RECENT_DAYS,
         cleanup: CleanupView::of(state),
         group: group_row(summary, state, now),
-        settings: settings_view(Some(settings), &state.apis.prayer_times.defaults),
+        settings: settings_view(Some(settings), defaults),
         reports,
         members,
     })
