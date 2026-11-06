@@ -236,7 +236,10 @@ pub async fn run_command(
         BotCommand::Prayers => {
             let settings = my_settings(conn, ctx, prayer_times).await?;
             let today = settings.today(ctx.now);
-            prayer_day(conn, ctx, apis, &settings, today).await?
+            match prayer_day(conn, ctx, apis, &settings, today).await {
+                Ok(text) => text,
+                Err(err) => prayer_service_down(err)?,
+            }
         }
         BotCommand::Prayed(checkin) => {
             // For people who didn't catch the reminder: with no timing, the
@@ -245,14 +248,30 @@ pub async fn run_command(
             let settings = my_settings(conn, ctx, prayer_times).await?;
             let today = settings.today(ctx.now);
             let yesterday = today.pred_opt().unwrap_or(today);
-            let location = apis.prayer_location(&settings).await?;
-            let today_times = prayer_times.for_date(&location, today).await?;
-            // Only looked up between midnight and Fajr, when last night's
-            // Isha may still be going (see `prayer::checkin_date`).
-            let yesterday_times = if prayer::before_fajr(&today_times, ctx.now) {
-                Some(prayer_times.for_date(&location, yesterday).await?)
-            } else {
-                None
+            // Every lookup that needs the network happens here, before
+            // anything is saved, so if a service is down nothing is ticked
+            // and the reply says so. An `async` block is like a small
+            // function inline: `?` inside it ends the block, not
+            // `run_command`, so all three lookups share one `match`.
+            let lookups = async {
+                let location = apis.prayer_location(&settings).await?;
+                let today_times = prayer_times.for_date(&location, today).await?;
+                // Only looked up between midnight and Fajr, when last night's
+                // Isha may still be going (see `prayer::checkin_date`), or
+                // for `yesterday`, so the reply below finds it cached.
+                let yesterday_times =
+                    if checkin.yesterday || prayer::before_fajr(&today_times, ctx.now) {
+                        Some(prayer_times.for_date(&location, yesterday).await?)
+                    } else {
+                        None
+                    };
+                // `Ok::<_, AppError>` names the error type, which the
+                // compiler can't work out from the `?`s on their own.
+                Ok::<_, AppError>((today_times, yesterday_times))
+            };
+            let (today_times, yesterday_times) = match lookups.await {
+                Ok(times) => times,
+                Err(err) => return prayer_service_down(err).map(Outcome::Reply),
             };
             let mut dates = Vec::new();
             for prayer in checkin.prayers {
@@ -280,6 +299,8 @@ pub async fn run_command(
             // Each day that changed, in order: usually one, but `+prayed
             // isha fajr` just after midnight ticks last night's Isha and
             // today's Fajr.
+            // Both days' times were fetched above, so these come from the
+            // cache; an error here is the database's.
             dates.sort();
             let mut days = Vec::new();
             for date in dates {
@@ -699,6 +720,27 @@ async fn prayer_day(
         .map(|e| (e.prayer, e.status))
         .collect();
     Ok(format_prayer_day(&day, settings, &log, Moon::at(ctx.now)))
+}
+
+/// What to say when a prayer-times lookup fails because a service is down
+/// or answered with something unusable: AlAdhan (`Http`, `PrayerTimes`)
+/// or the town lookup (`Geo`). The real error goes to the log.
+///
+/// Any other error, in practice the database, is given back as it is:
+/// the webhook then answers 500 and GOWA retries, which can help there.
+///
+/// `err @ (A | B)` matches either variant and still names the whole value
+/// `err`, so it can be logged.
+fn prayer_service_down(err: AppError) -> Result<String, AppError> {
+    match err {
+        err @ (AppError::Http(_) | AppError::PrayerTimes(_) | AppError::Geo(_)) => {
+            warn!("prayer times lookup failed: {err}");
+            Ok(format!(
+                "{PROBLEM} The prayer-times service isn't answering right now. Try again in a bit."
+            ))
+        }
+        other => Err(other),
+    }
 }
 
 /// `/settings ...`. Each change is checked first, then saved, then the
@@ -3563,6 +3605,27 @@ Already on the list: milk, Eggs"
             text.contains("prayer-times service isn't answering"),
             "{text}"
         );
+    }
+
+    #[tokio::test]
+    async fn prayed_ticks_nothing_when_the_prayer_times_service_is_down() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let ctx = setup(&mut conn).await;
+        let down = crate::testkit::failing_service().await;
+        let apis = Apis::new(PrayerTimes::new(defaults()).with_base_url(&down));
+
+        let command = BotCommand::Prayed(Checkin::today(vec![Prayer::Fajr]));
+        let text = reply_to(&mut conn, &ctx, &apis, command).await;
+        assert!(
+            text.contains("prayer-times service isn't answering"),
+            "{text}"
+        );
+        let today = defaults().today(ctx.now);
+        let prayed = prayers::prayed_on(&mut conn, ctx.sender.id, today)
+            .await
+            .unwrap();
+        assert!(prayed.is_empty(), "{prayed:?}");
     }
 
     #[tokio::test]
