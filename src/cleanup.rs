@@ -297,22 +297,42 @@ async fn warn_group(
 /// stored for it. With `only_if_inactive_since`, only if nobody has used
 /// the bot there since then (`false` if someone has). If GOWA can't leave,
 /// nothing is deleted and the error comes back.
+///
+/// GOWA is asked to leave *before* the transaction opens, so a slow GOWA
+/// never holds the database's write lock (see `routes::webhook`). That
+/// leaves a gap between leaving and deleting, and two things can happen in
+/// it. Neither loses anything that wasn't lost before:
+/// * Someone uses the bot in the group meanwhile. The check is made again
+///   inside the transaction, and their use keeps the data (`false`, with a
+///   warning). The bot has left, so `check_groups` no longer finds the group
+///   in GOWA's list and deletes it `LEFT_GRACE_HOURS` later, unless the bot
+///   is added back first.
+/// * The delete fails. The error comes back and the data stays, and
+///   `check_groups` deletes it later in the same way.
 pub async fn leave_and_delete(
     state: &AppState,
     chat_id: i64,
     wa_chat_id: &str,
     only_if_inactive_since: Option<DateTime<Utc>>,
 ) -> Result<bool, AppError> {
+    if let Some(since) = only_if_inactive_since {
+        let mut conn = state.db.acquire().await?;
+        if !repo::group_still_inactive(&mut conn, chat_id, since).await? {
+            return Ok(false);
+        }
+    }
+    // Leave first: if that fails, `?` returns before anything is deleted,
+    // so the next check can try again.
+    state.gowa.leave_group(wa_chat_id).await?;
+
     let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
     // A "let chain": the second test only runs if the first matched.
     if let Some(since) = only_if_inactive_since
         && !repo::group_still_inactive(&mut tx, chat_id, since).await?
     {
+        warn!("left {wa_chat_id}, but the bot was used there meanwhile; keeping its data for now");
         return Ok(false);
     }
-    // Leave first: if that fails, `?` returns and dropping `tx` keeps
-    // everything, so the next check can try again.
-    state.gowa.leave_group(wa_chat_id).await?;
     repo::delete_chat(&mut tx, chat_id).await?;
     tx.commit().await?;
     Ok(true)
