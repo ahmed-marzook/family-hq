@@ -8,9 +8,9 @@
 //!   prayed all five), and on a Sunday the week's summary, on a month's
 //!   last day the month's.
 //!
-//! When reports are due, and claiming and sending them, is the shared
-//! `reports` module's. What prayers' say is decided here by `messages`, a
-//! pure function.
+//! When reports are due, and turning them into a claim and messages, is the
+//! shared `reports` module's; the reminder engine sends them. What
+//! prayers' say is decided here by `messages`, a pure function.
 
 use chrono::{DateTime, NaiveDate, Utc};
 use tracing::info;
@@ -19,9 +19,10 @@ use crate::AppState;
 use crate::error::AppError;
 use crate::prayer::stats::{self, Entry, Summary};
 use crate::prayer::{DayTimes, checkin};
+use crate::reminders::engine::{self, Planned};
 use crate::reminders::{Place, Recipient};
 use crate::repo::prayers::{self, ReminderChat};
-use crate::reports::{self, Delivery, Feature, Outgoing, Period, Report, ReportKind, To};
+use crate::reports::{self, Delivery, Draft, Feature, Period, Report, ReportKind, To};
 
 /// Marks missed prayers and sends due reports for one place in one chat.
 pub async fn check(
@@ -46,7 +47,14 @@ pub async fn check(
         let day = state.apis.prayer_times.for_date(&location, date).await?;
         mark_missed(state, chat, place, &place_key, &day, now).await?;
         for kind in reports::due(date, stats::day_over(&day), now) {
-            send_report(state, chat, place, &place_key, date, kind, now).await?;
+            // Planned, then sent straight away, so each report goes out in
+            // the same order as before (this day's before the next's).
+            let Some(report) = plan_report(state, chat, place, &place_key, date, kind).await?
+            else {
+                continue;
+            };
+            let push = state.apis.push.as_ref();
+            engine::deliver(&state.gowa, &state.db, push, vec![report], now).await;
         }
     }
     Ok(())
@@ -97,7 +105,7 @@ pub fn messages(
     delivery: Delivery,
     is_group: bool,
     people: &[(Recipient, Vec<Entry>)],
-) -> Vec<Outgoing> {
+) -> Vec<Draft> {
     if delivery == Delivery::Off {
         return Vec::new();
     }
@@ -122,14 +130,14 @@ pub fn messages(
                     return Vec::new();
                 }
                 let mentions: Vec<String> = done.iter().map(|r| r.phone.clone()).collect();
-                return vec![Outgoing {
+                return vec![Draft {
                     to: To::Chat,
                     text: stats::day_text(date, &mentions),
                     mentions,
                 }];
             }
             done.iter()
-                .map(|r| Outgoing {
+                .map(|r| Draft {
                     to: to(r),
                     text: stats::day_text(date, &[]),
                     mentions: Vec::new(),
@@ -152,7 +160,7 @@ pub fn messages(
                     .into_iter()
                     .map(|(r, summary)| (Some(r.name.as_str()), summary))
                     .collect();
-                return vec![Outgoing {
+                return vec![Draft {
                     to: To::Chat,
                     text: stats::summary_text(span, period, &named),
                     mentions: Vec::new(),
@@ -160,7 +168,7 @@ pub fn messages(
             }
             summaries
                 .into_iter()
-                .map(|(r, summary)| Outgoing {
+                .map(|(r, summary)| Draft {
                     to: to(r),
                     text: stats::summary_text(span, period, &[(None, summary)]),
                     mentions: Vec::new(),
@@ -170,37 +178,38 @@ pub fn messages(
     }
 }
 
-async fn send_report(
+/// One prayer report, ready for the engine to claim and send; `None` if
+/// the chat turned its reports off (then not even claimed). Reads the
+/// prayer log; sends and claims nothing.
+async fn plan_report(
     state: &AppState,
     chat: &ReminderChat,
     place: &Place,
     place_key: &str,
     date: NaiveDate,
     kind: ReportKind,
-    now: DateTime<Utc>,
-) -> Result<(), AppError> {
+) -> Result<Option<Planned>, AppError> {
     if chat.delivery == Delivery::Off {
-        return Ok(());
+        return Ok(None);
     }
+    // Only for reading; back to the pool when this returns, before the
+    // report is sent.
+    let mut conn = state.db.acquire().await?;
     let period = Period::for_report(kind, date);
     let mut people = Vec::new();
-    {
-        let mut conn = state.db.acquire().await?;
-        for r in &place.recipients {
-            let log = prayers::log_between(&mut conn, r.user_id, period.first, period.last).await?;
-            people.push((r.clone(), log));
-        }
+    for r in &place.recipients {
+        let log = prayers::log_between(&mut conn, r.user_id, period.first, period.last).await?;
+        people.push((r.clone(), log));
     }
     let is_group = chat.dm_user_id.is_none();
     // Someone whose own DM has prayer reminders on gets that DM's reports;
     // a group's sent privately as well would be a copy.
     let mut outgoing = Vec::new();
     for message in messages(kind, date, chat.delivery, is_group, &people) {
-        if let To::Dm(user_id) = message.to {
-            let mut conn = state.db.acquire().await?;
-            if prayers::dm_reminders_on(&mut conn, user_id).await? {
-                continue;
-            }
+        if let To::Dm(user_id) = message.to
+            && prayers::dm_reminders_on(&mut conn, user_id).await?
+        {
+            continue;
         }
         outgoing.push(message);
     }
@@ -212,7 +221,7 @@ async fn send_report(
         wa_chat_id: &chat.wa_chat_id,
         place: place_key,
     };
-    reports::send(state, &report, outgoing, now).await
+    Ok(Some(reports::plan(&mut conn, &report, outgoing).await?))
 }
 
 #[cfg(test)]
@@ -338,5 +347,113 @@ mod tests {
         people.push((person(3, "Yusuf"), Vec::new()));
         let sent = messages(WEEK, date(SUNDAY), Delivery::Here, true, &people);
         assert!(!sent[0].text.contains("Yusuf"), "{}", sent[0].text);
+    }
+
+    // ---- `plan_report`: what goes to the engine ----
+
+    use crate::db::test_pool;
+    use crate::reminders::engine::Claim;
+    use crate::repo::settings as stored;
+    use crate::settings::Overrides;
+    use crate::settings::tests::defaults;
+    use crate::testkit::{Family, GROUP, seed_family, test_state, utc};
+
+    /// The family's group as the loop sees it, reports going `delivery`,
+    /// with Bilal and Khadija as its one place.
+    fn group(family: &Family, delivery: Delivery) -> (ReminderChat, Place) {
+        let chat = ReminderChat {
+            id: family.group,
+            wa_chat_id: GROUP.to_string(),
+            dm_user_id: None,
+            delivery,
+            overrides: Overrides::default(),
+        };
+        let recipient = |user: &crate::repo::users::User| Recipient {
+            user_id: user.id,
+            phone: user.wa_jid.split_once('@').unwrap().0.to_string(),
+            name: user.display_name.clone(),
+        };
+        let place = Place {
+            settings: defaults(),
+            recipients: vec![recipient(&family.bilal), recipient(&family.khadija)],
+        };
+        (chat, place)
+    }
+
+    /// Both prayed all five on Sunday 1 November.
+    async fn both_prayed_all_five(state: &AppState, family: &Family) {
+        let mut conn = state.db.acquire().await.unwrap();
+        for user in [family.bilal.id, family.khadija.id] {
+            for prayer in Prayer::ALL {
+                checkin::tick(
+                    &mut conn,
+                    user,
+                    date(SUNDAY),
+                    prayer,
+                    utc("2026-11-01T22:00:00Z"),
+                )
+                .await
+                .unwrap();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn reports_off_plan_nothing_not_even_a_claim() {
+        let state = test_state(test_pool().await, "http://localhost:1");
+        let family = {
+            let mut conn = state.db.acquire().await.unwrap();
+            seed_family(&mut conn, utc("2026-10-01T12:00:00Z")).await
+        };
+        both_prayed_all_five(&state, &family).await;
+        let (chat, place) = group(&family, Delivery::Off);
+        let planned = plan_report(&state, &chat, &place, "mk", date(SUNDAY), ReportKind::Day)
+            .await
+            .unwrap();
+        assert_eq!(planned, None);
+    }
+
+    #[tokio::test]
+    async fn sent_privately_a_dm_with_its_own_reminders_gets_no_copy() {
+        let state = test_state(test_pool().await, "http://localhost:1");
+        let family = {
+            let mut conn = state.db.acquire().await.unwrap();
+            seed_family(&mut conn, utc("2026-10-01T12:00:00Z")).await
+        };
+        both_prayed_all_five(&state, &family).await;
+        let (chat, place) = group(&family, Delivery::Dm);
+
+        // Bilal's DM is his only private chat; Khadija has none, so with
+        // his DM's reminders off, only he gets the group's day report.
+        let plan = plan_report(&state, &chat, &place, "mk", date(SUNDAY), ReportKind::Day)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            plan.claim,
+            Claim::Report {
+                chat_id: family.group,
+                feature: Feature::Prayers,
+                kind: ReportKind::Day,
+                date: date(SUNDAY),
+                place: "mk".to_string(),
+            }
+        );
+        let to: Vec<&str> = plan.messages.iter().map(|m| m.to.as_str()).collect();
+        assert_eq!(to, [family.bilal.wa_jid.as_str()]);
+
+        // His DM has its own prayer reminders (and so its own reports): no
+        // copy of the group's, but still a claim.
+        {
+            let mut conn = state.db.acquire().await.unwrap();
+            stored::set_prayer_reminders(&mut conn, family.dm, true)
+                .await
+                .unwrap();
+        }
+        let plan = plan_report(&state, &chat, &place, "mk", date(SUNDAY), ReportKind::Day)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(plan.messages.is_empty(), "{plan:?}");
     }
 }

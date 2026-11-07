@@ -21,7 +21,7 @@ use crate::points::{self, DayPoints};
 use crate::repo::points::{self as stored_points, ReportGroup};
 use crate::repo::reports as stored_reports;
 use crate::repo::settings as stored_settings;
-use crate::reports::{self, Delivery, Feature, Outgoing, Period, Report, ReportKind, Span, To};
+use crate::reports::{self, Delivery, Draft, Feature, Period, Report, ReportKind, Span, To};
 
 /// The hour on Sunday, local to the group, when the week's summary goes.
 pub const SUMMARY_HOUR: u32 = 20;
@@ -110,13 +110,13 @@ pub fn messages(
     week: Period,
     days: &[DayPoints],
     last_week: &[(String, i64)],
-) -> Vec<Outgoing> {
+) -> Vec<Draft> {
     match delivery {
         Delivery::Off => Vec::new(),
         // `Option::into_iter`: no text → no message, some → one.
         Delivery::Here => points::week_text(week, days, last_week)
             .into_iter()
-            .map(|text| Outgoing {
+            .map(|text| Draft {
                 to: To::Chat,
                 text,
                 mentions: Vec::new(),
@@ -131,7 +131,7 @@ pub fn messages(
                     .cloned()
                     .collect();
                 let before = last_week.iter().find(|(n, _)| *n == name).map(|(_, p)| *p);
-                Outgoing {
+                Draft {
                     to: To::Dm(user_id),
                     text: points::own_week_text(group_name, week, &theirs, before),
                     mentions: Vec::new(),

@@ -7,17 +7,20 @@
 //! * Where they go: each chat chooses, per feature (`Delivery`).
 //! * Never twice: each one is claimed in `reports_sent` before it's sent.
 //!
-//! A feature decides what its reports say, as a list of `Outgoing`
-//! messages; `send` does the rest.
+//! A feature decides what its reports say, as a list of `Draft`
+//! messages; `plan` turns them into one claim and its messages, which the
+//! reminder engine (`reminders::engine`) claims and sends.
 
 use std::fmt;
 use std::str::FromStr;
 
 use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc, Weekday};
+use sqlx::SqliteConnection;
 use tracing::{info, warn};
 
 use crate::AppState;
 use crate::error::AppError;
+use crate::reminders::engine::{Claim, OnSent, Outgoing, Planned};
 use crate::repo::reports;
 
 /// Which feature a report is for. The schema's CHECK allows exactly these
@@ -207,16 +210,17 @@ pub enum To {
     Dm(i64),
 }
 
-/// One message to send.
+/// One message of a report, as a feature writes it: who it's for (`To`),
+/// not yet which WhatsApp chat that is (`plan` works that out).
 #[derive(Debug, Clone, PartialEq)]
-pub struct Outgoing {
+pub struct Draft {
     pub to: To,
     pub text: String,
     /// Phone numbers @mentioned in `text`.
     pub mentions: Vec<String>,
 }
 
-/// One report for one chat, as `send` needs it.
+/// One report for one chat, as `plan` needs it.
 #[derive(Debug, Clone)]
 pub struct Report<'a> {
     pub feature: Feature,
@@ -230,6 +234,59 @@ pub struct Report<'a> {
     pub place: &'a str,
 }
 
+/// One report, ready for `reminders::engine::deliver`: claimed once per
+/// chat, feature, kind, day and place, then each draft sent to the chat
+/// itself or, for `To::Dm`, to that person's DM. Someone who never
+/// messaged the bot privately is left out: the bot doesn't start a
+/// conversation with someone.
+///
+/// Claimed even when there's nothing to say (`drafts` empty), so the
+/// feature doesn't work it out again every minute for the rest of the
+/// grace period. Reads the database (the DMs); sends and claims nothing.
+pub async fn plan(
+    conn: &mut SqliteConnection,
+    report: &Report<'_>,
+    drafts: Vec<Draft>,
+) -> Result<Planned, AppError> {
+    let Report {
+        feature,
+        kind,
+        date,
+        ..
+    } = *report;
+    let what = format!("the {} {kind} report for {date}", feature.as_db_str());
+    let mut messages = Vec::new();
+    for draft in drafts {
+        let to = match draft.to {
+            To::Chat => report.wa_chat_id.to_string(),
+            To::Dm(user_id) => match reports::dm_chat(conn, user_id).await? {
+                Some(dm) => dm,
+                None => continue,
+            },
+        };
+        messages.push(Outgoing {
+            to,
+            text: draft.text,
+            mentions: draft.mentions,
+            quote: None,
+            on_sent: OnSent::Nothing,
+            push: Vec::new(),
+            what: what.clone(),
+        });
+    }
+    Ok(Planned {
+        // Not retried if a send fails, like reminders: the claim stays.
+        claim: Claim::Report {
+            chat_id: report.chat_id,
+            feature,
+            kind,
+            date,
+            place: report.place.to_string(),
+        },
+        messages,
+    })
+}
+
 /// Claims the report, then sends its messages. Nothing is sent if it was
 /// already claimed (sent before, or being sent by another check).
 ///
@@ -238,7 +295,7 @@ pub struct Report<'a> {
 pub async fn send(
     state: &AppState,
     report: &Report<'_>,
-    outgoing: Vec<Outgoing>,
+    outgoing: Vec<Draft>,
     now: DateTime<Utc>,
 ) -> Result<(), AppError> {
     let Report {
@@ -382,5 +439,69 @@ mod tests {
             (day.first, day.last),
             (date("2026-10-28"), date("2026-10-28"))
         );
+    }
+
+    #[tokio::test]
+    async fn a_plan_addresses_each_draft_and_drops_people_with_no_dm() {
+        use crate::db::test_pool;
+        use crate::testkit::{GROUP, seed_family};
+
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        // Bilal has a DM with the bot; Khadija doesn't.
+        let family = seed_family(&mut conn, utc("2026-11-01T12:00:00Z")).await;
+        let draft = |to, text: &str| Draft {
+            to,
+            text: text.to_string(),
+            mentions: Vec::new(),
+        };
+        let report = Report {
+            feature: Feature::Points,
+            kind: ReportKind::Summary(Span::Week),
+            date: date("2026-11-08"),
+            chat_id: family.group,
+            wa_chat_id: GROUP,
+            place: "",
+        };
+        let drafts = vec![
+            draft(To::Chat, "everyone"),
+            draft(To::Dm(family.bilal.id), "Bilal's"),
+            draft(To::Dm(family.khadija.id), "Khadija's"),
+        ];
+
+        let planned = plan(&mut conn, &report, drafts).await.unwrap();
+        assert_eq!(
+            planned.claim,
+            Claim::Report {
+                chat_id: family.group,
+                feature: Feature::Points,
+                kind: ReportKind::Summary(Span::Week),
+                date: date("2026-11-08"),
+                place: String::new(),
+            }
+        );
+        let sent: Vec<(&str, &str)> = planned
+            .messages
+            .iter()
+            .map(|m| (m.to.as_str(), m.text.as_str()))
+            .collect();
+        assert_eq!(
+            sent,
+            [
+                (GROUP, "everyone"),
+                (family.bilal.wa_jid.as_str(), "Bilal's")
+            ]
+        );
+        assert!(
+            planned
+                .messages
+                .iter()
+                .all(|m| m.on_sent == OnSent::Nothing)
+        );
+
+        // Nothing to say is still a plan: a claim with no messages.
+        let empty = plan(&mut conn, &report, Vec::new()).await.unwrap();
+        assert_eq!(empty.claim, planned.claim);
+        assert!(empty.messages.is_empty());
     }
 }
