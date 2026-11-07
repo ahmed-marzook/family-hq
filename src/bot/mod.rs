@@ -1254,9 +1254,10 @@ async fn close_todo(
     let Some(todo) = closed else {
         return Ok(None);
     };
+    // What it's worth is the todo's own rule; saving it is shared.
     let award = points::for_todo(finish, todo.priority, todo.due, today);
-    stored_points::award(conn, by, chat, Source::Todo, id, award, today, now).await?;
-    Ok(Some((todo.title, award.points)))
+    let earned = points::award::award(conn, ctx, Source::Todo, id, award, today).await?;
+    Ok(Some((todo.title, earned)))
 }
 
 /// `/points`. In a group: this week's leaderboard for the group, Monday to

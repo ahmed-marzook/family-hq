@@ -23,6 +23,7 @@ use crate::progress;
 use crate::reports::Period;
 use crate::todo::flags::Priority;
 
+pub mod award;
 pub mod reports;
 
 pub const STAR: &str = "⭐";
