@@ -24,6 +24,7 @@ use crate::reports::Period;
 use crate::todo::flags::Priority;
 
 pub mod award;
+pub mod commands;
 pub mod reports;
 
 pub const STAR: &str = "⭐";
@@ -134,6 +135,14 @@ pub fn signed(points: i64) -> String {
         p if p > 0 => format!("+{p}"),
         p if p < 0 => format!("{MINUS}{}", p.unsigned_abs()),
         _ => "0".to_string(),
+    }
+}
+
+/// " · +3 ⭐" after a closed todo's name, or nothing if it earned nothing.
+pub fn earned_text(points: Option<i64>) -> String {
+    match points {
+        Some(p) if p != 0 => format!(" · {} {}", signed(p), STAR),
+        _ => String::new(),
     }
 }
 

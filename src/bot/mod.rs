@@ -31,40 +31,32 @@ use crate::prayer::commands::{self, Looked};
 use crate::progress;
 use crate::push;
 use crate::repo::messages::{self, ListItem, ListKind, SentList};
-use crate::repo::points as stored_points;
 use crate::repo::push::{self as push_repo, Subscription};
-use crate::repo::reports as stored_reports;
 use crate::repo::settings::{self as stored, MemberSettings};
 use crate::repo::shop::{self, ShopItem};
 use crate::repo::todo_reminders;
 use crate::repo::todos::{self, Details, ListedTodo};
 use crate::repo::users::{self, User};
-use crate::reports::{Delivery, Feature, Period, Span};
 use crate::settings::edit::{self as settings_edit, Change, Checked, Refused, Saved};
 use crate::settings::{self, Settings};
 use crate::todo::flags::{self as todo_flags, Due, Priority};
 use crate::weather::{self, When};
+use emoji::{BELL, BELL_OFF, CLEARED, DONE, NOT_YET, PROBLEM, SKIPPED};
+
+pub(crate) mod emoji;
 
 const ADDED: &str = "📝";
 const LIST: &str = "📋";
-const DONE: &str = "✅";
-const SKIPPED: &str = "⏭️";
 const DUE: &str = "📅";
 const OVERDUE: &str = "⚠️";
 const REMOVED: &str = "🗑️";
-const PROBLEM: &str = "❓";
 const MUTED: &str = "🔕";
 const SHOP: &str = "🛒";
 const MOSQUE: &str = "🕌";
-const NOT_YET: &str = "⬜";
-const BELL: &str = "🔔";
-const BELL_OFF: &str = "🔕";
-const CLEARED: &str = "🧹";
 const GEAR: &str = "⚙️";
 const PIN: &str = "📍";
 const CLOCK: &str = "🕰️";
 const PEOPLE: &str = "👥";
-const CHART: &str = "📊";
 
 /// Who is asking, and where.
 pub struct Context {
@@ -411,22 +403,8 @@ async fn run_plain(
         BotCommand::PrayerReminders(on) => commands::reminders(conn, ctx, defaults, on).await?,
         BotCommand::PrayerSummary(span) => commands::summary(conn, ctx, defaults, span).await?,
         BotCommand::PrayerReports(change) => commands::reports(conn, ctx, change).await?,
-        BotCommand::Points => points_command(conn, ctx, defaults).await?,
-        BotCommand::PointsReports(_) if !ctx.is_group => format!(
-            "{CHART} The Sunday points summary is for groups. Here, `/points` shows \
-             your own week any time."
-        ),
-        BotCommand::PointsReports(change) => {
-            let delivery = match change {
-                Some(delivery) => {
-                    stored_reports::set_delivery(conn, ctx.chat_id, Feature::Points, delivery)
-                        .await?;
-                    delivery
-                }
-                None => stored_reports::delivery(conn, ctx.chat_id, Feature::Points).await?,
-            };
-            format_points_reports(delivery)
-        }
+        BotCommand::Points => points::commands::show(conn, ctx, defaults).await?,
+        BotCommand::PointsReports(change) => points::commands::reports(conn, ctx, change).await?,
         // `prepare` turns each of these into a step of its own, never into
         // `Step::Plain`, so they can't arrive here.
         BotCommand::Prayers
@@ -1190,13 +1168,16 @@ async fn act_on_list(
                 lines.push(format!("{REMOVED} Removed *{name}*"));
             }
             (Some(name), ListStep::CloseTodo(Finish::Done)) => {
-                lines.push(format!("{DONE} Done: *{name}*{}", earned_text(earned)));
+                lines.push(format!(
+                    "{DONE} Done: *{name}*{}",
+                    points::earned_text(earned)
+                ));
                 closed_any = true;
             }
             (Some(name), ListStep::CloseTodo(Finish::Skipped)) => {
                 lines.push(format!(
                     "{SKIPPED} Skipped: *{name}*{}",
-                    earned_text(earned)
+                    points::earned_text(earned)
                 ));
                 closed_any = true;
             }
@@ -1260,65 +1241,6 @@ async fn close_todo(
     Ok(Some((todo.title, earned)))
 }
 
-/// `/points`. In a group: this week's leaderboard for the group, Monday to
-/// Sunday on the reader's clock. In a DM: the sender's own points from
-/// every chat they're in.
-async fn points_command(
-    conn: &mut SqliteConnection,
-    ctx: &Context,
-    defaults: &Settings,
-) -> Result<String, AppError> {
-    let today = my_settings(conn, ctx, defaults).await?.today(ctx.now);
-    let week = Period::of(Span::Week, today);
-    let just_today = Period {
-        first: today,
-        last: today,
-    };
-    if ctx.is_group {
-        let totals = stored_points::totals(conn, ctx.chat_id, week).await?;
-        let today_totals = stored_points::totals(conn, ctx.chat_id, just_today).await?;
-        return Ok(points::group_text(week, &totals, &today_totals));
-    }
-
-    let user = ctx.sender.id;
-    let last_7 = Period {
-        first: today - chrono::Duration::days(6),
-        last: today,
-    };
-    // The previous Monday to Sunday: the week that the day before this
-    // Monday is in.
-    let last_week = Period::of(Span::Week, week.first - chrono::Duration::days(1));
-    let sum = |days: &[(NaiveDate, i64)]| days.iter().map(|(_, p)| p).sum::<i64>();
-
-    let earned = stored_points::by_day(conn, user, last_7).await?;
-    // Every one of the 7 days, with 0 for a day that earned nothing.
-    let last_7_days = last_7
-        .days()
-        .map(|day| {
-            let points = earned
-                .iter()
-                .find(|(d, _)| *d == day)
-                .map_or(0, |(_, p)| *p);
-            (day, points)
-        })
-        .collect();
-    let mine = points::Mine {
-        last_7_days,
-        this_week: sum(&stored_points::by_day(conn, user, week).await?),
-        last_week: sum(&stored_points::by_day(conn, user, last_week).await?),
-        by_chat: stored_points::by_chat(conn, user, week).await?,
-    };
-    Ok(points::mine_text(&mine))
-}
-
-/// " · +3 ⭐" after a closed todo's name, or nothing if it earned nothing.
-fn earned_text(points: Option<i64>) -> String {
-    match points {
-        Some(p) if p != 0 => format!(" · {} {}", points::signed(p), points::STAR),
-        _ => String::new(),
-    }
-}
-
 /// `+done gym` / `+skip gym`: closes the open todo whose title matches each
 /// name. Several matches is a question back rather than a guess.
 async fn close_by_name(
@@ -1343,7 +1265,7 @@ async fn close_by_name(
                         Finish::Done => format!("{DONE} Done"),
                         Finish::Skipped => format!("{SKIPPED} Skipped"),
                     };
-                    let earned = earned_text(Some(points));
+                    let earned = points::earned_text(Some(points));
                     lines.push(format!("{mark}: *{title}*{earned}"));
                     closed_any = true;
                 }
@@ -1461,21 +1383,6 @@ fn unknown_name(name: &str, known: &[String]) -> String {
             known.join(", ")
         )
     }
-}
-
-/// The `/points reports` reply, in a group: where the summary goes now.
-fn format_points_reports(delivery: Delivery) -> String {
-    let what = "every Sunday at 8pm, the week's points: the leaderboard, how \
-                each person did against last week, and the best day";
-    let now = match delivery {
-        Delivery::Off => format!("{BELL_OFF} The Sunday points summary is off in this group."),
-        Delivery::Here => format!("{CHART} The points summary comes to this group: {what}."),
-        Delivery::Dm => format!(
-            "{CHART} The points summary goes to each member privately, just their own \
-             week. (Only to people who have messaged me privately.)"
-        ),
-    };
-    format!("{now}\nChange with `/points reports here`, `dm` or `off`.")
 }
 
 /// The `/settings` reply.
@@ -1874,13 +1781,13 @@ pub(crate) mod tests {
         PrayerTimes::with_cached(defaults(), day())
     }
 
-    fn item(position: i64, item_id: i64) -> ListItem {
+    pub(crate) fn item(position: i64, item_id: i64) -> ListItem {
         ListItem { position, item_id }
     }
 
     /// A list of `kind` showing `item_ids`, numbered from 1, as a reply to
     /// it would see it.
-    fn sent(kind: ListKind, item_ids: &[i64]) -> SentList {
+    pub(crate) fn sent(kind: ListKind, item_ids: &[i64]) -> SentList {
         let items = item_ids
             .iter()
             .zip(1..)
@@ -2199,7 +2106,7 @@ pub(crate) mod tests {
 
     /// Runs a typed message, as the webhook would (`+todo` with no
     /// `@name` is for the sender: `add_todo` treats `None` that way too).
-    async fn typed(conn: &mut SqliteConnection, ctx: &Context, text: &str) -> Outcome {
+    pub(crate) async fn typed(conn: &mut SqliteConnection, ctx: &Context, text: &str) -> Outcome {
         let command = crate::parser::parse(text).expect("should parse");
         run_command(conn, ctx, &Apis::new(times()), command)
             .await
@@ -2419,47 +2326,6 @@ pub(crate) mod tests {
                 row("skipped", -1, "2026-11-07"),
             ]
         );
-    }
-
-    #[tokio::test]
-    async fn points_reports_are_set_per_group() {
-        let pool = test_pool().await;
-        let mut conn = pool.acquire().await.unwrap();
-        let ctx = setup(&mut conn).await;
-
-        let reply = typed(&mut conn, &ctx, "/points reports").await.into_text();
-        assert!(
-            reply.contains("comes to this group"),
-            "here by default: {reply}"
-        );
-        let reply = typed(&mut conn, &ctx, "/points reports dm")
-            .await
-            .into_text();
-        assert!(reply.contains("each member privately"), "{reply}");
-        assert_eq!(
-            stored_reports::delivery(&mut conn, ctx.chat_id, Feature::Points)
-                .await
-                .unwrap(),
-            Delivery::Dm
-        );
-        // The prayer reports are a separate setting.
-        assert_eq!(
-            stored_reports::delivery(&mut conn, ctx.chat_id, Feature::Prayers)
-                .await
-                .unwrap(),
-            Delivery::Here
-        );
-
-        let dm = Context {
-            chat_id: ctx.chat_id,
-            is_group: false,
-            sender: ctx.sender.clone(),
-            now: ctx.now,
-        };
-        let reply = typed(&mut conn, &dm, "/points reports off")
-            .await
-            .into_text();
-        assert!(reply.contains("for groups"), "{reply}");
     }
 
     #[tokio::test]
