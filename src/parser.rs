@@ -10,7 +10,7 @@
 use crate::person::Assignee;
 use crate::prayer::{HANAFI, Prayer, SHAFII};
 use crate::reports::{Delivery, Span};
-use crate::todo_flags::{Due, Flag, FlagError, Priority};
+use crate::todo::flags::{Due, Flag, FlagError, Priority};
 use crate::weather::When;
 
 /// A command typed as a normal message.

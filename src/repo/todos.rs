@@ -6,7 +6,7 @@ use std::str::FromStr;
 use chrono::{DateTime, NaiveDate, Utc};
 use sqlx::SqliteConnection;
 
-use crate::todo_flags::Priority;
+use crate::todo::flags::Priority;
 
 /// One open todo, as shown in a `/todo` list.
 // Only the tests use this.

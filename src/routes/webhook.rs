@@ -812,7 +812,7 @@ mod tests {
 
     #[test]
     fn todo_without_assignee_goes_to_sender() {
-        use crate::todo_flags::{Due, Priority};
+        use crate::todo::flags::{Due, Priority};
         // The flags come through unchanged.
         let command = BotCommand::AddTodo {
             titles: vec!["go gym".to_string()],

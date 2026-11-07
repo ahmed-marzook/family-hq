@@ -42,7 +42,7 @@ use crate::repo::users::{self, User};
 use crate::reports::{Delivery, Feature, Period, Span};
 use crate::settings::edit::{self as settings_edit, Change, Checked, Refused, Saved};
 use crate::settings::{self, Settings};
-use crate::todo_flags::{self, Due, Priority};
+use crate::todo::flags::{self as todo_flags, Due, Priority};
 use crate::weather::{self, When};
 
 const ADDED: &str = "📝";

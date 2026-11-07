@@ -21,7 +21,7 @@ use chrono::NaiveDate;
 
 use crate::progress;
 use crate::reports::Period;
-use crate::todo_flags::Priority;
+use crate::todo::flags::Priority;
 
 pub mod reports;
 

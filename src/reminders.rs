@@ -22,7 +22,7 @@ use crate::push::{self, Feature};
 use crate::repo::prayers::{self, NewReminder, ReminderChat};
 use crate::repo::settings::{self as stored, MemberSettings};
 use crate::settings::{self, Overrides, Settings};
-use crate::todo_reminders;
+use crate::todo::reminders as todo_reminders;
 
 /// How often to check. Reminders go out at most this late.
 const CHECK_EVERY: StdDuration = StdDuration::from_secs(60);

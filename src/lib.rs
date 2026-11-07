@@ -40,8 +40,7 @@ pub mod routes;
 mod settings;
 #[cfg(test)]
 pub(crate) mod testkit;
-mod todo_flags;
-mod todo_reminders;
+mod todo;
 mod weather;
 mod whatsapp;
 
