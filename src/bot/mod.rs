@@ -40,8 +40,8 @@ use crate::repo::todo_reminders;
 use crate::repo::todos::{self, Details, ListedTodo};
 use crate::repo::users::{self, User};
 use crate::reports::{Delivery, Feature, Period, Span};
+use crate::settings::edit::{self as settings_edit, Change, Checked, Refused, Saved};
 use crate::settings::{self, Settings};
-use crate::settings_edit::{self, Change, Checked, Refused, Saved};
 use crate::todo_flags::{self, Due, Priority};
 use crate::weather::{self, When};
 

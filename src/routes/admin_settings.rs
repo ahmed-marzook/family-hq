@@ -25,7 +25,7 @@ use crate::prayer;
 use crate::repo::settings as stored;
 use crate::repo::{admin, chats, todo_reminders};
 use crate::routes::admin::{UserDetail, detail};
-use crate::settings_edit::{self, Change, Checked, ENDING_MINUTES, Refused};
+use crate::settings::edit::{self as settings_edit, Change, Checked, ENDING_MINUTES, Refused};
 
 /// The body of `PATCH /api/users/{id}/settings`: only the settings to
 /// change. `deny_unknown_fields` turns a misspelt name into a 4xx error

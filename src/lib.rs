@@ -38,7 +38,6 @@ mod repo;
 mod reports;
 pub mod routes;
 mod settings;
-mod settings_edit;
 #[cfg(test)]
 pub(crate) mod testkit;
 mod todo_flags;

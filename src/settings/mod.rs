@@ -11,6 +11,8 @@ use tracing::warn;
 use crate::geo::Coordinates;
 use crate::prayer::Location;
 
+pub mod edit;
+
 /// One chat's complete settings, after filling in defaults.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Settings {
