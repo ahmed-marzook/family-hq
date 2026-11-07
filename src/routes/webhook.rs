@@ -397,7 +397,7 @@ async fn handle_message(
     let result = match ready {
         Ready::Command(prepared) => bot::execute(&mut tx, &ctx, &offline, *prepared).await,
         Ready::ListReply(list, reply) => {
-            bot::run_list_reply(&mut tx, &ctx, offline.defaults, &list, reply)
+            bot::lists::run_list_reply(&mut tx, &ctx, offline.defaults, &list, reply)
                 .await
                 .map(Ran::Done)
         }
