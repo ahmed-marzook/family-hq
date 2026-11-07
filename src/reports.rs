@@ -16,9 +16,7 @@ use std::str::FromStr;
 
 use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc, Weekday};
 use sqlx::SqliteConnection;
-use tracing::{info, warn};
 
-use crate::AppState;
 use crate::error::AppError;
 use crate::reminders::engine::{Claim, OnSent, Outgoing, Planned};
 use crate::repo::reports;
@@ -285,72 +283,6 @@ pub async fn plan(
         },
         messages,
     })
-}
-
-/// Claims the report, then sends its messages. Nothing is sent if it was
-/// already claimed (sent before, or being sent by another check).
-///
-/// Claimed even when there's nothing to say, so the feature doesn't work
-/// it out again every minute for the rest of the grace period.
-pub async fn send(
-    state: &AppState,
-    report: &Report<'_>,
-    outgoing: Vec<Draft>,
-    now: DateTime<Utc>,
-) -> Result<(), AppError> {
-    let Report {
-        feature,
-        kind,
-        date,
-        ..
-    } = *report;
-    {
-        // A block, so the connection goes back to the pool before sending.
-        let mut conn = state.db.acquire().await?;
-        let claimed = reports::claim(
-            &mut conn,
-            report.chat_id,
-            feature,
-            kind,
-            date,
-            report.place,
-            now,
-        )
-        .await?;
-        if !claimed {
-            return Ok(());
-        }
-    }
-
-    for message in outgoing {
-        let wa_chat_id = match message.to {
-            To::Chat => report.wa_chat_id.to_string(),
-            To::Dm(user_id) => {
-                let mut conn = state.db.acquire().await?;
-                match reports::dm_chat(&mut conn, user_id).await? {
-                    Some(dm) => dm,
-                    // Never messaged the bot privately: the bot doesn't
-                    // start a conversation with someone.
-                    None => continue,
-                }
-            }
-        };
-        // Not retried, like reminders: the claim stays.
-        let feature = feature.as_db_str();
-        match state
-            .gowa
-            .send_text(&wa_chat_id, &message.text, None, &message.mentions)
-            .await
-        {
-            Ok(_) => {
-                info!("sent the {feature} {kind} report for {date} to {wa_chat_id}")
-            }
-            Err(err) => {
-                warn!("couldn't send the {feature} {kind} report to {wa_chat_id}: {err}")
-            }
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]

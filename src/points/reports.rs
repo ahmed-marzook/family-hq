@@ -9,7 +9,8 @@
 //!   each person only their own week, privately.
 //! * Groups only. In a DM, `/points` shows your own week any time.
 //!
-//! Claiming, sending and the grace period are the shared `reports` module's.
+//! The grace period and the claim are the shared `reports` module's;
+//! claiming and sending are the reminder engine's (`reminders::engine`).
 
 use chrono::{DateTime, Duration, NaiveDate, NaiveTime, TimeZone, Utc};
 use chrono_tz::Tz;
@@ -18,6 +19,7 @@ use tracing::warn;
 use crate::AppState;
 use crate::error::AppError;
 use crate::points::{self, DayPoints};
+use crate::reminders::engine::{self, Planned};
 use crate::repo::points::{self as stored_points, ReportGroup};
 use crate::repo::reports as stored_reports;
 use crate::repo::settings as stored_settings;
@@ -35,41 +37,54 @@ pub async fn check(state: &AppState, now: DateTime<Utc>) -> Result<(), AppError>
         let mut conn = state.db.acquire().await?;
         stored_points::report_groups(&mut conn, since).await?
     };
+    let mut planned = Vec::new();
     for group in groups {
         // One group's problem must not stop the others' summaries.
-        if let Err(err) = check_group(state, &group, now).await {
-            warn!("points summary for {} failed: {err}", group.wa_chat_id);
+        match plan_group(state, &group, now).await {
+            Ok(plan) => planned.extend(plan),
+            Err(err) => warn!("points summary for {} failed: {err}", group.wa_chat_id),
         }
     }
+    engine::deliver(
+        &state.gowa,
+        &state.db,
+        state.apis.push.as_ref(),
+        planned,
+        now,
+    )
+    .await;
     Ok(())
 }
 
-async fn check_group(
+/// One group's weekly summary, if it's due: read from the database,
+/// nothing sent or claimed. With reports off it's still claimed, just
+/// with nothing to send.
+async fn plan_group(
     state: &AppState,
     group: &ReportGroup,
     now: DateTime<Utc>,
-) -> Result<(), AppError> {
+) -> Result<Option<Planned>, AppError> {
+    // Only for reading; back to the pool when this returns, before the
+    // engine sends anything (which waits on GOWA).
     let mut conn = state.db.acquire().await?;
     // The whole group's summary, so the group's clock: no one person's.
     let defaults = &state.apis.prayer_times.defaults;
     let settings = stored_settings::effective(&mut conn, defaults, group.id, None).await?;
     let today = settings.today(now);
     let Some(at) = summary_time(settings.timezone, today) else {
-        return Ok(());
+        return Ok(None);
     };
     // `due` also lists the day's report (and the month's at a month end);
     // points only has a weekly one. On any day but Sunday this is empty.
     let due = reports::due(today, at, now);
     if !due.contains(&ReportKind::Summary(Span::Week)) {
-        return Ok(());
+        return Ok(None);
     }
     let delivery = stored_reports::delivery(&mut conn, group.id, Feature::Points).await?;
     let week = Period::of(Span::Week, today);
     let last_week = Period::of(Span::Week, week.first - Duration::days(1));
     let days = stored_points::by_person_day(&mut conn, group.id, week).await?;
     let before = stored_points::totals(&mut conn, group.id, last_week).await?;
-    // Back to the pool before sending, which waits on GOWA.
-    drop(conn);
 
     let outgoing = messages(delivery, group.name.as_deref(), week, &days, &before);
     let report = Report {
@@ -80,7 +95,7 @@ async fn check_group(
         wa_chat_id: &group.wa_chat_id,
         place: "",
     };
-    reports::send(state, &report, outgoing, now).await
+    Ok(Some(reports::plan(&mut conn, &report, outgoing).await?))
 }
 
 /// `SUMMARY_HOUR` on `date` in `timezone`, as a moment. `earliest()`
@@ -307,5 +322,76 @@ mod tests {
             !week_due("2026-11-07", "2026-11-07T20:30:00Z"),
             "a Saturday"
         );
+    }
+
+    #[tokio::test]
+    async fn the_plan_is_the_groups_week_claimed_even_when_off() {
+        use crate::db::test_pool;
+        use crate::points::{Award, Reason, Source};
+        use crate::reminders::engine::Claim;
+        use crate::testkit::{GROUP, seed_family, test_state, utc};
+
+        let state = test_state(test_pool().await, "http://localhost:1");
+        let (family, group) = {
+            let mut conn = state.db.acquire().await.unwrap();
+            let family = seed_family(&mut conn, utc("2026-11-01T12:00:00Z")).await;
+            let award = Award {
+                points: 3,
+                reason: Reason::Done,
+            };
+            let at = utc("2026-11-05T12:00:00Z");
+            stored_points::award(
+                &mut conn,
+                family.khadija.id,
+                family.group,
+                Source::Todo,
+                1,
+                award,
+                date("2026-11-05"),
+                at,
+            )
+            .await
+            .unwrap();
+            let groups = stored_points::report_groups(&mut conn, date("2026-11-01"))
+                .await
+                .unwrap();
+            (family, groups.into_iter().next().unwrap())
+        };
+
+        // Saturday: no plan at all.
+        let saturday = plan_group(&state, &group, utc("2026-11-07T20:30:00Z"))
+            .await
+            .unwrap();
+        assert_eq!(saturday, None);
+
+        // Sunday 8pm: the week's leaderboard, to the group.
+        let sunday = utc("2026-11-08T20:01:00Z");
+        let plan = plan_group(&state, &group, sunday).await.unwrap().unwrap();
+        let claim = Claim::Report {
+            chat_id: family.group,
+            feature: Feature::Points,
+            kind: ReportKind::Summary(Span::Week),
+            date: date("2026-11-08"),
+            place: String::new(),
+        };
+        assert_eq!(plan.claim, claim);
+        assert_eq!(plan.messages.len(), 1);
+        assert_eq!(plan.messages[0].to, GROUP);
+        assert!(
+            plan.messages[0].text.contains("🥇 Khadija 3"),
+            "{}",
+            plan.messages[0].text
+        );
+
+        // `/points reports off`: still claimed, with nothing to send.
+        {
+            let mut conn = state.db.acquire().await.unwrap();
+            stored_reports::set_delivery(&mut conn, family.group, Feature::Points, Delivery::Off)
+                .await
+                .unwrap();
+        }
+        let off = plan_group(&state, &group, sunday).await.unwrap().unwrap();
+        assert_eq!(off.claim, claim);
+        assert!(off.messages.is_empty());
     }
 }
