@@ -71,7 +71,9 @@ pub async fn run(state: Arc<AppState>) {
             error!("points summary: check failed: {err}");
         }
         // Not a reminder, but it runs on the same clock: warns, and clears
-        // the data of, people who stopped using the bot.
+        // the data of, people who stopped using the bot. Not on the
+        // engine: its warnings are marked only once really sent (no claim
+        // first), and they're woven in with leaving groups and deleting.
         if let Err(err) = crate::cleanup::check(&state, Utc::now()).await {
             error!("cleanup: check failed: {err}");
         }
