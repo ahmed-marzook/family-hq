@@ -9,9 +9,8 @@
 
 use sqlx::SqliteConnection;
 
-use super::TodoChange;
 use super::emoji::{DONE, PROBLEM, SKIPPED};
-use super::{Context, Outcome, change_todo, close_todo, my_settings, progress_bar};
+use super::{Context, Outcome, my_settings};
 use crate::error::AppError;
 use crate::parser::ReplyCommand;
 use crate::points::{self, Finish};
@@ -20,6 +19,8 @@ use crate::repo::shop;
 use crate::repo::todos;
 use crate::settings::Settings;
 use crate::shop::bought_reply;
+use crate::todo::format::progress_bar;
+use crate::todo::{self, TodoChange, close_todo};
 
 const REMOVED: &str = "🗑️";
 
@@ -41,10 +42,11 @@ pub async fn run_list_reply(
         ReplyCommand::Remove(n) => (vec![n], Action::Remove),
         ReplyCommand::Skip(n) => (vec![n], Action::Skip),
         ReplyCommand::SetDue(n, due) => {
-            return change_todo(conn, ctx, defaults, list, n, TodoChange::Due(due)).await;
+            return todo::change(conn, ctx, defaults, list, n, TodoChange::Due(due)).await;
         }
         ReplyCommand::SetPriority(n, priority) => {
-            return change_todo(conn, ctx, defaults, list, n, TodoChange::Priority(priority)).await;
+            return todo::change(conn, ctx, defaults, list, n, TodoChange::Priority(priority))
+                .await;
         }
         ReplyCommand::BadChange(err) => return Ok(Outcome::Reply(format!("{PROBLEM} {err}"))),
     };
@@ -53,7 +55,7 @@ pub async fn run_list_reply(
 
 /// What a reply (or `+done` / `+skip`) does to the items it numbers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Action {
+pub enum Action {
     /// Tick off: a todo done, a shopping item bought.
     Tick,
     Remove,
@@ -87,7 +89,7 @@ enum ListStep {
 }
 
 /// Does `action` to the items at `numbers` in `list`.
-pub(crate) async fn act_on_list(
+pub async fn act_on_list(
     conn: &mut SqliteConnection,
     ctx: &Context,
     defaults: &Settings,
@@ -186,7 +188,7 @@ pub(crate) async fn act_on_list(
 
 /// The row id at list number `n`, or the message to send if there's no
 /// such number.
-pub(crate) fn item_at(items: &[ListItem], n: usize) -> Result<i64, String> {
+pub fn item_at(items: &[ListItem], n: usize) -> Result<i64, String> {
     // Lists are numbered from 1, the Vec from 0. `checked_sub` gives
     // `None` for 0 instead of wrapping round to a huge number.
     n.checked_sub(1)
