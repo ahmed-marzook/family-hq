@@ -2357,6 +2357,69 @@ pub(crate) mod tests {
         assert!(mine.contains("Fri 6 ■■■■■■■■■■ 4"), "{mine}");
     }
 
+    /// Pins what closing a todo saves in the points ledger: one row per
+    /// todo, for whoever closed it, with its reason, amount and the
+    /// closer's own day. Closing it again, or removing a todo, adds none.
+    #[tokio::test]
+    async fn closing_a_todo_saves_one_award_with_its_reason() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let mut ctx = setup(&mut conn).await;
+        // Friday 6 November, lunchtime in London.
+        ctx.now = "2026-11-06T12:00:00Z".parse().unwrap();
+        typed(&mut conn, &ctx, "+todo report -d today -p high").await;
+        typed(&mut conn, &ctx, "+todo bins -d today").await;
+        typed(&mut conn, &ctx, "+todo gym, hoover, tap").await;
+
+        typed(&mut conn, &ctx, "+done report").await;
+        typed(&mut conn, &ctx, "+done tap").await;
+        // Saturday: bins is late, gym is skipped.
+        ctx.now = "2026-11-07T10:00:00Z".parse().unwrap();
+        typed(&mut conn, &ctx, "+done bins").await;
+        typed(&mut conn, &ctx, "+skip gym").await;
+        // Already closed (done, then skipped): nothing more is saved.
+        typed(&mut conn, &ctx, "+done report").await;
+        typed(&mut conn, &ctx, "+skip gym").await;
+        // Removed: neither earns nor costs.
+        let Outcome::List { item_ids, .. } = typed(&mut conn, &ctx, "/todo all").await else {
+            panic!("expected a list");
+        };
+        let open = todos::list_open(&mut conn, ctx.chat_id).await.unwrap();
+        assert_eq!(open.len(), 1, "only hoover is open");
+        let n = item_ids.iter().position(|&id| id == open[0].id).unwrap() + 1;
+        let items = sent(ListKind::Todo, &item_ids);
+        run_list_reply(
+            &mut conn,
+            &ctx,
+            &defaults(),
+            &items,
+            ReplyCommand::Remove(n),
+        )
+        .await
+        .unwrap();
+
+        // A runtime query (not `query!`), so this test needs no `.sqlx` file.
+        let rows: Vec<(i64, String, String, i64, String)> =
+            sqlx::query_as("SELECT user_id, source, reason, points, day FROM points ORDER BY id")
+                .fetch_all(&mut *conn)
+                .await
+                .unwrap();
+        let me = ctx.sender.id;
+        let row = |reason: &str, points, day: &str| {
+            let (source, reason, day) = ("todo".to_string(), reason.to_string(), day.to_string());
+            (me, source, reason, points, day)
+        };
+        assert_eq!(
+            rows,
+            [
+                row("done_on_time", 4, "2026-11-06"),
+                row("done", 2, "2026-11-06"),
+                row("done_late", 1, "2026-11-07"),
+                row("skipped", -1, "2026-11-07"),
+            ]
+        );
+    }
+
     #[tokio::test]
     async fn points_reports_are_set_per_group() {
         let pool = test_pool().await;
