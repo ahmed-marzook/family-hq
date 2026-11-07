@@ -11,7 +11,7 @@ use sqlx::SqliteConnection;
 
 use super::TodoChange;
 use super::emoji::{DONE, PROBLEM, SKIPPED};
-use super::{Context, Outcome, bought_reply, change_todo, close_todo, my_settings, progress_bar};
+use super::{Context, Outcome, change_todo, close_todo, my_settings, progress_bar};
 use crate::error::AppError;
 use crate::parser::ReplyCommand;
 use crate::points::{self, Finish};
@@ -19,6 +19,7 @@ use crate::repo::messages::{ListItem, ListKind, SentList};
 use crate::repo::shop;
 use crate::repo::todos;
 use crate::settings::Settings;
+use crate::shop::bought_reply;
 
 const REMOVED: &str = "🗑️";
 
@@ -209,10 +210,11 @@ mod tests {
     use super::*;
     use crate::Apis;
     use crate::bot::run_command;
-    use crate::bot::tests::{item, sent, setup, shop_cmd, shop_list, times, typed};
+    use crate::bot::tests::{item, sent, setup, times, typed};
     use crate::db::test_pool;
     use crate::repo::messages;
     use crate::settings::tests::defaults;
+    use crate::shop::tests::{shop_cmd, shop_list};
 
     #[test]
     fn item_at_maps_numbers_to_ids() {

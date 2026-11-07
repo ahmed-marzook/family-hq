@@ -38,6 +38,7 @@ mod repo;
 mod reports;
 pub mod routes;
 mod settings;
+mod shop;
 #[cfg(test)]
 pub(crate) mod testkit;
 mod todo;
