@@ -103,11 +103,14 @@ family-hq/
     ├── error.rs            # AppError (thiserror)
     ├── db.rs               # open the pool, run migrations
     ├── parser.rs           # text → BotCommand (pure, heavily tested)
-    ├── bot/                # BotCommand → database changes → reply
+    ├── bot/                # BotCommand → feature → reply; list replies, misc commands
     ├── help.rs             # /help pages
     ├── person.rs           # Person and Assignee
-    ├── settings.rs         # per-chat settings and defaults
+    ├── settings/           # per-chat settings and defaults; edit, /settings
     ├── prayer/             # prayers, windows, "what's due" (pure); stats, tracking
+    ├── todo/               # todo commands, reply text, flags, reminders
+    ├── shop/               # shopping list commands
+    ├── points/             # points rules, award, /points, the Sunday summary
     ├── reminders.rs        # the prayer reminder loop
     ├── aladhan.rs          # prayer times API
     ├── geo.rs              # location → nearest town, town → coordinates

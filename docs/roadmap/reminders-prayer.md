@@ -132,7 +132,7 @@ Done when:
 
 - `prayer_log.status` (migration `0007`): `prayed`, `late` (made up) or
   `missed`. When a prayer's time ends, everyone its reminder was for who
-  hasn't ticked it gets ❌ (`src/prayer_tracking.rs`). Only prayers a
+  hasn't ticked it gets ❌ (`src/prayer/tracking.rs`). Only prayers a
   reminder actually went out for, so downtime never counts against anyone.
 - Ticking a ❌ off later makes it 🕐 made up. `+prayed asr on time` /
   `late`, and `yesterday`, let people correct it.

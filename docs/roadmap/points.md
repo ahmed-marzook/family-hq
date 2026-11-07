@@ -53,7 +53,7 @@ Known gaps, accepted for now:
 - Migration `0010_points.sql`: the `points` table, and `report_settings` /
   `reports_sent` rebuilt so their `feature` CHECK allows `'points'` (ready
   for P2).
-- `src/points.rs`: the rules, `rank`, `medal`, and the `/points` text.
+- `src/points/mod.rs`: the rules, `rank`, `medal`, and the `/points` text.
   `src/repo/points.rs`: `award`, `totals`, `by_day`, `by_chat`.
 - `todos::complete` / `skip` return a `ClosedTodo` (title, priority, due).
   `handlers::close_todo` closes a todo and records its points; the reply
@@ -84,7 +84,7 @@ Done when:
 Built on `src/reports.rs`, as the prayer reports are:
 
 - `Feature::Points` (`"points"`).
-- `src/points_reports.rs`: `check(state, now)`, run every minute from the
+- `src/points/reports.rs`: `check(state, now)`, run every minute from the
   loop in `reminders.rs`. It looks at groups the bot is still in that
   earned points in the last 8 days (`repo::points::report_groups`), and
   sends at **Sunday 20:00 on the group's own clock** (`SUMMARY_HOUR`):
@@ -98,7 +98,7 @@ Built on `src/reports.rs`, as the prayer reports are:
   person's change from last week (⬆️ 6 / ⬇️ 4, only for someone who earned
   something last week), and 🌟 the best single day. Nothing is sent in a
   week when nobody earned anything. `messages(...) -> Vec<Outgoing>` is a
-  pure function, like `prayer_tracking::messages`.
+  pure function, like `prayer::tracking::messages`.
 - `/points reports here|dm|off` (`BotCommand::PointsReports`). With `dm`,
   each person who earned points gets only their own week
   (`points::own_week_text`), if they have a DM with the bot.
@@ -109,5 +109,5 @@ Done when:
 
 - [x] The summary goes once on Sunday evening in the group's timezone, and
       after a restart within `LATE_REPORT_GRACE` (tests in
-      `points_reports`, including BST/GMT and Colombo)
+      `points::reports`, including BST/GMT and Colombo)
 - [x] `here` / `dm` / `off` are respected
