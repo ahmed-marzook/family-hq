@@ -15,18 +15,19 @@ pub mod engine;
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
 
-use chrono::{DateTime, Utc};
-use tracing::{error, info, warn};
+use chrono::{DateTime, NaiveDate, Utc};
+use tracing::{error, warn};
 
 use crate::AppState;
 use crate::error::AppError;
 use crate::prayer::tracking;
-use crate::prayer::{self, ReminderKind};
-use crate::push::{self, Feature};
-use crate::repo::prayers::{self, NewReminder, ReminderChat};
+use crate::prayer::{self, ReminderKind, Window};
+use crate::push::Feature;
+use crate::repo::prayers::{self, ReminderChat};
 use crate::repo::settings::{self as stored, MemberSettings};
 use crate::settings::{self, Overrides, Settings};
 use crate::todo::reminders as todo_reminders;
+use engine::{Claim, OnSent, Outgoing, Planned, Push};
 
 /// How often to check. Reminders go out at most this late.
 const CHECK_EVERY: StdDuration = StdDuration::from_secs(60);
@@ -147,7 +148,9 @@ async fn check_place(
     name_place: bool,
     now: DateTime<Utc>,
 ) -> Result<(), AppError> {
-    send_due(state, chat, place, name_place, now).await?;
+    let due = plan_due(state, chat, place, name_place, now).await?;
+    let push = state.apis.push.as_ref();
+    engine::deliver(&state.gowa, &state.db, push, due, now).await;
     // After the reminders: prayers whose time has ended are marked
     // missed, then the day's, week's and month's reports go out.
     tracking::check(state, chat, place, now).await
@@ -202,14 +205,24 @@ pub fn places_for_group(
     places
 }
 
-/// Sends whatever is due for one place in one chat.
-async fn send_due(
+/// One reminder that's due: the day it's for, which kind, which prayer.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DueReminder {
+    pub date: NaiveDate,
+    pub kind: ReminderKind,
+    pub window: Window,
+}
+
+/// Works out the reminders due for one place in one chat, ready for
+/// `engine::deliver`. Reads prayer times and the prayer log; sends and
+/// claims nothing.
+async fn plan_due(
     state: &AppState,
     chat: &ReminderChat,
     place: &Place,
     name_place: bool,
     now: DateTime<Utc>,
-) -> Result<(), AppError> {
+) -> Result<Vec<Planned>, AppError> {
     let settings = &place.settings;
     let location = state.apis.prayer_location(settings).await?;
     let today = settings.today(now);
@@ -224,11 +237,15 @@ async fn send_due(
     for date in [today.pred_opt(), Some(today)].into_iter().flatten() {
         let day = state.apis.prayer_times.for_date(&location, date).await?;
         for (kind, window) in prayer::due_reminders(&day, now, settings.prayer_ending_minutes) {
-            due.push((day.date, kind, window));
+            due.push(DueReminder {
+                date: day.date,
+                kind,
+                window,
+            });
         }
     }
     if due.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
 
     let is_group = chat.dm_user_id.is_none();
@@ -238,16 +255,20 @@ async fn send_due(
     } else {
         String::new()
     };
+    let place_name = name_place.then_some(settings.city.as_str());
+    // Only for reading the log; back to the pool (at the end of this
+    // function) before anything is sent.
     let mut conn = state.db.acquire().await?;
 
-    for (date, kind, window) in due {
+    let mut planned = Vec::new();
+    for reminder in due {
         // "Ending soon" only goes to people who haven't prayed it yet.
         let mut recipients = place.recipients.clone();
-        if kind == ReminderKind::Ending {
+        if reminder.kind == ReminderKind::Ending {
             let mut still_to_pray = Vec::new();
             for r in recipients {
-                let prayed = prayers::prayed_on(&mut conn, r.user_id, date).await?;
-                if !prayed.contains(&window.prayer) {
+                let prayed = prayers::prayed_on(&mut conn, r.user_id, reminder.date).await?;
+                if !prayed.contains(&reminder.window.prayer) {
                     still_to_pray.push(r);
                 }
             }
@@ -258,79 +279,84 @@ async fn send_due(
             }
             recipients = still_to_pray;
         }
+        planned.push(reminder_plan(
+            chat,
+            settings,
+            place_name,
+            &place_key,
+            &reminder,
+            &recipients,
+            now,
+        ));
+    }
+    Ok(planned)
+}
 
+/// One reminder as the engine sends it: claimed per chat, day, prayer,
+/// kind and place (`place_key`); the message, @mentioning `recipients` in
+/// a group; its ID kept so reactions find the prayer; and the same as a
+/// push to each recipient. `place_name` is said in the text when a group
+/// has members in more than one place.
+///
+/// Pure, so tested directly.
+pub fn reminder_plan(
+    chat: &ReminderChat,
+    settings: &Settings,
+    place_name: Option<&str>,
+    place_key: &str,
+    reminder: &DueReminder,
+    recipients: &[Recipient],
+    now: DateTime<Utc>,
+) -> Planned {
+    let DueReminder { date, kind, window } = *reminder;
+    let is_group = chat.dm_user_id.is_none();
+    let mut text = prayer::reminder_text(kind, &window, now, settings, place_name);
+    let mentions: Vec<String> = if is_group {
+        recipients.iter().map(|r| r.phone.clone()).collect()
+    } else {
+        Vec::new()
+    };
+    if !mentions.is_empty() {
+        // `@<number>` in the text is where each mention shows; WhatsApp
+        // displays it as the person's name.
+        let tags: Vec<String> = mentions.iter().map(|p| format!("@{p}")).collect();
+        text = format!("{}\n{text}", tags.join(" "));
+    }
+
+    // The same reminder as a push, for anyone it's for who has push on.
+    let notice = prayer::reminder_notice(kind, &window, date, now, settings, place_name);
+    let key = prayer::push_key(date, window.prayer, kind);
+    let push = recipients
+        .iter()
+        .map(|r| Push {
+            user_id: r.user_id,
+            feature: Feature::Prayers,
+            key: key.clone(),
+            notice: notice.clone(),
+        })
+        .collect();
+
+    Planned {
         // Claim first, send second: if the row already exists, this
         // reminder went out on an earlier tick (or before a restart).
-        let Some(reminder_id) = prayers::claim_reminder(
-            &mut conn,
-            &NewReminder {
-                chat_id: chat.id,
-                date,
-                prayer: window.prayer,
-                kind,
-                place: &place_key,
-                prayer_time: window.start,
-            },
-            now,
-        )
-        .await?
-        else {
-            continue;
-        };
-
-        let place_name = name_place.then_some(settings.city.as_str());
-        let mut text = prayer::reminder_text(kind, &window, now, settings, place_name);
-        let mentions: Vec<String> = if is_group {
-            recipients.iter().map(|r| r.phone.clone()).collect()
-        } else {
-            Vec::new()
-        };
-        if !mentions.is_empty() {
-            // `@<number>` in the text is where each mention shows; WhatsApp
-            // displays it as the person's name.
-            let tags: Vec<String> = mentions.iter().map(|p| format!("@{p}")).collect();
-            text = format!("{}\n{text}", tags.join(" "));
-        }
-
-        match state
-            .gowa
-            .send_text(&chat.wa_chat_id, &text, None, &mentions)
-            .await
-        {
-            Ok(message_id) => {
-                prayers::set_reminder_message(&mut conn, reminder_id, &message_id).await?;
-                info!(
-                    "sent {} {:?} ({}) to {}",
-                    window.prayer, kind, settings.city, chat.wa_chat_id
-                );
-            }
-            // Not retried: the claim stays, so a flaky GOWA can't cause a
-            // burst of repeats later.
-            Err(err) => warn!(
-                "couldn't send {} to {}: {err}",
-                window.prayer, chat.wa_chat_id
-            ),
-        }
-
-        // The same reminder as a push, for anyone it's for who has push on.
-        if let Some(ntfy) = &state.apis.push {
-            let notice = prayer::reminder_notice(kind, &window, date, now, settings, place_name);
-            let key = prayer::push_key(date, window.prayer, kind);
-            for r in &recipients {
-                push::send_once(
-                    ntfy,
-                    &mut conn,
-                    r.user_id,
-                    Feature::Prayers,
-                    &key,
-                    &notice,
-                    now,
-                )
-                .await?;
-            }
-        }
+        claim: Claim::PrayerReminder {
+            chat_id: chat.id,
+            date,
+            prayer: window.prayer,
+            kind,
+            place: place_key.to_string(),
+            prayer_time: window.start,
+        },
+        messages: vec![Outgoing {
+            to: chat.wa_chat_id.clone(),
+            text,
+            mentions,
+            quote: None,
+            on_sent: OnSent::KeepReminderMessage,
+            push,
+            what: format!("{} {kind:?} ({})", window.prayer, settings.city),
+        }],
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -722,6 +748,159 @@ mod tests {
         assert_eq!(all.len(), 1, "{all:?}");
         assert_eq!(all[0].0, AISHA_DM);
         assert!(all[0].1.starts_with("🎉 You prayed"), "{}", all[0].1);
+    }
+
+    // ---- the plans, looked at directly: nothing is sent or claimed ----
+
+    fn june_15() -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 6, 15).unwrap()
+    }
+
+    /// The place key Milton Keynes' reminders are claimed under in a group.
+    fn milton_keynes_key() -> String {
+        let home = defaults();
+        home.prayer_location(home.coordinates.unwrap()).key()
+    }
+
+    /// The group's one place (everyone on its settings), as `check_chat`
+    /// works it out.
+    async fn group_place(pool: &sqlx::SqlitePool, chat: &ReminderChat) -> Place {
+        let mut conn = pool.acquire().await.unwrap();
+        let members = stored::members(&mut conn, chat.id).await.unwrap();
+        let mut places = places_for_group(&defaults(), &chat.overrides, &members);
+        assert_eq!(places.len(), 1);
+        places.remove(0)
+    }
+
+    /// The one message a reminder plan sends.
+    fn only_message(plan: &Planned) -> &Outgoing {
+        assert_eq!(plan.messages.len(), 1, "{plan:?}");
+        &plan.messages[0]
+    }
+
+    #[tokio::test]
+    async fn planning_a_start_reminder_sends_and_claims_nothing() {
+        let pool = test_pool().await;
+        let (state, gowa) = state_with_june(pool.clone()).await;
+        let (aisha, bilal, chat) = group_of_two(&pool).await;
+        let place = group_place(&pool, &chat).await;
+        let now = utc("2026-06-15T16:25:00Z");
+
+        let planned = plan_due(&state, &chat, &place, false, now).await.unwrap();
+        assert_eq!(planned.len(), 1, "{planned:?}");
+        assert_eq!(
+            planned[0].claim,
+            Claim::PrayerReminder {
+                chat_id: chat.id,
+                date: june_15(),
+                prayer: Prayer::Asr,
+                kind: ReminderKind::Start,
+                place: milton_keynes_key(),
+                prayer_time: utc("2026-06-15T16:20:00Z"),
+            }
+        );
+        let message = only_message(&planned[0]);
+        assert_eq!(message.to, GROUP);
+        assert_eq!(message.mentions, ["447700900001", "447700900002"]);
+        assert_eq!(message.on_sent, OnSent::KeepReminderMessage);
+        let pushed: Vec<(i64, &str)> = message
+            .push
+            .iter()
+            .map(|p| (p.user_id, p.key.as_str()))
+            .collect();
+        assert_eq!(
+            pushed,
+            [
+                (aisha, "2026-06-15 asr start"),
+                (bilal, "2026-06-15 asr start")
+            ]
+        );
+
+        // Planning sent nothing and claimed nothing: planning again gives
+        // the same.
+        assert_eq!(sent(&gowa), []);
+        assert_eq!(
+            plan_due(&state, &chat, &place, false, now).await.unwrap(),
+            planned
+        );
+    }
+
+    #[tokio::test]
+    async fn an_ending_plan_leaves_out_who_prayed() {
+        let pool = test_pool().await;
+        let (state, _gowa) = state_with_june(pool.clone()).await;
+        let (aisha, bilal, chat) = group_of_two(&pool).await;
+        let place = &group_place(&pool, &chat).await;
+        prayed(&pool, bilal, Prayer::Asr).await;
+
+        let planned = plan_due(&state, &chat, place, false, utc("2026-06-15T20:01:00Z"))
+            .await
+            .unwrap();
+        assert_eq!(planned.len(), 1, "{planned:?}");
+        let message = only_message(&planned[0]);
+        assert_eq!(message.mentions, ["447700900001"]);
+        assert!(
+            message.text.contains("⏳ *Asr* ends in 19 min"),
+            "{}",
+            message.text
+        );
+        let pushed: Vec<i64> = message.push.iter().map(|p| p.user_id).collect();
+        assert_eq!(pushed, [aisha]);
+
+        // Once Aisha has prayed too, there's no plan at all.
+        prayed(&pool, aisha, Prayer::Asr).await;
+        let planned = plan_due(&state, &chat, place, false, utc("2026-06-15T20:01:00Z"))
+            .await
+            .unwrap();
+        assert_eq!(planned, []);
+    }
+
+    #[test]
+    fn a_dm_reminder_mentions_nobody_and_names_no_place() {
+        let chat = ReminderChat {
+            id: 7,
+            wa_chat_id: "447700900001@s.whatsapp.net".to_string(),
+            dm_user_id: Some(1),
+            delivery: Delivery::default(),
+            overrides: Overrides::default(),
+        };
+        let owner = Recipient {
+            user_id: 1,
+            phone: String::new(),
+            name: String::new(),
+        };
+        let window = june(15).windows[2];
+        let reminder = DueReminder {
+            date: june_15(),
+            kind: ReminderKind::Start,
+            window,
+        };
+        let plan = reminder_plan(
+            &chat,
+            &defaults(),
+            None,
+            "",
+            &reminder,
+            &[owner],
+            utc("2026-06-15T16:25:00Z"),
+        );
+
+        let Claim::PrayerReminder { place, .. } = &plan.claim else {
+            panic!("a prayer reminder's claim: {:?}", plan.claim);
+        };
+        assert_eq!(place, "", "a DM's reminders aren't per place");
+        let message = only_message(&plan);
+        assert_eq!(message.to, chat.wa_chat_id);
+        assert!(message.mentions.is_empty());
+        assert!(
+            message
+                .text
+                .starts_with("🕌 *Asr* has started (17:20). It ends at 21:20."),
+            "{}",
+            message.text
+        );
+        assert_eq!(message.push.len(), 1);
+        assert_eq!(message.push[0].notice.title, "Asr has started");
     }
 
     #[tokio::test]
