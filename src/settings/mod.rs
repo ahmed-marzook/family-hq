@@ -11,6 +11,7 @@ use tracing::warn;
 use crate::geo::Coordinates;
 use crate::prayer::Location;
 
+pub mod commands;
 pub mod edit;
 
 /// One chat's complete settings, after filling in defaults.
