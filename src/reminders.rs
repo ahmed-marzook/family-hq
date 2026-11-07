@@ -414,7 +414,7 @@ mod tests {
     use crate::prayer::{DayTimes, Prayer, Window};
     use crate::repo::chats;
     use crate::reports::Delivery;
-    use crate::testkit::{FakeGowa, fake_gowa, register, test_state};
+    use crate::testkit::{FakeGowa, fake_gowa, register, test_state, utc};
 
     /// A June day in Milton Keynes (BST, UTC+1; the times here are UTC).
     /// Isha runs to Islamic midnight, 01:00 local, which is already the
@@ -441,19 +441,283 @@ mod tests {
         }
     }
 
+    /// Colombo, with coordinates, as someone's own settings would make it.
+    fn colombo_settings() -> Settings {
+        Settings {
+            city: "Colombo".to_string(),
+            country: "LK".to_string(),
+            timezone: chrono_tz::Asia::Colombo,
+            coordinates: Some(crate::geo::Coordinates {
+                latitude: 6.9271,
+                longitude: 79.8612,
+            }),
+            ..defaults()
+        }
+    }
+
     /// A test state on a fake GOWA whose prayer times for the default
     /// place (Milton Keynes, with coordinates) are already in memory for
-    /// 14 and 15 June, so nothing reaches AlAdhan.
+    /// 14 to 16 June, so nothing reaches AlAdhan. Colombo's are too, with
+    /// the same UTC times to keep the tests short (not Colombo's real ones).
     async fn state_with_june(pool: sqlx::SqlitePool) -> (Arc<AppState>, FakeGowa) {
         let gowa = fake_gowa().await;
         let mut state = test_state(pool, &gowa.url);
+        let colombo = colombo_settings();
+        let colombo = colombo.prayer_location(colombo.coordinates.unwrap());
         // `Arc::get_mut` gives a `&mut` only while nothing else shares the
         // `Arc`, which is still true here.
         Arc::get_mut(&mut state)
             .expect("not shared yet")
             .apis
-            .prayer_times = PrayerTimes::with_cached_days(defaults(), vec![june(14), june(15)]);
+            .prayer_times =
+            PrayerTimes::with_cached_days(defaults(), vec![june(14), june(15), june(16)])
+                .also_cached(&colombo, vec![june(14), june(15), june(16)]);
         (state, gowa)
+    }
+
+    const GROUP: &str = "120363000000000001@g.us";
+
+    /// A group with Aisha (`447700900001`) and Bilal (`447700900002`) in
+    /// it, on the default settings (Milton Keynes). Their ids, and the
+    /// group as the loop sees it.
+    async fn group_of_two(pool: &sqlx::SqlitePool) -> (i64, i64, ReminderChat) {
+        let mut conn = pool.acquire().await.unwrap();
+        let now = utc("2026-06-01T12:00:00Z");
+        let group = chats::find_or_create(&mut conn, GROUP, None, now)
+            .await
+            .unwrap();
+        let aisha = register(&mut conn, "Aisha", "447700900001", now).await.id;
+        let bilal = register(&mut conn, "Bilal", "447700900002", now).await.id;
+        for user in [aisha, bilal] {
+            chats::add_member(&mut conn, group, user, now)
+                .await
+                .unwrap();
+        }
+        let chat = ReminderChat {
+            id: group,
+            wa_chat_id: GROUP.to_string(),
+            dm_user_id: None,
+            delivery: Delivery::default(),
+            overrides: Overrides::default(),
+        };
+        (aisha, bilal, chat)
+    }
+
+    /// Ticks `prayer` on 15 June off for `user_id`.
+    async fn prayed(pool: &sqlx::SqlitePool, user_id: i64, prayer: Prayer) {
+        let mut conn = pool.acquire().await.unwrap();
+        let date = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
+        crate::prayer::checkin::tick(
+            &mut conn,
+            user_id,
+            date,
+            prayer,
+            utc("2026-06-15T17:00:00Z"),
+        )
+        .await
+        .unwrap();
+    }
+
+    /// What the fake GOWA was asked to send, so far.
+    fn sent(gowa: &FakeGowa) -> Vec<(String, String)> {
+        gowa.sent.lock().unwrap().clone()
+    }
+
+    #[tokio::test]
+    async fn start_and_ending_go_once_and_ending_skips_who_prayed() {
+        let pool = test_pool().await;
+        let (state, gowa) = state_with_june(pool.clone()).await;
+        let (_aisha, bilal, chat) = group_of_two(&pool).await;
+
+        // 17:25 BST on 15 June: Asr started five minutes ago. Then the
+        // next tick: already claimed.
+        check_chat(&state, &chat, utc("2026-06-15T16:25:00Z"))
+            .await
+            .unwrap();
+        check_chat(&state, &chat, utc("2026-06-15T16:26:00Z"))
+            .await
+            .unwrap();
+        let start = sent(&gowa);
+        assert_eq!(start.len(), 1, "{start:?}");
+        assert_eq!(start[0].0, GROUP);
+        assert!(
+            start[0].1.starts_with(
+                "@447700900001 @447700900002\n🕌 *Asr* has started (17:20). It ends at 21:20."
+            ),
+            "{}",
+            start[0].1
+        );
+        // Its message ID was kept, so a reaction to it finds the prayer.
+        {
+            let mut conn = pool.acquire().await.unwrap();
+            let found = prayers::find_reminder(&mut conn, "FAKE1", GROUP)
+                .await
+                .unwrap();
+            let june_15 = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
+            assert_eq!(found, Some((june_15, Prayer::Asr)));
+        }
+
+        // Bilal prays; 20 minutes before Asr ends, only Aisha is reminded.
+        prayed(&pool, bilal, Prayer::Asr).await;
+        check_chat(&state, &chat, utc("2026-06-15T20:01:00Z"))
+            .await
+            .unwrap();
+        check_chat(&state, &chat, utc("2026-06-15T20:02:00Z"))
+            .await
+            .unwrap();
+        let all = sent(&gowa);
+        assert_eq!(all.len(), 2, "{all:?}");
+        assert!(
+            all[1]
+                .1
+                .starts_with("@447700900001\n⏳ *Asr* ends in 19 min (21:20)."),
+            "{}",
+            all[1].1
+        );
+    }
+
+    #[tokio::test]
+    async fn no_ending_reminder_once_everyone_has_prayed() {
+        let pool = test_pool().await;
+        let (state, gowa) = state_with_june(pool.clone()).await;
+        let (aisha, bilal, chat) = group_of_two(&pool).await;
+        prayed(&pool, aisha, Prayer::Asr).await;
+        prayed(&pool, bilal, Prayer::Asr).await;
+
+        check_chat(&state, &chat, utc("2026-06-15T20:01:00Z"))
+            .await
+            .unwrap();
+        assert_eq!(sent(&gowa), []);
+    }
+
+    #[tokio::test]
+    async fn a_group_in_two_places_names_each_place() {
+        let pool = test_pool().await;
+        let (state, gowa) = state_with_june(pool.clone()).await;
+        let (_aisha, bilal, chat) = group_of_two(&pool).await;
+        {
+            // Bilal set Colombo in his DM.
+            let mut conn = pool.acquire().await.unwrap();
+            let dm = chats::find_or_create(
+                &mut conn,
+                "447700900002@s.whatsapp.net",
+                Some(bilal),
+                utc("2026-06-01T12:00:00Z"),
+            )
+            .await
+            .unwrap();
+            let colombo = colombo_settings();
+            stored::set_location(
+                &mut conn,
+                dm,
+                &colombo.city,
+                &colombo.country,
+                colombo.coordinates.unwrap(),
+                colombo.timezone.name(),
+            )
+            .await
+            .unwrap();
+        }
+
+        check_chat(&state, &chat, utc("2026-06-15T16:25:00Z"))
+            .await
+            .unwrap();
+        let all = sent(&gowa);
+        assert_eq!(all.len(), 2, "{all:?}");
+        // Members come A to Z, so Aisha's place is first.
+        assert!(
+            all[0]
+                .1
+                .starts_with("@447700900001\n🕌 *Asr* has started in Milton Keynes (17:20)."),
+            "{}",
+            all[0].1
+        );
+        assert!(
+            all[1]
+                .1
+                .starts_with("@447700900002\n🕌 *Asr* has started in Colombo (21:50)."),
+            "{}",
+            all[1].1
+        );
+    }
+
+    #[tokio::test]
+    async fn the_days_prayer_report_goes_once() {
+        const DM: &str = "447700900001@s.whatsapp.net";
+        let pool = test_pool().await;
+        let (state, gowa) = state_with_june(pool.clone()).await;
+        let chat = {
+            let mut conn = pool.acquire().await.unwrap();
+            let now = utc("2026-06-01T12:00:00Z");
+            let user = register(&mut conn, "Bilal", "447700900001", now).await.id;
+            let id = chats::find_or_create(&mut conn, DM, Some(user), now)
+                .await
+                .unwrap();
+            drop(conn);
+            for prayer in Prayer::ALL {
+                prayed(&pool, user, prayer).await;
+            }
+            ReminderChat {
+                id,
+                wa_chat_id: DM.to_string(),
+                dm_user_id: Some(user),
+                delivery: Delivery::default(),
+                overrides: Overrides::default(),
+            }
+        };
+
+        // 15 June's Isha ended at midnight UTC (01:00 BST); then the next
+        // tick, already claimed.
+        check_chat(&state, &chat, utc("2026-06-16T00:05:00Z"))
+            .await
+            .unwrap();
+        check_chat(&state, &chat, utc("2026-06-16T00:06:00Z"))
+            .await
+            .unwrap();
+        let all = sent(&gowa);
+        assert_eq!(all.len(), 1, "{all:?}");
+        assert_eq!(all[0].0, DM);
+        assert_eq!(
+            all[0].1,
+            "🎉 You prayed *all 5 prayers* today (Mon 15 Jun). Masha'Allah, keep it up!"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_groups_reports_sent_privately_skip_those_without_a_dm() {
+        let pool = test_pool().await;
+        let (state, gowa) = state_with_june(pool.clone()).await;
+        let (aisha, bilal, mut chat) = group_of_two(&pool).await;
+        chat.delivery = Delivery::Dm;
+        for prayer in Prayer::ALL {
+            prayed(&pool, aisha, prayer).await;
+            prayed(&pool, bilal, prayer).await;
+        }
+        // Aisha has a DM with the bot (prayer reminders off there); Bilal
+        // never messaged it privately, so the bot doesn't start one.
+        const AISHA_DM: &str = "447700900001@s.whatsapp.net";
+        {
+            let mut conn = pool.acquire().await.unwrap();
+            chats::find_or_create(
+                &mut conn,
+                AISHA_DM,
+                Some(aisha),
+                utc("2026-06-01T12:00:00Z"),
+            )
+            .await
+            .unwrap();
+        }
+
+        check_chat(&state, &chat, utc("2026-06-16T00:05:00Z"))
+            .await
+            .unwrap();
+        check_chat(&state, &chat, utc("2026-06-16T00:06:00Z"))
+            .await
+            .unwrap();
+        let all = sent(&gowa);
+        assert_eq!(all.len(), 1, "{all:?}");
+        assert_eq!(all[0].0, AISHA_DM);
+        assert!(all[0].1.starts_with("🎉 You prayed"), "{}", all[0].1);
     }
 
     #[tokio::test]

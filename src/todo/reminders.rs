@@ -350,4 +350,157 @@ mod tests {
         let settings = settings_for(&state, &mut conn, &bilal).await.unwrap();
         assert_eq!(settings.timezone, NEW_YORK);
     }
+
+    #[test]
+    fn slots_follow_bst_in_summer() {
+        // British Summer Time is UTC+1, so 08:00 on the clock is 07:00 UTC.
+        let (name, at) = due_slot(utc("2026-07-06T07:05:00Z"), LONDON).unwrap();
+        assert_eq!((name, at), ("Morning", utc("2026-07-06T07:00:00Z")));
+        assert_eq!(
+            due_slot(utc("2026-07-06T08:05:00Z"), LONDON),
+            None,
+            "09:05 BST: the morning slot is over"
+        );
+    }
+
+    // ---- the whole check, with a fake GOWA ----
+    //
+    // Pinning tests: what a tick of the loop sends, and what it leaves
+    // behind for replies.
+
+    use crate::bot::Context;
+    use crate::bot::lists::run_list_reply;
+    use crate::repo::todos::Details;
+    use crate::testkit::{FakeGowa, fake_gowa};
+
+    /// A fake GOWA, a state on it, and the family, set up on 1 November.
+    async fn family_on_fake_gowa() -> (std::sync::Arc<AppState>, FakeGowa, Family) {
+        let gowa = fake_gowa().await;
+        let state = test_state(test_pool().await, &gowa.url);
+        let mut conn = state.db.acquire().await.unwrap();
+        let family = seed_family(&mut conn, utc("2026-11-01T12:00:00Z")).await;
+        drop(conn);
+        (state, gowa, family)
+    }
+
+    /// Adds a todo to `chat_id`, by `by`, for `assignee` if given.
+    async fn add_todo(state: &AppState, chat_id: i64, by: i64, title: &str, assignee: Option<i64>) {
+        let mut conn = state.db.acquire().await.unwrap();
+        let at = utc("2026-11-01T12:00:00Z");
+        todos::add(
+            &mut conn,
+            chat_id,
+            title,
+            by,
+            assignee,
+            Details::default(),
+            at,
+        )
+        .await
+        .unwrap();
+    }
+
+    /// Turns todo reminders on for `user_id` in `chat_id`.
+    async fn reminders_on(state: &AppState, chat_id: i64, user_id: i64) {
+        let mut conn = state.db.acquire().await.unwrap();
+        todo_reminders::enable(&mut conn, chat_id, user_id, utc("2026-11-01T12:00:00Z"))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_reminder_goes_once_per_slot_and_a_reply_to_it_ticks_off() {
+        let (state, gowa, family) = family_on_fake_gowa().await;
+        let bilal = family.bilal.id;
+        add_todo(&state, family.dm, bilal, "hoover", None).await;
+        add_todo(&state, family.dm, bilal, "bins", None).await;
+        reminders_on(&state, family.dm, bilal).await;
+
+        // 08:05 GMT on Monday 2 November: the morning slot.
+        check(&state, utc("2026-11-02T08:05:00Z")).await.unwrap();
+        {
+            let sent = gowa.sent.lock().unwrap();
+            assert_eq!(sent.len(), 1, "{sent:?}");
+            assert_eq!(sent[0].0, family.bilal.wa_jid, "to his DM");
+            assert!(
+                sent[0]
+                    .1
+                    .starts_with("⏰ *Morning*: you have 2 todos\n⬜ 1. hoover\n⬜ 2. bins\n"),
+                "{}",
+                sent[0].1
+            );
+        }
+
+        // The next tick, still in the morning slot: already claimed.
+        check(&state, utc("2026-11-02T08:06:00Z")).await.unwrap();
+        assert_eq!(gowa.sent.lock().unwrap().len(), 1);
+
+        // The list was saved against the sent message's ID ("FAKE1"), so a
+        // reply `done 2` to it finds the right todo.
+        let mut conn = state.db.acquire().await.unwrap();
+        let list = messages::list_items(&mut conn, "FAKE1", family.dm)
+            .await
+            .unwrap()
+            .expect("the reminder's list was saved");
+        let ctx = Context {
+            chat_id: family.dm,
+            is_group: false,
+            sender: family.bilal.clone(),
+            now: utc("2026-11-02T08:10:00Z"),
+        };
+        let reply = crate::parser::parse_reply("done 2").unwrap();
+        let defaults = crate::settings::tests::defaults();
+        let answer = run_list_reply(&mut conn, &ctx, &defaults, &list, reply)
+            .await
+            .unwrap()
+            .into_text();
+        assert!(answer.starts_with("✅ Done: *bins*"), "{answer}");
+    }
+
+    #[tokio::test]
+    async fn nothing_open_sends_nothing_but_still_uses_up_the_slot() {
+        let (state, gowa, family) = family_on_fake_gowa().await;
+        reminders_on(&state, family.dm, family.bilal.id).await;
+
+        check(&state, utc("2026-11-02T08:05:00Z")).await.unwrap();
+        assert!(gowa.sent.lock().unwrap().is_empty());
+
+        // A todo added later in the same slot waits for the next one: the
+        // slot was claimed even though there was nothing to say.
+        add_todo(&state, family.dm, family.bilal.id, "hoover", None).await;
+        check(&state, utc("2026-11-02T08:10:00Z")).await.unwrap();
+        assert!(gowa.sent.lock().unwrap().is_empty());
+
+        check(&state, utc("2026-11-02T13:00:00Z")).await.unwrap();
+        assert_eq!(gowa.sent.lock().unwrap().len(), 1, "the afternoon's");
+    }
+
+    #[tokio::test]
+    async fn in_a_group_it_mentions_them_and_lists_only_theirs() {
+        let (state, gowa, family) = family_on_fake_gowa().await;
+        let (bilal, khadija) = (family.bilal.id, family.khadija.id);
+        add_todo(&state, family.group, bilal, "hoover", Some(bilal)).await;
+        add_todo(
+            &state,
+            family.group,
+            bilal,
+            "call the school",
+            Some(khadija),
+        )
+        .await;
+        reminders_on(&state, family.group, khadija).await;
+
+        // 18:00 GMT: the "After work" slot.
+        check(&state, utc("2026-11-02T18:00:00Z")).await.unwrap();
+        let sent = gowa.sent.lock().unwrap();
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert_eq!(sent[0].0, crate::testkit::GROUP);
+        assert!(
+            sent[0].1.starts_with(
+                "@447700900002 ⏰ *After work*: you have 1 todo\n⬜ 2. call the school\n"
+            ),
+            "{}",
+            sent[0].1
+        );
+    }
 }

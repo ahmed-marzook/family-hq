@@ -79,6 +79,19 @@ impl PrayerTimes {
         }
     }
 
+    /// For tests: the same source, also holding `days` for `location`
+    /// (a second place, besides the default one). Chains like
+    /// `with_base_url`. `get_mut` reaches inside the `Mutex` without
+    /// locking it: owning `self` proves nobody else can be using it.
+    #[cfg(test)]
+    pub(crate) fn also_cached(mut self, location: &Location, days: Vec<DayTimes>) -> Self {
+        let cache = self.cache.get_mut().unwrap_or_else(PoisonError::into_inner);
+        for day in days {
+            cache.insert((location.clone(), day.date), day);
+        }
+        self
+    }
+
     /// The times at `location` for `date` (a day in the location's
     /// timezone), fetched only if they aren't cached yet.
     pub async fn for_date(
