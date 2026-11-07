@@ -7,6 +7,10 @@
 //!   Members with the same settings share one message that @mentions them,
 //!   so a family split between the UK and Sri Lanka gets one reminder per
 //!   country, each at the right local time.
+//!
+//! How every job on the loop sends what it planned is `engine`'s.
+
+pub mod engine;
 
 use std::sync::Arc;
 use std::time::Duration as StdDuration;

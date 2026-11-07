@@ -3,6 +3,9 @@
 
 use serde_json::json;
 
+use crate::error::AppError;
+use crate::reminders::engine::Messenger;
+
 /// Reaction the bot puts on a message it understood as a command.
 pub const ACK: &str = "👍";
 
@@ -140,6 +143,28 @@ impl Gowa {
             .json()
             .await?;
         Ok(response.results.data)
+    }
+}
+
+/// How the reminder loop's engine sends: through `send_text` above.
+///
+/// Inside, `Gowa::send_text(self, ..)` is the method in `impl Gowa`, not
+/// this one: when a type's own method and a trait's have the same name,
+/// Rust picks the type's own. `?` turns its `reqwest::Error` into an
+/// `AppError`, the engine's error type.
+///
+/// The trait asks for a method returning `impl Future + Send`; an
+/// `async fn` is exactly that, so it can implement it. The compiler checks
+/// the future really is `Send`.
+impl Messenger for Gowa {
+    async fn send_text(
+        &self,
+        chat_id: &str,
+        text: &str,
+        reply_to: Option<&str>,
+        mentions: &[String],
+    ) -> Result<String, AppError> {
+        Ok(Gowa::send_text(self, chat_id, text, reply_to, mentions).await?)
     }
 }
 

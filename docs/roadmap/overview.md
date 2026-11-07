@@ -2,7 +2,7 @@
 
 > **Goal:** the shape of the whole plan, the decisions behind it, and the schema and layout it builds on.
 > **Status:** Reference; current.
-> **Last updated:** 2026-11-02
+> **Last updated:** 2026-11-07
 
 # Family HQ: Roadmap
 
@@ -111,7 +111,7 @@ family-hq/
     ├── todo/               # todo commands, reply text, flags, reminders
     ├── shop/               # shopping list commands
     ├── points/             # points rules, award, /points, the Sunday summary
-    ├── reminders.rs        # the prayer reminder loop
+    ├── reminders/          # the reminder loop; engine.rs: plan → claim, send, record
     ├── aladhan.rs          # prayer times API
     ├── geo.rs              # location → nearest town, town → coordinates
     ├── weather.rs          # Open-Meteo forecasts
