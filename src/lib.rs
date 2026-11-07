@@ -30,7 +30,6 @@ mod moon;
 mod parser;
 mod person;
 mod points;
-mod points_reports;
 mod prayer;
 mod progress;
 mod push;

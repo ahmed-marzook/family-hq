@@ -25,7 +25,7 @@ use crate::repo::reports;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Feature {
     Prayers,
-    /// The Sunday weekly summary of a group's points (`points_reports`).
+    /// The Sunday weekly summary of a group's points (`points::reports`).
     Points,
 }
 

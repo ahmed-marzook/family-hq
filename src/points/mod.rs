@@ -23,6 +23,8 @@ use crate::progress;
 use crate::reports::Period;
 use crate::todo_flags::Priority;
 
+pub mod reports;
+
 pub const STAR: &str = "⭐";
 pub const TROPHY: &str = "🏆";
 const GOLD: &str = "🥇";
@@ -290,7 +292,7 @@ pub fn mine_text(mine: &Mine) -> String {
     lines.join("\n")
 }
 
-// ---- The Sunday weekly summary (`points_reports`) ----
+// ---- The Sunday weekly summary (`points::reports`) ----
 
 const UP: &str = "⬆️";
 const DOWN: &str = "⬇️";

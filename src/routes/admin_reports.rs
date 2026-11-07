@@ -86,7 +86,7 @@ pub async fn user_reports(
     Json(body): Json<DeliveryBody>,
 ) -> Result<Json<UserDetail>, AppError> {
     let (feature, delivery) = parse(&feature, &body, false)?;
-    // The points summary is for groups only (`points_reports`).
+    // The points summary is for groups only (`points::reports`).
     if feature == Feature::Points {
         return Err(AppError::NotFound);
     }
