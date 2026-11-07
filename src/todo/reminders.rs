@@ -1,8 +1,9 @@
 //! Todo reminders: if someone has asked for them (`/todo reminders on`) and
 //! has open todos, a message four times a day on their own clock.
 //!
-//! `due_slot` and `format` are pure; `check` does the database and sending,
-//! called by the reminder loop in `reminders.rs` every minute.
+//! `due_slot`, `format` and `plan` are pure; `check` reads the database
+//! and hands the plans to the reminder engine (`reminders::engine`) to
+//! claim and send, called by the reminder loop every minute.
 
 use chrono::{DateTime, Duration, NaiveTime, TimeZone, Utc};
 use chrono_tz::Tz;
@@ -10,7 +11,8 @@ use tracing::warn;
 
 use crate::AppState;
 use crate::error::AppError;
-use crate::repo::messages::{self, ListKind};
+use crate::reminders::engine::{self, Claim, OnSent, Outgoing, Planned};
+use crate::repo::messages::ListKind;
 use crate::repo::settings as stored;
 use crate::repo::todo_reminders::{self, Subscriber};
 use crate::repo::todos::{self, ListedTodo};
@@ -91,11 +93,21 @@ pub async fn check(state: &AppState, now: DateTime<Utc>) -> Result<(), AppError>
         let mut conn = state.db.acquire().await?;
         todo_reminders::subscribers(&mut conn).await?
     };
+    let mut planned = Vec::new();
     for subscriber in &subscribers {
-        if let Err(err) = check_subscriber(state, subscriber, now).await {
-            warn!("{} failed: {err}", subscriber.display_name);
+        match plan_subscriber(state, subscriber, now).await {
+            Ok(plan) => planned.extend(plan),
+            Err(err) => warn!("{} failed: {err}", subscriber.display_name),
         }
     }
+    engine::deliver(
+        &state.gowa,
+        &state.db,
+        state.apis.push.as_ref(),
+        planned,
+        now,
+    )
+    .await;
     Ok(())
 }
 
@@ -111,29 +123,48 @@ async fn settings_for(
     Ok(stored::effective(conn, defaults, subscriber.chat_id, person).await?)
 }
 
-async fn check_subscriber(
+/// The reminder due for one person at `now`, if a slot is: read from the
+/// database, nothing sent or claimed.
+async fn plan_subscriber(
     state: &AppState,
     subscriber: &Subscriber,
     now: DateTime<Utc>,
-) -> Result<(), AppError> {
+) -> Result<Option<Planned>, AppError> {
     let mut conn = state.db.acquire().await?;
     let settings = settings_for(state, &mut conn, subscriber).await?;
     let Some((slot, slot_at)) = due_slot(now, settings.timezone) else {
-        return Ok(());
+        return Ok(None);
     };
-    // Claimed before sending, like prayer reminders: a failed send is
-    // logged, never sent twice.
-    let (chat_id, user_id) = (subscriber.chat_id, subscriber.user_id);
-    if !todo_reminders::claim(&mut conn, chat_id, user_id, slot_at).await? {
-        return Ok(());
-    }
+    let items = todos::list_all(&mut conn, subscriber.chat_id).await?;
+    Ok(Some(plan(subscriber, slot, slot_at, &items)))
+}
 
-    let items = todos::list_all(&mut conn, chat_id).await?;
+/// What one person's reminder for the slot at `slot_at` sends, given the
+/// chat's whole todo list. Pure, so tested directly.
+///
+/// Claimed before sending, like prayer reminders: a failed send is
+/// logged, never sent twice. Claimed even with nothing open (then no
+/// message at all), so a todo added later in the slot waits for the next.
+pub fn plan(
+    subscriber: &Subscriber,
+    slot: &str,
+    slot_at: DateTime<Utc>,
+    items: &[ListedTodo],
+) -> Planned {
+    let (chat_id, user_id) = (subscriber.chat_id, subscriber.user_id);
+    let claim = Claim::TodoSlot {
+        chat_id,
+        user_id,
+        slot_at,
+    };
     let is_dm = subscriber.dm_user_id.is_some();
-    let open = open_for(&items, &subscriber.display_name, is_dm);
+    let open = open_for(items, &subscriber.display_name, is_dm);
     // Nothing to do: no message at all.
     if open.is_empty() {
-        return Ok(());
+        return Planned {
+            claim,
+            messages: Vec::new(),
+        };
     }
 
     let phone = subscriber
@@ -143,20 +174,24 @@ async fn check_subscriber(
     let mention = (!is_dm).then_some(phone);
     let text = format(slot, &open, mention);
     let mentions: Vec<String> = mention.map(str::to_string).into_iter().collect();
-    let sent = state
-        .gowa
-        .send_text(&subscriber.wa_chat_id, &text, None, &mentions)
-        .await;
-    match sent {
-        // Saved like a `/todo` list, so `done 3` as a reply and `+done 3`
-        // both work. Every todo is saved, to keep `/todo`'s numbers.
-        Ok(message_id) => {
-            let ids: Vec<i64> = items.iter().map(|t| t.id).collect();
-            messages::save_list(&mut conn, &message_id, chat_id, ListKind::Todo, &ids, now).await?;
-        }
-        Err(err) => warn!("couldn't send to {}: {err}", subscriber.display_name),
+    Planned {
+        claim,
+        messages: vec![Outgoing {
+            to: subscriber.wa_chat_id.clone(),
+            text,
+            mentions,
+            quote: None,
+            // Saved like a `/todo` list, so `done 3` as a reply and `+done 3`
+            // both work. Every todo is saved, to keep `/todo`'s numbers.
+            on_sent: OnSent::SaveList {
+                chat_id,
+                kind: ListKind::Todo,
+                item_ids: items.iter().map(|t| t.id).collect(),
+            },
+            push: Vec::new(),
+            what: format!("{}'s {slot} todo reminder", subscriber.display_name),
+        }],
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -363,6 +398,71 @@ mod tests {
         );
     }
 
+    // ---- the plan, looked at directly ----
+
+    /// Khadija's reminders in the group; `sample`'s todos, numbered by id.
+    fn khadija_in_the_group() -> (Subscriber, Vec<ListedTodo>) {
+        let khadija = Subscriber {
+            chat_id: 5,
+            wa_chat_id: crate::testkit::GROUP.to_string(),
+            dm_user_id: None,
+            user_id: 2,
+            display_name: "Khadija".to_string(),
+            wa_jid: crate::testkit::jid("447700900002"),
+        };
+        let items = (10..)
+            .zip(sample())
+            .map(|(id, todo)| ListedTodo { id, ..todo })
+            .collect();
+        (khadija, items)
+    }
+
+    #[test]
+    fn the_plan_claims_the_slot_and_saves_the_whole_list() {
+        let (khadija, items) = khadija_in_the_group();
+        let at = utc("2026-11-02T18:00:00Z");
+        let plan = plan(&khadija, "After work", at, &items);
+
+        assert_eq!(
+            plan.claim,
+            Claim::TodoSlot {
+                chat_id: 5,
+                user_id: 2,
+                slot_at: at,
+            }
+        );
+        assert_eq!(plan.messages.len(), 1);
+        let message = &plan.messages[0];
+        assert_eq!(message.to, crate::testkit::GROUP);
+        assert_eq!(message.mentions, ["447700900002"]);
+        assert!(
+            message.text.starts_with(
+                "@447700900002 ⏰ *After work*: you have 1 todo\n⬜ 2. call the school"
+            ),
+            "{}",
+            message.text
+        );
+        // Every todo, closed ones too, so the numbers match `/todo`.
+        assert_eq!(
+            message.on_sent,
+            OnSent::SaveList {
+                chat_id: 5,
+                kind: ListKind::Todo,
+                item_ids: vec![10, 11, 12, 13, 14],
+            }
+        );
+        assert!(message.push.is_empty(), "todo reminders don't push yet");
+    }
+
+    #[test]
+    fn nothing_open_is_a_claim_with_no_message() {
+        let (mut yusuf, items) = khadija_in_the_group();
+        yusuf.display_name = "Yusuf".to_string();
+        let plan = plan(&yusuf, "Morning", utc("2026-11-02T08:00:00Z"), &items);
+        assert!(matches!(plan.claim, Claim::TodoSlot { .. }));
+        assert!(plan.messages.is_empty());
+    }
+
     // ---- the whole check, with a fake GOWA ----
     //
     // Pinning tests: what a tick of the loop sends, and what it leaves
@@ -370,6 +470,7 @@ mod tests {
 
     use crate::bot::Context;
     use crate::bot::lists::run_list_reply;
+    use crate::repo::messages;
     use crate::repo::todos::Details;
     use crate::testkit::{FakeGowa, fake_gowa};
 
