@@ -11,8 +11,10 @@ group's when the bot leaves it: past totals drop.
 The admin dashboard's **Metrics** page shows the main ones (for 7 days, 30
 days or all time, with days and hours on the UK clock), including which
 chats the bot is used in. Each person's page and each group's page has the
-same report for just them (`/api/metrics?user=3` or `?chat=5`). The queries
-below are for anything it doesn't show.
+same report for just them (`/api/metrics?user=3` or `?chat=5`). Its list of
+unknown words (and their total) only counts words typed in groups: a word
+typed in a DM can be private (`+dentist friday`), so the dashboard never
+shows it. The queries below are for anything it doesn't show.
 
 | Column | Example | Meaning |
 |---|---|---|
