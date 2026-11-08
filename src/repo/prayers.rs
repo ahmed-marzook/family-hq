@@ -574,16 +574,20 @@ mod tests {
                     .unwrap();
             }
             Happens::Tick => {
-                checkin::tick(conn, user, day, asr, now).await.unwrap();
+                checkin::tick(conn, user, day, asr, None, now)
+                    .await
+                    .unwrap();
             }
             Happens::OnTime => {
-                checkin::correct(conn, user, day, asr, checkin::Correction::OnTime, now)
+                checkin::correct(conn, user, day, asr, checkin::Correction::OnTime, None, now)
                     .await
                     .unwrap()
             }
-            Happens::Late => checkin::correct(conn, user, day, asr, checkin::Correction::Late, now)
-                .await
-                .unwrap(),
+            Happens::Late => {
+                checkin::correct(conn, user, day, asr, checkin::Correction::Late, None, now)
+                    .await
+                    .unwrap()
+            }
             Happens::Untick => {
                 checkin::untick(conn, user, day, asr, now).await.unwrap();
             }
@@ -680,7 +684,7 @@ mod tests {
         let user = bilal(&mut conn).await;
         let day = |d: u32| NaiveDate::from_ymd_opt(2026, 10, d).unwrap();
         for d in [25, 26, 27, 28] {
-            checkin::tick(&mut conn, user, day(d), Prayer::Isha, now)
+            checkin::tick(&mut conn, user, day(d), Prayer::Isha, None, now)
                 .await
                 .unwrap();
         }

@@ -1,4 +1,5 @@
-//! Points: what closing a todo is worth, and how `/points` shows them.
+//! Points: what closing a todo or praying is worth, and how `/points`
+//! shows them.
 //!
 //! Pure functions only, like `parser.rs` and `prayer/stats.rs`: the facts
 //! come in, a number or the text goes out. Saving and reading the points is
@@ -16,9 +17,14 @@
 //! | Skipped                           | −1                              |
 //!
 //! Removing a todo is neither: it earns nothing and costs nothing.
+//!
+//! A prayer (`for_prayer`) earns 2 prayed on time and 1 made up; a missed
+//! one earns nothing. Unlike a todo's, its points follow the prayer log:
+//! untick it and they go, correct it and they change.
 
 use chrono::NaiveDate;
 
+use crate::prayer::stats::Status;
 use crate::progress;
 use crate::reports::Period;
 use crate::todo::flags::Priority;
@@ -40,6 +46,7 @@ const MINUS: &str = "−";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source {
     Todo,
+    Prayer,
 }
 
 impl Source {
@@ -47,6 +54,7 @@ impl Source {
     pub fn as_db_str(self) -> &'static str {
         match self {
             Source::Todo => "todo",
+            Source::Prayer => "prayer",
         }
     }
 }
@@ -59,7 +67,7 @@ pub enum Finish {
     Skipped,
 }
 
-/// Why a todo earned what it did, as `points.reason` stores it.
+/// Why something earned what it did, as `points.reason` stores it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reason {
     /// Done, and it had no due date.
@@ -69,6 +77,10 @@ pub enum Reason {
     /// Done after its due date.
     DoneLate,
     Skipped,
+    /// A prayer, prayed while its time lasted.
+    Prayed,
+    /// A prayer, made up after its time ended.
+    MadeUp,
 }
 
 impl Reason {
@@ -79,11 +91,13 @@ impl Reason {
             Reason::DoneOnTime => "done_on_time",
             Reason::DoneLate => "done_late",
             Reason::Skipped => "skipped",
+            Reason::Prayed => "prayed",
+            Reason::MadeUp => "made_up",
         }
     }
 }
 
-/// What one closed todo is worth.
+/// What one closed todo, or one prayer, is worth.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Award {
     pub points: i64,
@@ -126,6 +140,28 @@ pub fn for_todo(
             points: (base - 1).max(1),
             reason: Reason::DoneLate,
         },
+    }
+}
+
+/// A prayer prayed on time.
+pub const PRAYED_POINTS: i64 = 2;
+/// A prayer made up after its time ended: less, but still worth doing.
+pub const MADE_UP_POINTS: i64 = 1;
+
+/// The points for a prayer that's now `status` in the log, or `None` for
+/// one that earns nothing (missed). Not a penalty: a missed prayer simply
+/// isn't a successful one.
+pub fn for_prayer(status: Status) -> Option<Award> {
+    match status {
+        Status::Prayed => Some(Award {
+            points: PRAYED_POINTS,
+            reason: Reason::Prayed,
+        }),
+        Status::Late => Some(Award {
+            points: MADE_UP_POINTS,
+            reason: Reason::MadeUp,
+        }),
+        Status::Missed => None,
     }
 }
 
@@ -212,9 +248,11 @@ pub fn show_period(period: Period) -> String {
     )
 }
 
-/// What a todo is worth, for the empty `/points` and the help page.
+/// What a todo and a prayer are worth, for the empty `/points` and the
+/// help page.
 pub const RULES: &str = "🔴 high 3 · medium 2 · 🟢 low 1, +1 if it's done by its due \
-                         date (−1 if after), and a skip costs 1";
+                         date (−1 if after), and a skip costs 1. A prayer: 2 on time, \
+                         1 made up";
 
 /// `/points` in a group: this week's leaderboard for the group, and who has
 /// earned what today. Each list is `(name, points)`, anyone with no points
@@ -222,7 +260,9 @@ pub const RULES: &str = "🔴 high 3 · medium 2 · 🟢 low 1, +1 if it's done 
 /// named in "Today:".
 pub fn group_text(week: Period, totals: &[(String, i64)], today: &[(String, i64)]) -> String {
     if totals.is_empty() {
-        return format!("{TROPHY} No points yet this week. Tick off a todo to earn some: {RULES}.");
+        return format!(
+            "{TROPHY} No points yet this week. Tick off a todo or a prayer to earn some: {RULES}."
+        );
     }
     let mut lines = vec![format!(
         "{TROPHY} *Points this week* ({})",
@@ -297,7 +337,9 @@ pub fn mine_text(mine: &Mine) -> String {
 
     if mine.this_week == 0 && best <= 0 {
         lines.push(String::new());
-        lines.push(format!("Tick off a todo to earn some: {RULES}."));
+        lines.push(format!(
+            "Tick off a todo or a prayer to earn some: {RULES}."
+        ));
     }
     lines.join("\n")
 }
@@ -502,6 +544,14 @@ mod tests {
     }
 
     #[test]
+    fn a_prayer_earns_on_time_more_than_made_up_and_missed_nothing() {
+        let award = |points, reason| Some(Award { points, reason });
+        assert_eq!(for_prayer(Status::Prayed), award(2, Reason::Prayed));
+        assert_eq!(for_prayer(Status::Late), award(1, Reason::MadeUp));
+        assert_eq!(for_prayer(Status::Missed), None);
+    }
+
+    #[test]
     fn signed_shows_the_sign() {
         assert_eq!(signed(4), "+4");
         assert_eq!(signed(-1), "−1");
@@ -608,7 +658,7 @@ mod tests {
         let text = mine_text(&mine(&[0; 7], vec![]));
         assert!(!text.contains("Last 7 days"));
         assert!(!text.contains("by chat"));
-        assert!(text.contains("Tick off a todo"));
+        assert!(text.contains("Tick off a todo or a prayer"));
     }
 
     fn day(user_id: i64, name: &str, d: &str, points: i64) -> DayPoints {

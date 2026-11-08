@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO points (user_id, chat_id, source, source_id, reason, points, day, at)\n                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)\n                 ON CONFLICT (user_id, day, source_id) WHERE source = 'prayer' DO UPDATE\n                 SET reason = excluded.reason, points = excluded.points",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 8
+    },
+    "nullable": []
+  },
+  "hash": "4b2f33b80ae43117a2a49e9df7b13ec4caf8b1b6910cb7468b9eca6fd4f27804"
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE points SET reason = ?, points = ?\n                 WHERE source = 'prayer' AND user_id = ? AND day = ? AND source_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "d206daad3c8b6e8ba0538e6419bf6298b111e014a87d14cf23f1ad990bdf1010"
+}

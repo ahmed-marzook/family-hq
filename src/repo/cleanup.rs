@@ -358,6 +358,7 @@ mod tests {
             bilal,
             now.date_naive(),
             crate::prayer::Prayer::Asr,
+            None,
             now,
         )
         .await
@@ -599,8 +600,8 @@ mod tests {
         }
         assert_eq!(
             count(c, "SELECT count(*) FROM points WHERE chat_id = ?", dm).await,
-            1,
-            "points in Bilal's DM stay"
+            2,
+            "points in Bilal's DM (a todo, and his Asr) stay"
         );
         // People stay (the inactive cleanup deals with them), and so does
         // Bilal's DM.

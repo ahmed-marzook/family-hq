@@ -552,7 +552,7 @@ mod tests {
         {
             let mut conn = pool.acquire().await.unwrap();
             let now = chrono::Utc::now();
-            checkin::tick(&mut conn, bilal, today, Prayer::Fajr, now)
+            checkin::tick(&mut conn, bilal, today, Prayer::Fajr, None, now)
                 .await
                 .unwrap();
             checkin::mark_missed(&mut conn, bilal, today, Prayer::Dhuhr, now)

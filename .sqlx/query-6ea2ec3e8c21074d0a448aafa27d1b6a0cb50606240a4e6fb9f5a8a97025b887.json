@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM points\n         WHERE source = 'prayer' AND user_id = ? AND day = ? AND source_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "6ea2ec3e8c21074d0a448aafa27d1b6a0cb50606240a4e6fb9f5a8a97025b887"
+}

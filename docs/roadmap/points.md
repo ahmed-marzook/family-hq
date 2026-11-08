@@ -1,8 +1,8 @@
 # Points (gamifying todos)
 
-> **Goal:** finishing todos earns points, so each person can see how their day and week went, with a leaderboard in each group. Habits will earn points the same way later.
-> **Status:** Brought forward at the owner's request (2026-11-06). P1 (ledger, points for todos, `/points`) and P2 (Sunday weekly summary) built; waiting on a week of family use.
-> **Last updated:** 2026-11-06
+> **Goal:** finishing todos and praying earns points, so each person can see how their day and week went, with a leaderboard in each group. Habits will earn points the same way later.
+> **Status:** Brought forward at the owner's request (2026-11-06). P1 (ledger, points for todos, `/points`), P2 (Sunday weekly summary) and P3 (points for prayers) built; waiting on a week of family use.
+> **Last updated:** 2026-11-08
 
 ## Rules
 
@@ -111,3 +111,49 @@ Done when:
       after a restart within `LATE_REPORT_GRACE` (tests in
       `points::reports`, including BST/GMT and Colombo)
 - [x] `here` / `dm` / `off` are respected
+
+## Stage P3: points for prayers (built)
+
+At the owner's request (2026-11-08): every successful prayer earns points,
+like a todo.
+
+| Prayer           | Points |
+| ---------------- | ------ |
+| Prayed on time ✅ | 2      |
+| Made up 🕐        | 1      |
+| Missed ❌         | 0      |
+
+- `points::for_prayer(status)`, a pure function, with
+  `PRAYED_POINTS` / `MADE_UP_POINTS`.
+- **The points follow the prayer log.** Unlike a todo (closed once), a
+  prayer changes: made up, corrected (`+prayed asr on time`), unticked,
+  set on the dashboard. So every change goes through `checkin::apply`,
+  which calls `sync_points` in the same transaction: the row is added,
+  changed or deleted to match. No path can forget.
+- **One row per person, prayer and day.** Migration `0011_prayer_points.sql`
+  rebuilds `points` with `source = 'prayer'`, reasons `prayed` / `made_up`,
+  and two *partial* unique indexes: `(source, source_id)` for todos as
+  before, and `(user_id, day, source_id)` for prayers, where `source_id`
+  is the prayer (`Prayer::number`, 1 Fajr … 5 Isha) and `day` is the
+  prayer's own date (a made-up Isha counts on its day).
+- **Which chat:** where it was first ticked. A reaction counts in the chat
+  the reminder was in, `+prayed` in the chat it was sent in, a push button
+  (and the dashboard) in the person's DM. A later change keeps the chat.
+  If the dashboard sets a prayer for someone with no DM and no row yet,
+  nothing is added.
+- The reaction reply shows it: `✅ *Asr* prayed · +2 ⭐ · ■■■■■■□□□□ 3/5 prayed`.
+- `/help points` and the empty `/points` text mention prayers.
+
+Known gaps, accepted for now:
+
+- Prayers can earn up to 10 a day, more than most people's todos. If the
+  leaderboard ends up being all prayers, lower `PRAYED_POINTS`.
+- Prayed in a group and corrected in a DM: the points stay in the group.
+
+Done when:
+
+- [x] A tick, a correction, an untick and a dashboard change each leave
+      the ledger matching the log (`checkin::a_prayers_points_follow_the_log`)
+- [x] A retried reaction doesn't pay twice
+- [x] Existing todo points survive the migration
+- [ ] Used by the family for a week, and the numbers feel fair
