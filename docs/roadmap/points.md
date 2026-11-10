@@ -1,8 +1,8 @@
 # Points (gamifying todos)
 
 > **Goal:** finishing todos and praying earns points, so each person can see how their day and week went, with a leaderboard in each group. Habits will earn points the same way later.
-> **Status:** Brought forward at the owner's request (2026-11-06). P1 (ledger, points for todos, `/points`), P2 (Sunday weekly summary) and P3 (points for prayers) built; waiting on a week of family use.
-> **Last updated:** 2026-11-08
+> **Status:** Brought forward at the owner's request (2026-11-06). P1 (ledger, points for todos, `/points`), P2 (Sunday weekly summary) and P3 (points for prayers) built; waiting on a week of family use. P4 (weekly reset, history over weeks, months and years) planned.
+> **Last updated:** 2026-11-10
 
 ## Rules
 
@@ -42,11 +42,13 @@ Known gaps, accepted for now:
 - Adding a todo and ticking it straight off earns points. If that becomes
   a problem: a todo closed by its creator within 10 minutes earns at most 1.
 - `remove` dodges a skip's −1. Accepted: removing is for mistakes.
-- The table grows by one row per closed todo: about 10,000 rows (1–2 MB) a
-  year for a busy family, and every query reads a week or two through an
-  index. Not a worry. If it ever is: a nightly job that rolls rows older
-  than ~6 months into a `points_weekly` table and deletes them (losing
-  their per-day detail).
+- The table grows by one row per closed todo and per prayer: roughly
+  20,000 rows (a few MB) a year for a busy family. Kept **forever**,
+  because P4's history goes back years; the reads are a week, a year or a
+  few years for one person, through `points_by_user_day`. Not a worry. (An
+  earlier idea, rolling old rows into a `points_weekly` table, is dropped:
+  it would lose the per-day detail that personal bests and year reviews
+  need.)
 
 ## Stage P1: the ledger, points for todos, `/points` (built)
 
@@ -157,3 +159,86 @@ Done when:
 - [x] A retried reaction doesn't pay twice
 - [x] Existing todo points survive the migration
 - [ ] Used by the family for a week, and the numbers feel fair
+
+## Stage P4: a weekly game, and a history to improve against (planned)
+
+At the owner's request (2026-11-10): the total should start again every
+week, but each person should also see how they're doing over weeks,
+months and years, to improve on **their own** past rather than only
+against each other.
+
+### Two different things
+
+| | The weekly game | Your history |
+| --- | --- | --- |
+| What | This week's points, everyone from 0 on Monday | Every week, month and year you've had |
+| Where | The group (`/points`, Sunday summary) | Your DM with the bot only (private) |
+| Compared with | Each other: 🥇🥈🥉 | Yourself: your average, your best, last year |
+| Resets | Monday 00:00 on the reader's clock | Never |
+
+**Nothing is deleted to reset.** The ledger keeps every row; "this week"
+is only the Monday–Sunday window a query reads (`Period::of(Span::Week)`),
+which is how `/points` already works. So the reset can't lose history,
+and history needs no new table.
+
+### The reset, made visible
+
+- The Sunday summary ends with "Scores start again tomorrow. 🏁"
+- `/points` in a group on a Monday with nothing earned yet says "New week:
+  everyone's on 0. Last week: 🥇 Sara 34" instead of the empty text.
+
+### History (DM only)
+
+- `/points weeks`: the last 12 weeks as bars, this week marked, with your
+  12-week average and your best week ever.
+  `This week 31 · average 26 ⬆️ · best 44 (w/c 5 Oct)`
+- `/points months`: the last 12 months as bars, and each one against the
+  same month last year once there's a year of data.
+- `/points year` (`/points 2026`): the year's total, best week, best month,
+  and the split by what earned it (todos / prayers, from `points.source`).
+- `/points` in a DM (today, this week, last week, 7 days) gains one line:
+  how this week compares with your 4-week average.
+- Personal bests are announced once, in the reply that sets them: "🌟 Your
+  best week ever (45)". Checked against the ledger, so nothing extra is
+  stored.
+
+### Monthly and yearly reviews
+
+- **Monthly, in your DM** on the 1st at 20:00 your time: last month's total
+  against the month before and the same month last year, best week, best
+  day, and your prayer record (on time / made up / missed, from
+  `prayer_log`, which is more telling than points). Built on
+  `reports.rs`, which already has `Span::Month`; opt out with
+  `/points reports off` in the DM.
+- **Year in review**, in your DM on 1 January: the year's total, each
+  month as a bar, best month and week, and the year before if there is
+  one. Needs `Span::Year` in `reports.rs` (and its `kind` CHECK: a
+  migration).
+
+### How it's built
+
+- One read, `repo::points::by_day(user, period)` (it exists), for up to a
+  year: at most 366 rows. Grouping into weeks and months happens in Rust
+  with pure functions (`points::by_week`, `by_month`, `best`, `average`),
+  so it's all testable without a database, like `for_todo`.
+- Weeks are Monday–Sunday and months calendar months, on the person's own
+  clock, the same as everywhere else. A week that crosses a month (or a
+  year) counts in the month of its own days, day by day.
+- A week or month with nothing is a 0 bar, not left out, so a gap shows.
+- Averages count only weeks since the person's first point, so a newcomer
+  isn't dragged down by weeks before they joined.
+- Admin dashboard (later, optional): a points-per-week chart per person.
+
+New concepts: iterator adapters for grouping (`fold`, `chunk_by`),
+`Option` for "no data yet" in averages, `Span::Year` as a new enum
+variant (and how the compiler points out every `match` that must handle it).
+
+Done when:
+
+- [ ] Group totals start from 0 each Monday on each reader's clock (already
+      true; tested across a BST change)
+- [ ] `/points weeks`, `months` and `year` work in a DM and say so in a group
+- [ ] Grouping, averages and bests are pure functions with tests at month
+      and year ends, and for someone with less than a week of data
+- [ ] The monthly DM review goes once on the 1st, and the year review on
+      1 January
