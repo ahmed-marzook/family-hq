@@ -21,8 +21,8 @@ pub struct OpenTodo {
 
 /// The optional extras on a new todo (`-d fri -p high`).
 ///
-/// `#[derive(Default)]` gives `Details::default()`, with both `None`: a
-/// plain todo. Grouping them keeps `add`'s argument list short.
+/// `Details::default()` is a plain todo. Grouping them keeps `add`'s
+/// argument list short.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Details {
     pub due: Option<NaiveDate>,
@@ -39,12 +39,10 @@ pub async fn add(
     details: Details,
     now: DateTime<Utc>,
 ) -> Result<i64, sqlx::Error> {
-    // Stored as its text ("high"), or NULL. `map` with a function name
-    // (`Priority::as_str`) is the same as `map(|p| p.as_str())`.
+    // Stored as its text ("high"), or NULL.
     let priority = details.priority.map(Priority::as_str);
-    // `AS "id!"`: the `!` tells the macro this column is never NULL.
-    // SQLite can't work that out for `RETURNING`, so without it the macro
-    // would make it `Option<i64>`.
+    // `AS "id!"`: SQLite can't tell the macro that `RETURNING id` is never
+    // NULL.
     sqlx::query_scalar!(
         r#"INSERT INTO todos (chat_id, title, created_by, assignee_id, due_date, priority,
                               created_at)
@@ -71,9 +69,6 @@ pub async fn list_open(
     chat_id: i64,
 ) -> Result<Vec<OpenTodo>, sqlx::Error> {
     // `LEFT JOIN`: keep todos with no assignee (their name is NULL).
-    // `as "assignee?"`: the `?` tells the macro this column can be NULL,
-    // so it becomes `Option<String>`. SQLite can't always work that out
-    // for joined columns by itself.
     sqlx::query_as!(
         OpenTodo,
         r#"SELECT t.id, t.title, u.display_name AS "assignee?"
@@ -137,8 +132,6 @@ pub async fn list_all(
 ) -> Result<Vec<ListedTodo>, sqlx::Error> {
     // Two LEFT JOINs on `users`, under two names (`a` for the assignee, `c`
     // for whoever closed it), because a todo points at two people.
-    // `as "x: DateTime<Utc>"` reads the stored text as a chrono time.
-    // `as "due_date: NaiveDate"` reads the stored "2026-11-13" as a date.
     let rows = sqlx::query!(
         r#"SELECT t.id, t.title, t.status, t.priority,
                   t.due_date AS "due_date: NaiveDate",
@@ -161,7 +154,6 @@ pub async fn list_all(
             id: r.id,
             title: r.title,
             assignee: r.assignee,
-            // `zip` pairs two `Option`s: `Some` only if both are `Some`.
             closed: r.closed_by.zip(r.closed_at).map(|(by, at)| Closed {
                 by,
                 at,
@@ -184,10 +176,6 @@ pub async fn list_all(
 /// oldest first. `sort_by_key` is *stable*: items with equal keys keep
 /// their order, so ties stay oldest first, and every closed todo (all with
 /// the same key, `None`) keeps the order it was closed in.
-///
-/// The key is a tuple. Tuples compare field by field, left to right, like
-/// words in a dictionary: the second field only matters when the first
-/// ones are equal.
 pub fn sort_for_list(todos: &mut [ListedTodo]) {
     todos.sort_by_key(|todo| {
         let open_key = todo.closed.is_none().then(|| {
@@ -258,8 +246,7 @@ pub async fn find_open(
         return Ok(exact.into_iter().map(|r| (r.id, r.title)).collect());
     }
 
-    // `LIKE` is case-insensitive for ASCII in SQLite. `%` matches anything,
-    // so `%gym%` finds "go gym". The `||` joins strings in SQL.
+    // `LIKE` is case-insensitive for ASCII in SQLite.
     let partial = sqlx::query!(
         "SELECT id, title FROM todos
          WHERE chat_id = ? AND status = 'pending' AND title LIKE '%' || ? || '%'
@@ -283,7 +270,6 @@ pub struct Progress {
 
 /// The chat's `Progress`.
 pub async fn progress(conn: &mut SqliteConnection, chat_id: i64) -> Result<Progress, sqlx::Error> {
-    // `query_as!` fills the struct by matching column names to fields.
     sqlx::query_as!(
         Progress,
         r#"SELECT COUNT(*) FILTER (WHERE status = 'completed') AS "done!: i64",
@@ -375,7 +361,6 @@ async fn close(
     )
     .fetch_optional(conn)
     .await?;
-    // `Option::map`: a closed todo becomes `Some(ClosedTodo)`, `None` stays.
     Ok(row.map(|r| ClosedTodo {
         title: r.title,
         // The schema only allows the three words `Priority::parse` knows.

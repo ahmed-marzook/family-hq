@@ -173,7 +173,6 @@ fn format_shop_list(items: &[ShopItem]) -> String {
         text.push_str(&format!("{}. {line}\n", i + 1));
     }
 
-    // `.any(...)`: true if at least one item matches.
     if items.iter().any(|i| !i.bought) {
         text.push_str(
             "\nTick off what you bought: reply to this message with the numbers \

@@ -28,8 +28,7 @@ const LIST_LIMIT: i64 = 20;
 /// The query string: `?days=7`, optionally with `&user=3` or `&chat=5`.
 /// Leave `days` out for all time.
 ///
-/// `Query<Period>` parses the part of the URL after `?` into this struct,
-/// with serde. Axum answers 400 by itself if it doesn't fit (`?days=abc`).
+/// A query that doesn't fit (`?days=abc`) gets a 400 from Axum.
 #[derive(Debug, Deserialize)]
 pub struct Period {
     days: Option<u16>,
@@ -177,8 +176,6 @@ pub async fn metrics(
     };
 
     // Each person's uses and active days, from the same list of uses.
-    // `entry(...).or_default()` gets the person's slot, creating an empty
-    // one the first time.
     let mut per_person: HashMap<i64, (i64, HashSet<NaiveDate>)> = HashMap::new();
     for (at, user) in &uses {
         let (count, days) = per_person.entry(*user).or_default();

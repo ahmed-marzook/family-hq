@@ -163,8 +163,6 @@ mod tests {
             .await
             .unwrap();
         // The test pool has one connection, and the server needs it.
-        // (`conn` would be dropped at the end of this function anyway; the
-        // `drop` just says so.)
         drop(conn);
         user.id
     }
@@ -255,8 +253,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.text().await.unwrap(), "The button works");
 
-        // It did try to confirm, in Amina's DM. `clone` copies the list out,
-        // so the lock is let go at the end of this line.
+        // It did try to confirm, in Amina's DM.
         let sent = gowa.sent.lock().unwrap().clone();
         assert_eq!(sent.len(), 1, "{sent:?}");
         assert_eq!(sent[0].0, "447700900001@s.whatsapp.net");

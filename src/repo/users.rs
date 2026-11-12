@@ -51,7 +51,6 @@ pub async fn find_or_register(
         display_name = with_phone_suffix(&display_name, phone);
     }
 
-    // `RETURNING id` hands back the new row's id from the same statement.
     let id = sqlx::query_scalar!(
         "INSERT INTO users (display_name, wa_jid, wa_lid, created_at, last_active_at)
          VALUES (?, ?, ?, ?, ?)
@@ -104,8 +103,6 @@ async fn find(conn: &mut SqliteConnection, sender: &Person) -> Result<Option<Use
 }
 
 async fn name_taken(conn: &mut SqliteConnection, name: &str) -> Result<bool, sqlx::Error> {
-    // `as "taken: bool"` tells the macro which Rust type to use for the
-    // column; SQLite has no real boolean, `EXISTS` gives 0 or 1.
     sqlx::query_scalar!(
         r#"SELECT EXISTS(SELECT 1 FROM users WHERE display_name = ?) AS "taken: bool""#,
         name

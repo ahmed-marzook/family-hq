@@ -236,8 +236,6 @@ pub struct Run {
 ///   either side) is above the place's monthly average. The averaging
 ///   keeps one slightly drier month from splitting a monsoon in two.
 fn month_seasons(normals: &Normals) -> [TropicalSeason; 12] {
-    // `std::array::from_fn` builds a fixed-size array by calling the
-    // closure with each index, 0 to 11.
     let smooth = |values: &[f64; 12]| -> [f64; 12] {
         std::array::from_fn(|m| (values[(m + 11) % 12] + values[m] + values[(m + 1) % 12]) / 3.0)
     };

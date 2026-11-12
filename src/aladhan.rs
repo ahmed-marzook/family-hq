@@ -23,13 +23,8 @@ pub struct PrayerTimes {
     /// The server-wide settings (`.env`), for chats that haven't chosen
     /// their own.
     pub defaults: Settings,
-    /// Fetched days. A plain `std::sync::Mutex` (not Tokio's): it's only
-    /// ever held for a quick look or insert, never across an `.await`, so
-    /// it can't stall the thread while waiting on the network. Tokio's
-    /// async mutex is only needed when a lock must stay held over an await,
-    /// and it's slower. The compiler helps keep it that way: a std guard
-    /// isn't `Send`, so holding one over an await in a spawned task fails
-    /// to build.
+    /// Fetched days. A std `Mutex`, never held across an `.await`: the lock
+    /// is let go before fetching (see `for_date`).
     cache: Mutex<HashMap<(Location, NaiveDate), DayTimes>>,
 }
 
@@ -69,8 +64,7 @@ impl PrayerTimes {
     }
 
     /// For tests: the same source, but asking a fake AlAdhan at `url`.
-    /// Takes `self` and gives it back changed, so it chains on to the other
-    /// constructors: `PrayerTimes::new(..).with_base_url(..)`.
+    /// Chains on to the other constructors: `PrayerTimes::new(..).with_base_url(..)`.
     #[cfg(test)]
     pub(crate) fn with_base_url(self, url: &str) -> Self {
         PrayerTimes {
@@ -81,8 +75,7 @@ impl PrayerTimes {
 
     /// For tests: the same source, also holding `days` for `location`
     /// (a second place, besides the default one). Chains like
-    /// `with_base_url`. `get_mut` reaches inside the `Mutex` without
-    /// locking it: owning `self` proves nobody else can be using it.
+    /// `with_base_url`.
     #[cfg(test)]
     pub(crate) fn also_cached(mut self, location: &Location, days: Vec<DayTimes>) -> Self {
         let cache = self.cache.get_mut().unwrap_or_else(PoisonError::into_inner);
@@ -136,7 +129,6 @@ impl PrayerTimes {
         // be on a different day (another timezone), or a `/prayers` lookup
         // may ask for a future date, and neither should throw away days
         // the reminder loop still needs elsewhere.
-        // `retain` keeps only the entries the closure says yes to.
         if let Some(yesterday) = date.pred_opt() {
             cache.retain(|(loc, day), _| loc != location || *day >= yesterday);
         }
@@ -439,10 +431,6 @@ mod tests {
     /// A fake AlAdhan that answers every request with `REPLY`, after
     /// waiting `delay`. Returns its base URL and a count of the requests
     /// it has had.
-    ///
-    /// The counter is an `Arc<AtomicUsize>`: `Arc` so the test and the
-    /// server (running in its own task) can both hold it, and an atomic
-    /// number so both can touch it without a lock.
     async fn fake_aladhan(delay: Duration) -> (String, Arc<AtomicUsize>) {
         let requests = Arc::new(AtomicUsize::new(0));
         let counter = requests.clone();
@@ -513,7 +501,6 @@ mod tests {
         let london = defaults.prayer_location(defaults.coordinates.unwrap());
         let today = NaiveDate::from_ymd_opt(2026, 10, 27).unwrap();
         let (url, _) = fake_aladhan(Duration::from_secs(2)).await;
-        // `Arc` so the spawned task and this test can share one source.
         let source = Arc::new(PrayerTimes {
             base_url: url,
             ..PrayerTimes::with_cached(defaults, day_on(today))

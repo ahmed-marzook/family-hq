@@ -296,7 +296,6 @@ mod tests {
         assert_eq!(parse_month("2026-13"), None);
         assert_eq!(parse_month("November"), None);
         assert_eq!(parse_month("2026-11-02"), None);
-        // `Datelike` gives `.day()`: always the 1st.
         assert_eq!(parse_month("2026-02").map(|d| d.day()), Some(1));
     }
 
@@ -430,8 +429,7 @@ mod tests {
     /// A second group, for people in more than one.
     const OTHER_GROUP: &str = "120363000000000002@g.us";
 
-    /// The real app on `pool`, with Pago Pago defaults. `Arc::get_mut`
-    /// works because nothing else holds the state yet.
+    /// The real app on `pool`, with Pago Pago defaults.
     async fn serve_on_pago_pago(pool: sqlx::SqlitePool) -> String {
         let mut state = test_state(pool, &fake_gowa().await.url);
         let inner = Arc::get_mut(&mut state).expect("not shared yet");

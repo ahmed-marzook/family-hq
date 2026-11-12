@@ -198,8 +198,6 @@ pub(crate) async fn detail(
     let settings = stored::get(conn, id).await?;
     let defaults = &state.apis.prayer_times.defaults;
     let reports = reports_view(conn, Some(id)).await?;
-    // A `for` loop rather than `map`: each member needs two `.await`s,
-    // and a closure can't `.await` inside a plain `map`.
     let mut members = Vec::new();
     for m in admin::members_of(conn, id).await? {
         // Their week as it is in this group: their own settings on top of

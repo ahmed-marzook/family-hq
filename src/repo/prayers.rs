@@ -63,8 +63,7 @@ pub async fn reminder_chats(conn: &mut SqliteConnection) -> Result<Vec<ReminderC
 
 /// One reminder to claim. A struct rather than eight separate arguments,
 /// so each value is named where it's built and two of the same type (the
-/// two times) can't be swapped by accident. `'a`: `place` is borrowed, so
-/// the struct can't outlive the string it points to.
+/// two times) can't be swapped by accident.
 #[derive(Debug, Clone)]
 pub struct NewReminder<'a> {
     pub chat_id: i64,
@@ -90,8 +89,7 @@ pub async fn claim_reminder(
     let prayer = reminder.prayer.as_db_str();
     let kind = reminder.kind.as_db_str();
     // On a duplicate, `DO NOTHING` inserts no row, so `RETURNING` returns
-    // no row either and `fetch_optional` gives `None`. (`AS "id!"`: the id
-    // itself is never NULL, which the macro can't work out alone.)
+    // no row either and `fetch_optional` gives `None`.
     sqlx::query_scalar!(
         r#"INSERT INTO prayer_reminders (chat_id, prayer_date, prayer, kind, place, prayer_time, sent_at)
            VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -132,8 +130,6 @@ pub async fn find_reminder(
     wa_message_id: &str,
     wa_chat_id: &str,
 ) -> Result<Option<(NaiveDate, Prayer)>, sqlx::Error> {
-    // `as "prayer_date: NaiveDate"` asks the macro to decode the TEXT
-    // column straight into a chrono date.
     let row = sqlx::query!(
         r#"SELECT r.prayer_date AS "prayer_date: NaiveDate", r.prayer
            FROM prayer_reminders r
@@ -178,10 +174,8 @@ pub async fn load(
     )
     .fetch_optional(conn)
     .await?;
-    // `transpose` turns the `Option<Result<..>>` from parsing an optional
-    // row into a `Result<Option<..>>`, so `?` can pass the error on. The
-    // CHECK allows only the three statuses, so the parse fails only if the
-    // code and the schema disagree; unlike a report, a change can't just
+    // The CHECK allows only the three statuses, so the parse fails only if
+    // the code and the schema disagree; unlike a report, a change can't just
     // skip the row, so that's an error.
     row.map(|r| {
         let status = r
@@ -210,9 +204,7 @@ pub async fn store(
     match write {
         Write::Store(logged) => {
             let status = logged.status.as_db_str();
-            // An "upsert": insert the row, or if there's one already for
-            // this prayer, overwrite it (`excluded` is the row we tried to
-            // insert).
+            // Insert the row, or overwrite the one already there for this prayer.
             sqlx::query!(
                 "INSERT INTO prayer_log (user_id, prayer_date, prayer, status, prayed_at, missed_at)
                  VALUES (?, ?, ?, ?, ?, ?)
@@ -292,8 +284,7 @@ pub async fn log_between(
     .fetch_all(conn)
     .await?;
     // As in `find_reminder`: a row the code can't read is dropped, with a
-    // warning. The closure gives a `Result` so one `inspect_err` covers
-    // both parses; `?` on either ends it early with that error.
+    // warning.
     Ok(rows
         .into_iter()
         .filter_map(|r| {
@@ -327,7 +318,6 @@ pub async fn was_reminded(
     place: &str,
 ) -> Result<bool, sqlx::Error> {
     let prayer = prayer.as_db_str();
-    // `EXISTS` is 1 or 0; `AS "x: bool"` reads it as a Rust bool.
     sqlx::query_scalar!(
         r#"SELECT EXISTS (
                SELECT 1 FROM prayer_reminders

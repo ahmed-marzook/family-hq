@@ -14,19 +14,9 @@ use chrono_tz::Tz;
 use crate::geo::Coordinates;
 
 /// Remembers values for `ttl` ("time to live") after they're stored.
-///
-/// `K` and `V` are *generic* type parameters: one `TtlCache` type works
-/// for any key and value, and the compiler makes a separate copy of the
-/// code for each pair actually used (a `TtlCache<PlaceKey, Forecast>`, ...).
-/// The `where` clauses say what a type must be able to do to be used: keys
-/// must be hashable and comparable (to go in a `HashMap`), and values
-/// clonable (`get` hands out a copy and keeps its own).
 pub struct TtlCache<K, V> {
     ttl: Duration,
-    /// A `std::sync::Mutex`, not Tokio's: it's only held for a quick
-    /// lookup or insert, never across an `.await`, and a std mutex is
-    /// cheaper. (Compare `PrayerTimes`, which holds its lock over the HTTP
-    /// call and so needs Tokio's.)
+    /// A std `Mutex`: it's never held across an `.await`.
     entries: Mutex<HashMap<K, (Instant, V)>>,
 }
 

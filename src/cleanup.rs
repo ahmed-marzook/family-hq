@@ -204,7 +204,6 @@ pub async fn check_groups(state: &AppState, now: DateTime<Utc>) -> Result<(), Ap
         );
         return Ok(());
     }
-    // A `HashSet` answers "is this one in it?" without searching the list.
     let listed: HashSet<&str> = listed.iter().map(|g| g.jid.as_str()).collect();
     for group in stored {
         let name = group.name.as_deref().unwrap_or(&group.wa_chat_id);
@@ -326,7 +325,6 @@ pub async fn leave_and_delete(
     state.gowa.leave_group(wa_chat_id).await?;
 
     let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
-    // A "let chain": the second test only runs if the first matched.
     if let Some(since) = only_if_inactive_since
         && !repo::group_still_inactive(&mut tx, chat_id, since).await?
     {

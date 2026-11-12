@@ -119,8 +119,7 @@ impl Overrides {
             ),
         };
         Settings {
-            // `.parse::<Tz>()` reads an IANA name like "Europe/London". The
-            // name was checked when it was saved; if it's somehow unknown
+            // The name was checked when it was saved; if it's somehow unknown
             // now, the default is safer than an error on every message.
             timezone: self
                 .timezone

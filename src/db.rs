@@ -10,10 +10,6 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 
 /// Opens (creating if needed) the database at `url`, e.g.
 /// `sqlite:family-hq.db`, and runs any migrations it hasn't had yet.
-///
-/// A *pool* is a set of open connections that handlers borrow and give
-/// back. Opening a connection is slow; borrowing one is fast. `SqlitePool`
-/// is an `Arc` inside, so cloning it shares the same pool.
 pub async fn connect(url: &str) -> Result<SqlitePool, sqlx::Error> {
     let options = SqliteConnectOptions::from_str(url)?
         .create_if_missing(true)
@@ -40,8 +36,7 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::migrate::MigrateErro
 }
 
 /// A fresh, fully migrated database in memory, for tests anywhere in the
-/// crate. `#[cfg(test)]` leaves it out of the real binary; `pub(crate)`
-/// means "visible inside this crate only".
+/// crate.
 ///
 /// One connection only: every connection to `sqlite::memory:` gets its
 /// *own* empty database, so a pool of several would lose tables between
@@ -92,8 +87,7 @@ pub(crate) async fn test_file(name: &str) -> TestFile {
 #[cfg(test)]
 impl TestFile {
     /// Closes every connection, then deletes the file and the two that WAL
-    /// keeps next to it (`-wal`, `-shm`). Taking `self` by value means the
-    /// pool can't be used after this. If a test panics before getting
+    /// keeps next to it (`-wal`, `-shm`). If a test panics before getting
     /// here, the files are left in the temp folder; that's harmless.
     pub(crate) async fn remove(self) {
         self.pool.close().await;
@@ -159,7 +153,6 @@ mod tests {
     // ---- insert helpers ----
     //
     // Each returns the `Result` so tests can assert success or failure.
-    // `Option<T>` binds as NULL when it's `None`.
 
     async fn add_user(
         pool: &SqlitePool,
@@ -213,7 +206,6 @@ mod tests {
         name: &str,
         bought: Option<(i64, &str)>,
     ) -> sqlx::Result<()> {
-        // `Option<(a, b)>` → two separate `Option`s, one per column.
         let (bought_by, bought_at) = bought.unzip();
         sqlx::query(
             "INSERT INTO shopping_items (chat_id, name, added_by, bought_by, bought_at, created_at)
@@ -273,8 +265,6 @@ mod tests {
     #[tokio::test]
     async fn migrations_create_every_table() {
         let pool = test_db().await;
-        // `query_scalar` reads the first column of each row into a plain
-        // value, here a `String`.
         let names: Vec<String> = sqlx::query_scalar(
             "SELECT name FROM sqlite_master
              WHERE type = 'table'

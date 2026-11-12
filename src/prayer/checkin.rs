@@ -229,8 +229,7 @@ async fn sync_points(
     let Some(award) = award else {
         return stored_points::clear_prayer(conn, user_id, date, prayer).await;
     };
-    // Where it was ticked, or else their DM. `Option::or` can't be used
-    // here, because finding the DM is `async`: a plain `match` can await.
+    // Where it was ticked, or else their DM.
     let chat_id = match earned_in {
         Some(chat_id) => Some(chat_id),
         None => chats::dm_of(conn, user_id).await?.map(|(id, _)| id),

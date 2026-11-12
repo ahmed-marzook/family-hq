@@ -101,8 +101,7 @@ pub async fn list_all(
     chat_id: i64,
 ) -> Result<Vec<ShopItem>, sqlx::Error> {
     // `bought_at IS NOT NULL` is 0 for "to buy" and 1 for "bought", so
-    // sorting by it puts the to-buy items first. `as "bought!: bool"` reads
-    // that 0/1 as a Rust bool.
+    // sorting by it puts the to-buy items first.
     sqlx::query_as!(
         ShopItem,
         r#"SELECT id, name, bought_at IS NOT NULL AS "bought!: bool"

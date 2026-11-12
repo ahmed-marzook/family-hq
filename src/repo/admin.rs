@@ -40,10 +40,8 @@ pub async fn users(
     only: Option<i64>,
     since: DateTime<Utc>,
 ) -> Result<Vec<UserSummary>, sqlx::Error> {
-    // Each `(SELECT ...)` in the column list is a *subquery*: it runs once
-    // per user and gives one value. `datetime(...)` puts both times in the
-    // same text form before comparing, as in docs/METRICS.md.
-    // `?1 IS NULL OR u.id = ?1`: with no `only`, every user matches.
+    // `datetime(...)` puts both times in the same text form before
+    // comparing, as in docs/METRICS.md. With no `only`, every user matches.
     let mut rows = sqlx::query_as!(
         UserSummary,
         r#"SELECT u.id AS "id!", u.display_name AS name,
@@ -67,8 +65,7 @@ pub async fn users(
     .fetch_all(conn)
     .await?;
 
-    // Most recent first. `Reverse` flips the order; `Option` sorts `None`
-    // before any `Some`, so flipped, the never-seen come last. The sort is
+    // Most recent first; the never-seen (`None`) come last. The sort is
     // stable: people with the same time stay A to Z.
     rows.sort_by_key(|u| Reverse(u.last_seen));
     Ok(rows)

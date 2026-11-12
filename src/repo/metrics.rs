@@ -48,8 +48,7 @@ pub async fn record(conn: &mut SqliteConnection, row: &Logged<'_>) -> Result<(),
 // docs/METRICS.md does. A "use" is a command, a list reply or a reaction:
 // `unknown` rows (a `+word` the bot didn't understand) are counted apart.
 
-/// Which rows of the log to read. `Copy`: it's a few small values, so it
-/// can be passed to every query without `.clone()`.
+/// Which rows of the log to read.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Filter {
     pub since: Option<DateTime<Utc>>,
@@ -274,9 +273,8 @@ pub async fn slowest(
     filter: Filter,
     limit: i64,
 ) -> Result<Vec<Speed>, sqlx::Error> {
-    // `CAST(round(...) AS INTEGER)`: `avg` gives a decimal; whole
-    // milliseconds are plenty. `name AS "name!"`: SQLite can't tell the
-    // macro that `name` is never NULL here, so the `!` says it.
+    // `avg` gives a decimal; whole milliseconds are plenty. `name` is never
+    // NULL here, but SQLite can't tell the macro so: hence `"name!"`.
     sqlx::query_as!(
         Speed,
         r#"SELECT name AS "name!", count(*) AS "uses!: i64",

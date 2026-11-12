@@ -51,9 +51,7 @@ pub struct Place {
     pub recipients: Vec<Recipient>,
 }
 
-/// Runs forever. `main` starts it with `tokio::spawn`, which runs it
-/// alongside the web server on the same runtime: while this `.await`s the
-/// next tick, the thread is free to serve webhooks.
+/// Runs forever, alongside the web server (`main` spawns it).
 pub async fn run(state: Arc<AppState>) {
     let mut ticks = tokio::time::interval(CHECK_EVERY);
     loop {
@@ -233,8 +231,7 @@ async fn plan_due(
     // next day: yesterday's times are checked too, as in
     // `prayer::tracking::check`. Each reminder keeps the date it's *for*,
     // which is part of its claim, so yesterday's Isha and today's are
-    // never mixed up. (`pred_opt` is `None` only on the first day chrono
-    // knows; `flatten` skips it.)
+    // never mixed up.
     let mut due = Vec::new();
     for date in [today.pred_opt(), Some(today)].into_iter().flatten() {
         let day = state.apis.prayer_times.for_date(&location, date).await?;
@@ -496,8 +493,6 @@ mod tests {
         let mut state = test_state(pool, &gowa.url);
         let colombo = colombo_settings();
         let colombo = colombo.prayer_location(colombo.coordinates.unwrap());
-        // `Arc::get_mut` gives a `&mut` only while nothing else shares the
-        // `Arc`, which is still true here.
         Arc::get_mut(&mut state)
             .expect("not shared yet")
             .apis

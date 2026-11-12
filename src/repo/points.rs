@@ -226,7 +226,6 @@ pub async fn report_groups(
     conn: &mut SqliteConnection,
     since: NaiveDate,
 ) -> Result<Vec<ReportGroup>, sqlx::Error> {
-    // `EXISTS` stops at the first matching row: it doesn't count them all.
     sqlx::query_as!(
         ReportGroup,
         r#"SELECT c.id, c.wa_chat_id, c.name

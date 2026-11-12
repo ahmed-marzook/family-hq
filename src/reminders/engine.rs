@@ -43,18 +43,9 @@ use crate::reports::{Feature, ReportKind};
 /// Something that can send a WhatsApp message: in the app, `Gowa`; in the
 /// tests, a fake that records what it was asked to send.
 ///
-/// A *trait* is a set of methods a type promises to have. Code written
-/// against the trait (`deliver<M: Messenger>`) works with any type that
-/// implements it. `deliver` is *generic* over `M`: the compiler makes a
-/// copy of it for each type it's used with ("static dispatch"), so calling
-/// through the trait costs nothing at run time.
-///
-/// The method returns `impl Future<Output = ...> + Send`: "some future that
-/// gives a `Result` when awaited, and can move between threads". It's what
-/// an `async fn` returns, written out, because a trait's method has to say
-/// the future is `Send` for the loop (run by `tokio::spawn`, which can move
-/// it between threads) to accept it. Spelled this way, no extra crate
-/// (`async-trait`) is needed.
+/// The method returns `impl Future + Send` rather than being an `async fn`,
+/// so the future is `Send` for the loop under `tokio::spawn`, without the
+/// `async-trait` crate.
 pub trait Messenger {
     /// Sends `text` to `chat_id`, as a reply quoting `reply_to` if given,
     /// @mentioning `mentions` (phone numbers). The new message's WhatsApp
@@ -357,8 +348,6 @@ mod tests {
         }
     }
 
-    /// Implementing the trait: the same method, with a body of our own.
-    /// An `async fn` gives the future the trait asks for (as in `Gowa`'s).
     impl Messenger for Recorder {
         async fn send_text(
             &self,

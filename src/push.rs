@@ -103,8 +103,7 @@ pub struct Notice {
 /// One push, in the JSON shape ntfy's publish API takes
 /// (<https://docs.ntfy.sh/publish/#publish-as-json>).
 ///
-/// `#[derive(Serialize)]` writes the JSON for us; `skip_serializing_if`
-/// leaves a field out rather than sending `[]`.
+/// Empty lists are left out rather than sent as `[]`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Message {
     topic: String,
@@ -384,7 +383,6 @@ mod tests {
     #[test]
     fn subscribing_gives_the_app_server_and_topic() {
         let messages = subscribe_messages(ntfy().config(), "fhq-topic");
-        // A slice pattern: exactly three messages, named in order.
         let [steps, server, topic] = messages.as_slice() else {
             panic!("expected 3 messages, got {messages:?}");
         };

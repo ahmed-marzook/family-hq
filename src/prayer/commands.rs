@@ -76,9 +76,7 @@ pub async fn look_up_checkin(
     let yesterday = today.pred_opt().unwrap_or(today);
     // Every lookup that needs the network happens here, before
     // anything is saved, so if a service is down nothing is ticked
-    // and the reply says so. An `async` block is like a small
-    // function inline: `?` inside it ends the block, not
-    // `prepare`, so all three lookups share one result.
+    // and the reply says so.
     let lookups = async {
         let location = apis.prayer_location(&settings).await?;
         let today_times = apis.prayer_times.for_date(&location, today).await?;
@@ -90,8 +88,6 @@ pub async fn look_up_checkin(
         } else {
             None
         };
-        // `Ok::<_, AppError>` names the error type, which the
-        // compiler can't work out from the `?`s on their own.
         Ok::<_, AppError>((today_times, yesterday_times))
     };
     let times = lookups.await;
@@ -294,9 +290,6 @@ async fn prayed(
 ///
 /// Any other error, in practice the database, is given back as it is:
 /// the webhook then answers 500 and GOWA retries, which can help there.
-///
-/// `err @ (A | B)` matches either variant and still names the whole value
-/// `err`, so it can be logged.
 fn prayer_service_down(err: AppError) -> Result<String, AppError> {
     match err {
         err @ (AppError::Http(_) | AppError::PrayerTimes(_) | AppError::Geo(_)) => {

@@ -39,10 +39,6 @@ pub fn protect(router: Router<Arc<AppState>>, state: Arc<AppState>) -> Router<Ar
 }
 
 /// Middleware: lets the request through only with the right password.
-///
-/// A middleware is an `async fn` that gets the request and `next` (the rest
-/// of the app). It can answer itself, as here when the password is wrong,
-/// or pass the request on with `next.run(request).await`.
 async fn require_password(
     State(state): State<Arc<AppState>>,
     request: Request,

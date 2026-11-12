@@ -190,8 +190,7 @@ impl Period {
         }
     }
 
-    /// Each day in order. `move` copies `self` into the closure, so the
-    /// iterator doesn't borrow the `Period` it came from.
+    /// Each day in order.
     pub fn days(self) -> impl Iterator<Item = NaiveDate> {
         self.first
             .iter_days()

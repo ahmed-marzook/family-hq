@@ -63,8 +63,6 @@ pub enum Action {
     Skip,
 }
 
-/// `impl From<A> for B` is the standard way to say "an A can always be
-/// turned into a B": here `Action::from(Finish::Done)` is `Action::Tick`.
 impl From<Finish> for Action {
     fn from(finish: Finish) -> Self {
         match finish {
@@ -141,8 +139,8 @@ pub async fn act_on_list(
         let mut earned = None;
         let name = match step {
             ListStep::CloseTodo(finish) => {
-                // `map` with a closure that also sets `earned`: the title
-                // goes on to the `match` below, the points to the line.
+                // Sets `earned` on the way: the title goes on to the `match` below,
+                // the points to the line.
                 close_todo(conn, ctx, id, finish, today)
                     .await?
                     .map(|(title, points)| {

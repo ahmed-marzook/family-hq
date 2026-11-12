@@ -70,10 +70,7 @@ pub(super) async fn moon(
     let settings = my_settings(conn, ctx, &apis.prayer_times.defaults).await?;
     let today = settings.today(ctx.now);
 
-    // `.ok()` turns each `Result` into an `Option`: a failed lookup is
-    // "not shown", not an error for the whole reply.
-    // `inspect_err` looks at the error (to log it) without using it up,
-    // so `.ok()` after it still works as before.
+    // A failed lookup is "not shown", not an error for the whole reply.
     let at = apis
         .coordinates(&settings)
         .await

@@ -15,11 +15,6 @@ use std::io::IsTerminal;
 use tracing_subscriber::EnvFilter;
 
 /// Starts printing log lines to stdout. Call once, first thing in `main`.
-///
-/// `tracing` on its own only *records* events; a "subscriber" decides what
-/// to do with them. This one is `tracing-subscriber`'s formatter, which
-/// writes one line per event, with the fields of any span it's inside
-/// (`webhook{id=... chat=...}`).
 pub fn init() {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     tracing_subscriber::fmt()

@@ -301,7 +301,7 @@ pub fn per_day(
         .collect();
     for (at, user) in uses {
         let day = at.with_timezone(&timezone).date_naive();
-        // `if let Some(...) = get_mut` skips uses outside the range.
+        // Uses outside the range are skipped.
         if let Some((count, people)) = days.get_mut(&day) {
             *count += 1;
             people.insert(*user);

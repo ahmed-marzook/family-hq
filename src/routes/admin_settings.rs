@@ -69,11 +69,9 @@ pub async fn change_settings(
         let dm = existing_dm(&mut conn, id).await?;
         check_patch(&mut conn, &state, dm, patch).await?
     };
-    // A *transaction*: every change below is kept only if `commit` is
-    // reached. Returning early (with `?`) drops `tx`, which rolls
-    // everything back, including a DM created for this.
-    // `BEGIN IMMEDIATE` takes the write lock at once (see
-    // `routes::webhook::handle_message`).
+    // All or nothing: returning early rolls everything back, including a
+    // DM created for this. `BEGIN IMMEDIATE` takes the write lock at once
+    // (see `routes::webhook::handle_message`).
     let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
     let dm = dm_for(&mut tx, id).await?;
     save_patch(&mut tx, &state, dm, checked).await?;
@@ -121,7 +119,6 @@ pub async fn prayer_reminders(
 /// they're in.
 pub async fn todo_reminders(
     State(state): State<Arc<AppState>>,
-    // Two `{...}` in the path, so a tuple: in the order they appear.
     Path((id, chat)): Path<(i64, i64)>,
     Json(switch): Json<Switch>,
 ) -> Result<Json<UserDetail>, AppError> {

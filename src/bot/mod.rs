@@ -89,9 +89,6 @@ impl Outcome {
 /// gets. There's no HTTP client in here at all, so code running inside a
 /// write transaction *can't* call out to a slow service by mistake; the
 /// compiler would refuse.
-///
-/// `<'a>` is a *lifetime*: `Offline` only borrows these from an `Apis`,
-/// and `'a` tells the compiler it mustn't outlive the `Apis` it came from.
 pub struct Offline<'a> {
     /// The server-wide settings (`.env`), for chats that haven't chosen
     /// their own.
@@ -124,9 +121,8 @@ enum Step {
     /// `/weather` and `/moon`.
     Answered(String),
     /// `/prayers` and `+prayed`, with their prayer times looked up
-    /// (`prayer::commands`). In a `Box` (on the heap) because it's much
-    /// bigger than the other steps, and an enum is always the size of its
-    /// biggest variant; boxed, this one is only a pointer.
+    /// (`prayer::commands`). Boxed because it's much bigger than the other
+    /// steps.
     Prayer(Box<Looked>),
     /// A location shared in a DM: the nearest town and the timezone there,
     /// or (`Err`) the reply saying why not.
@@ -328,10 +324,6 @@ pub(crate) async fn chat_settings(
 /// The sender's own settings: in a DM, the DM's; in a group, their personal
 /// ones (from their DM with the bot) on top of the group's. Prayer times
 /// and "today" follow the person, so someone abroad sees their own.
-///
-/// `pub(crate)`: usable anywhere in this crate (the prayer commands in
-/// `prayer::commands` need it) but, unlike `pub`, never part of the
-/// library's outside face.
 pub(crate) async fn my_settings(
     conn: &mut SqliteConnection,
     ctx: &Context,

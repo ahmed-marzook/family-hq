@@ -1,9 +1,6 @@
 use family_hq::AppState;
 use family_hq::config::Config;
 
-// `#[tokio::main]` turns `async fn main` into a normal `main` that starts
-// the Tokio runtime (the thing that actually runs async code) and then
-// runs this function on it. Without a runtime, `.await` can't do anything.
 #[tokio::main]
 async fn main() {
     // First, so everything after it can log (see `family_hq::logging`).
@@ -43,9 +40,8 @@ async fn main() {
     let defaults = config.defaults.clone();
     let state = AppState::new(config, db);
 
-    // `tokio::spawn` starts the reminder loop as a separate task that runs
-    // alongside the web server. It gets its own clone of the `Arc`. It
-    // stops when `main` returns.
+    // The reminder loop runs alongside the web server, and stops when `main`
+    // returns.
     tokio::spawn(family_hq::reminders::run(state.clone()));
     tracing::info!(
         "defaults: {}, {} ({}), prayer method {}",
@@ -56,7 +52,7 @@ async fn main() {
     );
 
     // 0.0.0.0 = listen on every network interface, which is needed inside
-    // Docker. `.await` waits for the bind without blocking the thread.
+    // Docker.
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))
         .await
         .expect("failed to bind port");

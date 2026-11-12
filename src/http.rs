@@ -46,10 +46,6 @@ pub fn client_with(timeout: Duration) -> reqwest::Client {
 
 /// Sends `request` and parses the JSON reply into `T`.
 ///
-/// `T: DeserializeOwned` means "any type serde can build from JSON without
-/// borrowing from the input", which is what a reply read off the network
-/// needs. The caller picks `T` by the type it stores the result in.
-///
 /// Fails if the server can't be reached, answers with an error status
 /// (4xx/5xx), or sends JSON that doesn't fit `T`.
 pub async fn get_json<T: DeserializeOwned>(

@@ -124,8 +124,6 @@ pub fn for_todo(
         Some(Priority::Medium) | None => 2,
         Some(Priority::Low) => 1,
     };
-    // A match guard (`if ...`) on a pattern that binds `due`: the arm only
-    // matches when the guard is true, otherwise the next arm is tried.
     match due {
         None => Award {
             points: base,
@@ -203,13 +201,8 @@ pub struct Ranked<'a> {
 
 /// Puts `(name, points)` in leaderboard order: most points first, then by
 /// name so the order is the same every time.
-///
-/// The `'a` in `Ranked<'a>` says each `name` borrows from `totals`, so the
-/// result can't outlive the list it came from. Rust checks that at compile
-/// time, and nothing is copied.
 pub fn rank<'a>(totals: &'a [(String, i64)]) -> Vec<Ranked<'a>> {
     let mut sorted: Vec<&(String, i64)> = totals.iter().collect();
-    // `cmp` on `b` then `a` sorts high to low; `then_with` breaks ties.
     sorted.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
     let mut ranked: Vec<Ranked<'a>> = Vec::with_capacity(sorted.len());
@@ -366,7 +359,6 @@ pub struct DayPoints {
 pub fn totals_by_person(days: &[DayPoints]) -> Vec<(i64, String, i64)> {
     let mut totals: Vec<(i64, String, i64)> = Vec::new();
     for d in days {
-        // `iter_mut().find`: a `&mut` to the matching entry, to add to it.
         match totals.iter_mut().find(|(id, _, _)| *id == d.user_id) {
             Some((_, _, total)) => *total += d.points,
             None => totals.push((d.user_id, d.name.clone(), d.points)),

@@ -66,7 +66,7 @@ fn elongation(time: DateTime<Utc>) -> f64 {
         - 0.034_720 * sin_deg(e)
         - 0.030_383 * sin_deg(m + mm);
 
-    // `rem_euclid` is `%` that never goes negative: -10 becomes 350.
+    // Always 0-360°: -10 becomes 350.
     (moon - sun).rem_euclid(360.0)
 }
 

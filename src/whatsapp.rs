@@ -10,9 +10,6 @@ use crate::reminders::engine::Messenger;
 pub const ACK: &str = "👍";
 
 /// Talks to one GOWA server.
-///
-/// `#[derive(Clone)]` is cheap here: `reqwest::Client` is an `Arc` inside,
-/// so clones share one connection pool rather than opening new ones.
 #[derive(Debug, Clone)]
 pub struct Gowa {
     http: reqwest::Client,
@@ -55,10 +52,6 @@ impl Gowa {
     }
 
     /// Reacts to `message_id` in `chat_id` with `emoji`.
-    ///
-    /// `async` because it waits on the network. Each `.await` hands the
-    /// thread back to Tokio while the request is in flight, so other
-    /// webhooks keep being served in the meantime.
     pub async fn react(
         &self,
         chat_id: &str,
@@ -147,15 +140,6 @@ impl Gowa {
 }
 
 /// How the reminder loop's engine sends: through `send_text` above.
-///
-/// Inside, `Gowa::send_text(self, ..)` is the method in `impl Gowa`, not
-/// this one: when a type's own method and a trait's have the same name,
-/// Rust picks the type's own. `?` turns its `reqwest::Error` into an
-/// `AppError`, the engine's error type.
-///
-/// The trait asks for a method returning `impl Future + Send`; an
-/// `async fn` is exactly that, so it can implement it. The compiler checks
-/// the future really is `Send`.
 impl Messenger for Gowa {
     async fn send_text(
         &self,
@@ -169,8 +153,6 @@ impl Messenger for Gowa {
 }
 
 /// One group from `/user/my/groups`. GOWA sends many more fields.
-///
-/// `rename` maps GOWA's capitalised JSON names onto Rust's snake_case.
 #[derive(Debug, PartialEq, serde::Deserialize)]
 pub struct Group {
     /// The group's chat ID, e.g. `120363000000000001@g.us`.

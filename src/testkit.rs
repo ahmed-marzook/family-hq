@@ -4,9 +4,7 @@
 //! person is registered is made once.
 //!
 //! `lib.rs` declares this module with `#[cfg(test)]`, so it's only compiled
-//! for `cargo test` and isn't part of the real program at all. `pub(crate)`
-//! on each item means "visible anywhere in this crate, nowhere else": the
-//! test modules can `use crate::testkit::...`, and nothing outside can.
+//! for `cargo test` and isn't part of the real program at all.
 
 use std::sync::{Arc, Mutex};
 
@@ -24,8 +22,7 @@ use crate::repo::users::{self, User};
 
 // ---- Times and dates ------------------------------------------------------
 
-/// A UTC time from text such as `"2026-11-02T12:00:00Z"`. `parse` works
-/// out which type to build from the return type, `DateTime<Utc>`.
+/// A UTC time from text such as `"2026-11-02T12:00:00Z"`.
 pub(crate) fn utc(s: &str) -> DateTime<Utc> {
     s.parse().unwrap()
 }
@@ -165,8 +162,6 @@ async fn serve_for_test(pool: sqlx::SqlitePool, geocoding_url: Option<&str>) -> 
     let gowa = fake_gowa().await;
     let mut state = test_state(pool, &gowa.url);
     if let Some(url) = geocoding_url {
-        // `Arc::get_mut` gives a `&mut` only while nothing else shares the
-        // `Arc`, which is still true here, before the server starts.
         Arc::get_mut(&mut state).expect("not shared yet").apis.geo =
             crate::geo::Geo::with_geocoding_url(url);
     }
@@ -224,11 +219,6 @@ async fn admin_request(server: &str, path: &str) -> reqwest::Response {
 /// while `refuse_leave` is set; and refuses to send while `fail_sends` is
 /// set. A refused message is still kept in `sent`, so a test can see the
 /// bot tried.
-///
-/// Each field is an `Arc<Mutex<...>>`: the `Arc` lets the test and the
-/// fake's handlers share one value, and the `Mutex` lets either change it.
-/// A plain `std::sync::Mutex` is fine here, because nobody holds the lock
-/// across an `.await`.
 pub(crate) struct FakeGowa {
     pub(crate) url: String,
     pub(crate) sent: Arc<Mutex<Vec<(String, String)>>>,
@@ -246,8 +236,6 @@ pub(crate) async fn fake_gowa() -> FakeGowa {
     let left = Arc::new(Mutex::new(Vec::new()));
     let refuse_leave = Arc::new(Mutex::new(false));
     let fail_sends = Arc::new(Mutex::new(false));
-    // Each handler gets its own clone of the `Arc`s it needs: `move`
-    // closures take ownership, and the originals go back to the test.
     let (log, fail, groups, leaves, refuse) = (
         sent.clone(),
         fail_sends.clone(),
@@ -332,8 +320,6 @@ pub(crate) async fn fake_geocoder() -> String {
 /// of what the bot says when AlAdhan, a geocoder or the weather can't help.
 /// Returns its base URL.
 pub(crate) async fn failing_service() -> String {
-    // `fallback` catches every path the router has no route for, which
-    // here is all of them.
     serve(Router::new().fallback(|| async { StatusCode::INTERNAL_SERVER_ERROR })).await
 }
 

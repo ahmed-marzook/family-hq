@@ -17,8 +17,7 @@ pub struct Person {
 
 impl Person {
     /// The phone number from the JID: `447700900123@s.whatsapp.net` →
-    /// `447700900123`. `split_once` returns `None` if there's no `@`, so
-    /// `map_or` falls back to the whole JID.
+    /// `447700900123`, or the whole JID if there's no `@`.
     pub fn phone_number(&self) -> &str {
         self.jid
             .split_once('@')

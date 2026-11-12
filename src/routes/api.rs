@@ -16,10 +16,8 @@ use crate::routes::{
 
 /// The routes under `/api`, all behind the admin password.
 ///
-/// A `Router<Arc<AppState>>` is one still waiting for its state: `app` hands
-/// it over once, with `with_state`, after nesting this inside the main router.
-/// The password check needs the state sooner (to read the login), so it
-/// gets its own clone of the `Arc`.
+/// The password check needs the state before `app` hands it over, so it
+/// gets its own clone.
 pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
     let routes = Router::new()
         .route("/health", get(health::health))
@@ -79,9 +77,6 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
 }
 
 /// Any other path under `/api`: a 404 the dashboard can read as JSON.
-///
-/// A handler can return a tuple: Axum uses the `StatusCode` for the status
-/// and the rest for the body.
 async fn not_found() -> (StatusCode, Json<Value>) {
     (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" })))
 }

@@ -31,7 +31,6 @@ pub struct MemberSettings {
 /// The chat's settings. A chat that never changed anything has no row,
 /// which reads as "reminders off, all defaults".
 pub async fn get(conn: &mut SqliteConnection, chat_id: i64) -> Result<ChatSettings, sqlx::Error> {
-    // `as "prayer_reminders: bool"`: read the 0/1 column as a Rust bool.
     let row = sqlx::query!(
         r#"SELECT prayer_reminders AS "prayer_reminders: bool", timezone, city, country,
                   latitude, longitude, prayer_method, prayer_school, prayer_ending_minutes
@@ -41,7 +40,6 @@ pub async fn get(conn: &mut SqliteConnection, chat_id: i64) -> Result<ChatSettin
     .fetch_optional(conn)
     .await?;
 
-    // `map_or(default, f)`: `default` if there's no row, else `f(row)`.
     Ok(row.map_or(ChatSettings::default(), |r| ChatSettings {
         prayer_reminders: r.prayer_reminders,
         overrides: Overrides {
@@ -141,8 +139,6 @@ pub async fn effective(
         Some(user_id) => personal(conn, user_id).await?,
         None => None,
     };
-    // `.as_ref().map(...)` borrows the overrides inside the `Option`
-    // instead of moving them out.
     Ok(settings::layered(
         defaults,
         &chat.overrides,
@@ -392,8 +388,6 @@ mod tests {
             people.push(user);
         }
         // Bilal has a DM with his own city; Khadija has never DM'd the bot.
-        // `&people[0]` borrows him: a `User` holds `String`s, so it can't be
-        // moved out of the `Vec` the way a plain `(i64, &str)` could be copied.
         let bilal = &people[0];
         let dm = chats::find_or_create(&mut conn, &bilal.wa_jid, Some(bilal.id), now)
             .await

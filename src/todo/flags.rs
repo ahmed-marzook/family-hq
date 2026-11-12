@@ -192,8 +192,6 @@ pub enum FlagError {
     #[error("Priority can be `high`, `medium` or `low`, not \"{0}\".")]
     BadPriority(String),
 
-    // `.0` is the variant's first field; `*` copies it out of the `&self`
-    // that thiserror's generated `Display` has.
     #[error("{} is there twice. Give it once, at the end.", flag_name(*.0))]
     Twice(Flag),
 

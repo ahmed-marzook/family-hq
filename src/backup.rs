@@ -53,8 +53,7 @@ pub fn to_delete(names: &[String], keep: usize) -> Vec<String> {
         .iter()
         .filter_map(|name| Some((date_of(name)?, name)))
         .collect();
-    // Newest first, so everything after the first `keep` goes. `Reverse`
-    // flips the order a key sorts in.
+    // Newest first, so everything after the first `keep` goes.
     backups.sort_by_key(|&(date, _)| std::cmp::Reverse(date));
     backups
         .into_iter()
@@ -66,8 +65,6 @@ pub fn to_delete(names: &[String], keep: usize) -> Vec<String> {
 /// Makes today's backup if it isn't there yet. Runs every minute from the
 /// reminder loop; most minutes it only finds the file already there.
 pub async fn check(state: &AppState, now: DateTime<Utc>) -> Result<(), AppError> {
-    // `let ... else`: take the folder out of the `Option`, or, with no
-    // folder set, stop here.
     let Some(dir) = &state.config.backup_dir else {
         return Ok(());
     };
@@ -79,9 +76,6 @@ pub async fn check(state: &AppState, now: DateTime<Utc>) -> Result<(), AppError>
 
 /// Writes `today`'s backup into `dir` unless it's already there, then
 /// deletes the old ones. Returns whether it wrote one.
-///
-/// `tokio::fs` is `std::fs` for async code: each call runs on a separate
-/// thread pool, so a slow disk doesn't hold up the webhooks.
 pub async fn back_up(
     conn: &mut SqliteConnection,
     dir: &Path,

@@ -35,9 +35,8 @@ pub(crate) const RECENT_DAYS: i64 = 30;
 
 // ---- JSON shapes ----
 //
-// `#[derive(Serialize)]` writes the code that turns a struct into JSON,
-// one key per field. `DateTime<Utc>` becomes an RFC 3339 string
-// ("2026-11-02T09:30:00Z"), and `Option` becomes the value or `null`.
+// `DateTime<Utc>` is sent as an RFC 3339 string ("2026-11-02T09:30:00Z"),
+// and `None` as `null`.
 
 #[derive(Debug, Serialize)]
 pub struct UserList {
@@ -84,8 +83,6 @@ struct UserRow {
     clears_on: Option<DateTime<Utc>>,
 }
 
-/// `From` is the standard way to say "this type can be made from that
-/// one". Implementing it gives `.into()` for free: `summary.into()`.
 impl From<admin::UserSummary> for UserRow {
     fn from(u: admin::UserSummary) -> Self {
         UserRow {
@@ -116,7 +113,6 @@ fn user_row(u: admin::UserSummary, state: &AppState, now: DateTime<Utc>) -> User
     let clears_on = cleanup::clears_on(&activity, state.config.inactive_days, now);
     UserRow {
         clears_on,
-        // `..` fills in every other field from the plain conversion.
         ..UserRow::from(u)
     }
 }
@@ -136,9 +132,6 @@ pub struct UserDetail {
 
 /// One setting: the value in use, and whether it's the person's own choice
 /// (`true`) or the server default (`false`).
-///
-/// `<T>` makes it *generic*: `Setting<String>` and `Setting<i64>` are both
-/// this struct, with a different type of `value`.
 #[derive(Debug, PartialEq, Serialize)]
 struct Setting<T> {
     value: T,
@@ -271,7 +264,6 @@ pub async fn list_users(State(state): State<Arc<AppState>>) -> Result<Json<UserL
     Ok(Json(UserList {
         recent_days: RECENT_DAYS,
         cleanup: CleanupView::of(&state),
-        // `map` converts each one; `collect` gathers them back into a `Vec`.
         users: users
             .into_iter()
             .map(|u| user_row(u, &state, now))
@@ -281,8 +273,7 @@ pub async fn list_users(State(state): State<Arc<AppState>>) -> Result<Json<UserL
 
 /// `GET /api/users/{id}`: one person, their settings and their chats.
 ///
-/// `Path(id)` takes `{id}` from the URL as an `i64`. Axum answers 400 by
-/// itself if it isn't a number, so this never runs then.
+/// A non-numeric `{id}` gets a 400 from Axum before this runs.
 pub async fn user(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
@@ -300,8 +291,7 @@ pub(crate) async fn detail(
 ) -> Result<UserDetail, AppError> {
     let now = Utc::now();
     let since = now - Duration::days(RECENT_DAYS);
-    // `.pop()` takes the one row out of the `Vec`; `ok_or` turns "none"
-    // into our 404.
+    // No such person: 404.
     let summary = admin::users(conn, Some(id), since)
         .await?
         .pop()
@@ -341,14 +331,10 @@ pub async fn group_todos(
         todos: todos
             .into_iter()
             .map(|t| TodoView {
-                // Before `title` and `assignee` are moved out of `t`: a
-                // method call needs the whole `t`.
                 skipped: t.is_skipped(),
                 id: t.id,
                 title: t.title,
                 assignee: t.assignee,
-                // `as_ref` borrows inside the `Option`, so `t.closed` can be
-                // read twice without being moved out.
                 done_by: t.closed.as_ref().map(|d| d.by.clone()),
                 done_at: t.closed.as_ref().map(|d| d.at),
             })
@@ -478,7 +464,6 @@ pub(crate) fn settings_view(personal: Option<ChatSettings>, defaults: &Settings)
             prayer_method: used.prayer_method,
             asr_school: used.prayer_school,
             ending_minutes: used.prayer_ending_minutes,
-            // Moved last: `used` gives these two up here.
             city: used.city,
             country: used.country,
         },
@@ -570,8 +555,6 @@ mod tests {
     async fn seed(pool: &sqlx::SqlitePool) -> (i64, i64, i64) {
         let mut conn = pool.acquire().await.unwrap();
         let now = Utc::now();
-        // Destructuring: takes the `Family` apart into four local variables
-        // named after its fields.
         let Family {
             bilal,
             khadija,

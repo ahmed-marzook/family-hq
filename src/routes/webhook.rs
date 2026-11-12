@@ -27,18 +27,16 @@ use crate::repo::metrics::Logged;
 use crate::repo::{self, chats, prayers, users};
 use crate::whatsapp;
 
-/// HMAC using SHA-256 as its hash. A type alias just gives a long type a
-/// short name.
+/// HMAC using SHA-256 as its hash.
 type HmacSha256 = Hmac<Sha256>;
 
 /// The JSON GOWA sends, e.g.
 /// `{"event":"message","payload":{...},"device_id":"...","session_id":"..."}`.
 ///
-/// `tag` and `content` make this an *adjacently tagged* enum: serde reads
-/// `"event"` to pick the variant, then parses `"payload"` into that
-/// variant's struct. Fields not mentioned (`device_id`, `session_id`) are
-/// ignored. Any other `"event"` value is a parse error, which the handler
-/// treats as "not for us".
+/// `"event"` picks the variant and `"payload"` is parsed into its struct.
+/// Other fields (`device_id`, `session_id`) are ignored. Any other
+/// `"event"` value is a parse error, which the handler treats as "not for
+/// us".
 #[derive(Debug, Deserialize)]
 #[serde(tag = "event", content = "payload")]
 pub enum WebhookEvent {
@@ -71,22 +69,17 @@ pub struct Message {
     pub location: Option<SharedLocation>,
     /// The same for a *live* location; its first position is used.
     pub live_location: Option<SharedLocation>,
-    /// `true` for messages the bot itself sent. `#[serde(default)]` means
-    /// "use `false` if the field is missing".
+    /// `true` for messages the bot itself sent; `false` if the field is missing.
     #[serde(default)]
     pub is_from_me: bool,
     /// When it was sent, e.g. `2026-10-27T14:40:30Z`. Nothing reads it
     /// yet, but it's a required field, so a payload without it is rejected.
-    /// `allow(dead_code)` quiets the "never read" warning on purpose.
     #[allow(dead_code)]
     pub timestamp: String,
 }
 
 impl Message {
     /// Who sent this message, as a `Person`.
-    ///
-    /// `&self` borrows the message, so the fields are cloned into the new
-    /// `Person`, leaving the message usable afterwards.
     pub fn sender(&self) -> Person {
         Person {
             // No profile name (rare): fall back to the phone-number ID.
@@ -98,7 +91,6 @@ impl Message {
 }
 
 /// `{"degreesLatitude":52.04,"degreesLongitude":-0.76,"name":"..."}`.
-/// `rename_all = "camelCase"` maps `degrees_latitude` to `degreesLatitude`.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SharedLocation {
@@ -124,13 +116,9 @@ pub struct Reaction {
 
 /// The webhook handler.
 ///
-/// Each argument is an *extractor*: Axum looks at the type and pulls that
-/// piece out of the request. `State` is the shared `AppState`, `HeaderMap`
-/// all the headers, and `Bytes` the body exactly as sent. We want raw
-/// bytes, not `Json<...>`, because the signature covers the exact bytes and
-/// re-serialising parsed JSON could change spacing or key order.
-///
-/// Returning a `StatusCode` gives an empty response with that status.
+/// The body is taken as raw `Bytes`, not `Json<...>`, because the
+/// signature covers the exact bytes and re-serialising parsed JSON could
+/// change spacing or key order.
 pub async fn whatsapp(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -138,8 +126,7 @@ pub async fn whatsapp(
 ) -> StatusCode {
     let config = &state.config;
 
-    // `headers.get` gives an `Option<&HeaderValue>`; `to_str` fails on
-    // non-ASCII, and `.ok()` turns that failure into `None`.
+    // A header that isn't ASCII counts as missing.
     let signature = headers
         .get("x-hub-signature-256")
         .and_then(|value| value.to_str().ok());
@@ -187,9 +174,8 @@ enum Action {
 /// An `Action` with its lookups done (`bot::prepare`), ready to run
 /// inside the transaction.
 ///
-/// `Box` keeps the prepared command on the heap. It holds whole days of
-/// prayer times, so without it every `Ready`, even a small list reply,
-/// would take up that much room.
+/// The prepared command is boxed: it holds whole days of prayer times, so
+/// unboxed, every `Ready`, even a small list reply, would be that big.
 enum Ready {
     Command(Box<Prepared>),
     ListReply(SentList, ReplyCommand),
@@ -209,13 +195,9 @@ enum Ready {
 ///
 /// Replies go out after that, once everything is saved.
 ///
-/// `#[instrument]` runs the whole function inside a *span* named
-/// `message`: every log line from in here, or from anything it calls,
-/// carries these fields, e.g. `message{id=3EB0... chat=...@g.us user=Bilal}`.
-/// `skip_all` stops it logging every argument (the whole message, the
-/// state); the fields are picked by hand instead. `user` starts `Empty` and
-/// is filled in once we know who it is. `err` logs a returned `Err` as an
-/// error, inside the span.
+/// The span's fields are picked by hand (`skip_all`), so the message and
+/// the state aren't logged; `user` is filled in once we know who it is.
+/// `err` logs a returned `Err` inside the span.
 #[tracing::instrument(
     name = "message",
     skip_all,
@@ -233,7 +215,6 @@ async fn handle_message(
         debug!("skipped, the bot's own message");
         return Ok(());
     }
-    // `.or(...)`: the first of the two that's present.
     let shared = msg.location.as_ref().or(msg.live_location.as_ref());
     if msg.body.is_none() && shared.is_none() {
         debug!("skipped, no text");
@@ -241,8 +222,6 @@ async fn handle_message(
     }
 
     // Step 1: who and where. Dropping `tx` without `commit` rolls it back.
-    // `&mut tx` works where a `&mut SqliteConnection` is expected, because
-    // a transaction derefs to its connection.
     //
     // `BEGIN IMMEDIATE`, rather than SQLx's `begin()` (a plain, "deferred"
     // `BEGIN`), takes SQLite's write lock as the transaction starts. SQLite
@@ -260,7 +239,6 @@ async fn handle_message(
         return Ok(());
     };
     Span::current().record("user", user.display_name.as_str());
-    // `then_some`: `Some(user.id)` if this isn't a group, else `None`.
     let dm_owner = (!msg.chat_id.ends_with("@g.us")).then_some(user.id);
     let chat_id = chats::find_or_create(&mut tx, &msg.chat_id, dm_owner, now).await?;
     chats::add_member(&mut tx, chat_id, user.id, now).await?;
@@ -345,17 +323,15 @@ async fn handle_message(
         at: now,
     };
 
-    // `Instant` is a monotonic clock, made for measuring how long
-    // something took (unlike `Utc::now()`, it never jumps if the system
-    // clock is changed).
+    // Monotonic, so a change to the system clock can't skew the duration.
     let started = Instant::now();
     // Step 2: the lookups, on a plain connection from the pool (not a
     // transaction), which only reads. The block gives it back to the pool
     // at its end, before step 3 asks for one.
     let ready = match action {
         Action::Command(command) => {
-            // `?command` logs it with `{:?}`. Only at debug level, because
-            // it includes the item text (what's on someone's list).
+            // Only at debug level, because the command includes the item text
+            // (what's on someone's list).
             debug!(?command, "running");
             let prepared = {
                 let mut conn = state.db.acquire().await?;
@@ -404,7 +380,6 @@ async fn handle_message(
     };
     let duration_ms = elapsed_ms(started);
     // One line per command: which one, whether it worked, how long it took.
-    // `%` logs a field with `{}`; a plain name logs it as it is.
     info!(command = %event.name, ok = result.is_ok(), ms = duration_ms, "handled");
     let row = log_row(result.is_ok(), duration_ms);
 
@@ -609,8 +584,7 @@ async fn action_for(
     chat_id: i64,
     sender: Person,
 ) -> Result<Option<Action>, AppError> {
-    // `if let ... && let ...` (let chains): all must match to enter. The
-    // list is only looked up once the first two have matched.
+    // The list is only looked up once the first two have matched.
     if let Some(quoted) = &msg.replied_to_id
         && let Some(reply) = parser::parse_reply(text)
         && let Some(list) = messages::list_items(conn, quoted, chat_id).await?
@@ -647,8 +621,7 @@ async fn send(state: &AppState, msg: &Message, text: &str, mentions: &[String]) 
 /// A `+todo` without `@name` is for whoever sent it.
 ///
 /// Lives here rather than in the parser because the parser only sees the
-/// text, not who sent it. `command` and `sender` are taken by value (moved
-/// in), so nothing is cloned: unchanged commands just pass through.
+/// text, not who sent it.
 fn assign_to_sender(command: BotCommand, sender: Person) -> BotCommand {
     match command {
         BotCommand::AddTodo {
@@ -670,8 +643,7 @@ fn assign_to_sender(command: BotCommand, sender: Person) -> BotCommand {
 /// `body` keyed with `secret`.
 ///
 /// A pure function (bytes in, bool out), so it's easy to test without a
-/// server. `let ... else` binds the value if the pattern matches and runs
-/// the `else` block (which must return) if it doesn't.
+/// server.
 pub fn signature_is_valid(secret: &[u8], body: &[u8], header: Option<&str>) -> bool {
     let Some(hex_signature) = header.and_then(|h| h.strip_prefix("sha256=")) else {
         return false;
@@ -990,8 +962,7 @@ mod tests {
             crate::geo::Geo::with_geocoding_url(&slow);
         let server = serve_state(state).await;
 
-        // `tokio::spawn` runs the slow request in the background, so the
-        // test carries on while it waits on the geocoder.
+        // Runs the slow request in the background while the test carries on.
         let weather = tokio::spawn({
             let server = server.clone();
             async move { post_text(&server, "W1", "/weather").await }
@@ -1036,8 +1007,7 @@ mod tests {
         }
         let gowa = fake_gowa().await;
         let server = serve_state(test_state(db.pool.clone(), &gowa.url)).await;
-        // GOWA delivering the same message twice at once. `join!` runs both
-        // requests together and waits for both.
+        // GOWA delivering the same message twice at once.
         let (first, second) = tokio::join!(
             post_text(&server, "D1", "+todo fix the tap"),
             post_text(&server, "D1", "+todo fix the tap"),

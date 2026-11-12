@@ -241,10 +241,7 @@ pub enum ReplyCommand {
 
 /// Parses a normal message. `None` means "not for the bot".
 pub fn parse(text: &str) -> Option<BotCommand> {
-    // Same idea as `split_first` in the CLI, but on one string:
-    // "+shop milk, eggs" → ("+shop", "milk, eggs").
-    // `split_once` splits at the first whitespace (space or newline) and
-    // returns `None` if there is none, i.e. the message is a single word.
+    // "+shop milk, eggs" → ("+shop", "milk, eggs"). A single word has no rest.
     let text = text.trim();
     let (first, rest) = match text.split_once(char::is_whitespace) {
         Some((first, rest)) => (first, rest.trim()),
@@ -260,7 +257,6 @@ pub fn parse(text: &str) -> Option<BotCommand> {
         "+todo" => parse_add_todo(rest),
         "+prayed" => parse_prayed(rest).map(BotCommand::Prayed),
 
-        // Match guards (`if ...`) pick the arm by what follows the command.
         // `/shop something-else` falls through to `None`.
         "/shop" if rest.is_empty() => Some(BotCommand::ListShop),
         "/shop" => match rest.to_lowercase().as_str() {
@@ -347,10 +343,6 @@ pub fn parse(text: &str) -> Option<BotCommand> {
 /// Short forms of the common commands: `+s milk` is `+shop milk`, `/w tmr`
 /// is `/weather tmr`, and so on. Anything else comes back unchanged.
 /// `/settings` has no short form, so it can't be changed by accident.
-///
-/// It returns either `word` itself or a fixed string. No lifetime needs
-/// writing: with exactly one reference in, Rust assumes the reference out
-/// borrows from it ("lifetime elision"), and a `&'static str` fits that too.
 fn expand_shorthand(word: &str) -> &str {
     match word {
         "+s" => "+shop",
@@ -375,7 +367,7 @@ fn parse_settings(rest: &str) -> Option<SettingsCommand> {
         None => (rest, ""),
     };
 
-    // A tuple match: both the key and whether there's a value decide.
+    // Both the key and whether there's a value decide.
     match (key.to_lowercase().as_str(), value) {
         ("", _) => Some(SettingsCommand::Show),
         ("everyone" | "all", "") => Some(SettingsCommand::Everyone),
@@ -423,8 +415,6 @@ pub fn parse_reply(text: &str) -> Option<ReplyCommand> {
     let normalised = text.replace(',', " ");
     let words: Vec<&str> = normalised.split_whitespace().collect();
 
-    // Slice patterns: match on the *shape* of the list of words.
-    // `[action, number]` only matches a list of exactly two words.
     match words.as_slice() {
         [action, number] if action.eq_ignore_ascii_case("done") => {
             parse_item_number(number).map(ReplyCommand::Done)
@@ -436,8 +426,6 @@ pub fn parse_reply(text: &str) -> Option<ReplyCommand> {
             parse_item_number(number).map(ReplyCommand::Skip)
         }
         // `due 2 fri`, `priority 2 high`, or with the value missing.
-        // `rest @ ..` binds whatever words follow the number, as a slice
-        // (plain `..` would match them without naming them).
         [action, number, rest @ ..] if change_kind(action).is_some() => {
             // `?`: "due in 2 days" has no list number, so it's just chat.
             let n = parse_item_number(number)?;
@@ -449,9 +437,7 @@ pub fn parse_reply(text: &str) -> Option<ReplyCommand> {
         }
         [] => None,
         numbers => {
-            // Every word must be a number. Collecting an iterator of
-            // `Option<usize>` into `Option<Vec<usize>>` gives `None` as soon
-            // as one of them is `None`, so "1 apple" is rejected as a whole.
+            // Every word must be a number, so "1 apple" is rejected as a whole.
             let mut numbers: Vec<usize> = numbers
                 .iter()
                 .map(|n| parse_item_number(n))
@@ -583,7 +569,6 @@ fn split_flags(text: &str) -> (&str, &str) {
 /// `None` for any other word, including `-` alone and "t-shirt".
 fn flag_kind(word: &str) -> Option<Flag> {
     let word = word.to_lowercase();
-    // `or_else` only tries the next prefix if the one before didn't match.
     // "--due" must be tried before "-", or it would leave "-due".
     let name = word
         .strip_prefix("--")
@@ -604,9 +589,7 @@ fn parse_flags(text: &str) -> Result<(Option<Due>, Option<Priority>), FlagError>
     let mut priority = None;
     let mut words = text.split_whitespace();
 
-    // `while let` keeps going as long as `next()` gives `Some`. Calling
-    // `words.next()` again inside the loop takes the flag's value, so the
-    // loop skips over it.
+    // Taking a flag's value with `words.next()` means the loop skips over it.
     while let Some(word) = words.next() {
         let kind = flag_kind(word).ok_or_else(|| FlagError::NotAFlag(word.to_string()))?;
         // The value: the next word, unless it's another flag ("-d -p high"),
@@ -651,9 +634,8 @@ fn parse_prayed(rest: &str) -> Option<Checkin> {
         .map(str::to_lowercase)
         .collect();
 
-    // Take out the words that aren't prayers. `retain` keeps the ones the
-    // closure returns `true` for; `on time` is two words, so "on" waits
-    // for the "time" after it.
+    // Take out the words that aren't prayers. `on time` is two words, so
+    // "on" waits for the "time" after it.
     let mut timing = Timing::Auto;
     let mut yesterday = false;
     let joined = words.join(" ");
@@ -692,8 +674,7 @@ fn parse_prayed(rest: &str) -> Option<Checkin> {
         return checkin(Prayer::ALL.to_vec());
     }
 
-    // Same trick as `parse_reply`: collecting `Option`s into
-    // `Option<Vec<_>>` is `None` if any word didn't match.
+    // `None` if any word didn't match.
     let mut prayers: Vec<Prayer> = words
         .iter()
         .map(|w| prayer_name(w))
@@ -724,8 +705,7 @@ fn prayer_name(word: &str) -> Option<Prayer> {
 
 /// A list number as typed: "1" or more. 0, negatives and words are `None`.
 fn parse_item_number(text: &str) -> Option<usize> {
-    // `.ok()` turns the parse `Result` into an `Option`; `.filter` then
-    // turns `Some(0)` into `None`, because lists are numbered from 1.
+    // 0 is `None`, because lists are numbered from 1.
     text.parse::<usize>().ok().filter(|&n| n >= 1)
 }
 

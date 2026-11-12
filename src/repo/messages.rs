@@ -8,11 +8,6 @@ use sqlx::SqliteConnection;
 
 /// Which list a numbered list message showed, as `wa_message_context.item_type`
 /// stores it.
-///
-/// An enum rather than the text itself: the compiler then knows there are
-/// exactly two kinds, so a typo like `"shpo"` can't compile, and a `match`
-/// on it must handle both. ("Make illegal states unrepresentable": if a
-/// wrong value can't be written down, no code has to check for it.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ListKind {
     Todo,
@@ -91,8 +86,6 @@ fn into_list(rows: Vec<Row>) -> Result<Option<SentList>, sqlx::Error> {
     let Some(first) = rows.first() else {
         return Ok(None);
     };
-    // `sqlx::Error::Decode` is sqlx's own "a stored value couldn't be
-    // read" error; `.into()` boxes our `String` message to fit it.
     let kind = first
         .item_type
         .parse()
@@ -118,7 +111,6 @@ pub async fn save_list(
     now: DateTime<Utc>,
 ) -> Result<(), sqlx::Error> {
     let item_type = kind.as_db_str();
-    // `zip(1..)` pairs each id with 1, 2, 3, ...
     for (item_id, position) in item_ids.iter().zip(1_i64..) {
         sqlx::query!(
             "INSERT INTO wa_message_context

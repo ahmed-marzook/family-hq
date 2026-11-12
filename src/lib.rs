@@ -6,11 +6,6 @@
 // `pub` in the library might be used by some other crate, so it never warns
 // that a `pub` item is unused. Keeping modules private lets it point out dead
 // code. The tests live inside the crate, so they can still reach everything.
-//
-// A module can be one file (`help.rs`) or a folder (`bot/`). For a folder,
-// `mod bot;` loads `bot/mod.rs`, and that file declares the folder's other
-// files as its own submodules (as `repo/mod.rs` does). Code outside still
-// writes `crate::bot::...` either way.
 
 mod aladhan;
 mod backup;
@@ -119,13 +114,11 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Builds the shared state, wrapped in an `Arc` (atomically
-    /// reference-counted pointer) so the web server and the reminder loop
-    /// can both hold it. Cloning an `Arc` only bumps a counter; everyone
-    /// shares the one `AppState`.
+    /// Builds the shared state that the web server and the reminder loop both
+    /// hold.
     ///
-    /// The pool is passed in rather than opened here, because opening it is
-    /// `async` and can fail; `main` deals with that first.
+    /// The pool is passed in rather than opened here, because opening it can
+    /// fail; `main` deals with that first.
     pub fn new(config: Config, db: SqlitePool) -> Arc<Self> {
         let gowa = Gowa::new(&config.gowa_url, &config.gowa_basic_auth);
         let prayer_times = PrayerTimes::new(config.defaults.clone());
@@ -141,9 +134,6 @@ impl AppState {
 }
 
 /// Builds the router: which handler runs for which method and path.
-///
-/// `with_state` hands the state to every handler that asks for
-/// `State<Arc<AppState>>`. Axum clones the `Arc` for each request.
 pub fn app(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/", get(routes::health::hello))

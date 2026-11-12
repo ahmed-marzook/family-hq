@@ -2,8 +2,8 @@
 
 // Private for the same reason as the modules in `lib.rs`: so the compiler
 // can warn about dead code. `health` is `pub` because `main.rs` prints its
-// `VERSION`; `pub(crate)` ("public inside this crate only") lets `app()` in
-// `lib.rs` reach the three handlers it routes to.
+// `VERSION`; `pub(crate)` lets `app()` in `lib.rs` reach the three
+// handlers it routes to.
 
 pub(crate) mod actions;
 mod admin;

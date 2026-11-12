@@ -122,7 +122,7 @@ impl PushConfig {
 
 /// Reads a variable that has no sensible default, and stops at startup if
 /// it's missing, rather than running a server that fails on every webhook.
-/// `.filter` turns an empty string into `None` too.
+/// An empty value counts as missing.
 fn required(name: &str) -> String {
     env::var(name)
         .ok()
@@ -143,10 +143,9 @@ fn optional(name: &str) -> Option<String> {
 
 /// Reads a number, or `default` if the variable isn't set.
 ///
-/// Generic: `T` can be any type that implements `FromStr` (u8, u16, i64,
-/// ...), and the caller's expected type picks it. A value that *is* set but
-/// isn't a valid number stops the server, because silently using the
-/// default for a typo like `DEFAULT_PRAYER_METHOD=e` would give wrong prayer times.
+/// A value that *is* set but isn't a valid number stops the server, because
+/// silently using the default for a typo like `DEFAULT_PRAYER_METHOD=e`
+/// would give wrong prayer times.
 fn number_or<T: FromStr>(name: &str, default: T) -> T {
     match env::var(name) {
         Ok(text) if !text.trim().is_empty() => text

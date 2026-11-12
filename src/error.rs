@@ -4,11 +4,6 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
 /// Everything that can go wrong while handling a request.
-///
-/// `thiserror` writes the boilerplate: `#[error(...)]` becomes the
-/// `Display` text, and `#[from]` adds a `From` conversion, so `?` on a
-/// `sqlx::Error` inside a function returning `Result<_, AppError>` turns it
-/// into `AppError::Database` automatically.
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
     #[error("database error: {0}")]
@@ -47,8 +42,8 @@ pub enum AppError {
     BadRequest(String),
 }
 
-/// Lets a handler return `Result<_, AppError>`: on `Err`, Axum calls this
-/// to build the response. The details go to the log, not to the caller.
+/// The HTTP response for an error. The details go to the log, not to the
+/// caller.
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         match self {

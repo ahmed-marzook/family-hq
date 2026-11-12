@@ -57,7 +57,6 @@ fn details_line(details: Details, today: NaiveDate) -> Option<String> {
         };
         format!("{} {name} priority", p.emoji())
     });
-    // `[a, b].into_iter().flatten()` keeps only the `Some`s.
     let parts: Vec<String> = [due, priority].into_iter().flatten().collect();
     (!parts.is_empty()).then(|| parts.join(" · "))
 }
@@ -128,7 +127,6 @@ pub fn format_todo_list(
         return format!("{LIST} No todos. Add one with `+todo fix the tap`.");
     }
 
-    // `(1..).zip(items)` pairs each todo with its number: (1, first), ...
     let numbered: Vec<Numbered> = (1..).zip(items).collect();
     let (title, shown) = match layout {
         Layout::Only(name) => {
@@ -261,9 +259,6 @@ fn is_for(todo: &ListedTodo, name: &str) -> bool {
 /// One numbered todo per person, people in the order their first todo
 /// appears (so whoever has the earliest open todo comes first), and the
 /// todos keeping their order within each.
-///
-/// The lifetime `'a` says the names and todos in the result are borrowed
-/// from `shown`: the groups can't outlive the list they point into.
 fn group_by_person<'a>(shown: &[Numbered<'a>]) -> Vec<(Option<&'a str>, Vec<Numbered<'a>>)> {
     let mut groups: Vec<(Option<&str>, Vec<Numbered>)> = Vec::new();
     for &(number, todo) in shown {
@@ -286,7 +281,6 @@ fn due_note(todo: &ListedTodo, today: NaiveDate) -> String {
     let mut note = String::new();
     if let Some(due) = todo.due {
         let day = flags::show_date(due, today);
-        // `succ_opt`: the next day (`None` only at the end of time).
         let tomorrow = today.succ_opt();
         let text = if due < today {
             format!("{OVERDUE} overdue ({day})")

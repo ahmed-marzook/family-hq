@@ -128,7 +128,6 @@ pub fn messages(
 ) -> Vec<Draft> {
     match delivery {
         Delivery::Off => Vec::new(),
-        // `Option::into_iter`: no text → no message, some → one.
         Delivery::Here => points::week_text(week, days, last_week)
             .into_iter()
             .map(|text| Draft {

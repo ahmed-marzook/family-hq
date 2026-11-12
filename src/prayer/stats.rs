@@ -109,8 +109,6 @@ pub struct Summary {
 impl Summary {
     /// `log` can hold entries outside the period; they're ignored.
     pub fn new(period: Period, log: &[Entry]) -> Self {
-        // A function returning a closure would need a named type, so this
-        // small lookup is a closure itself. It borrows `log`.
         let status = |date: NaiveDate, prayer: Prayer| {
             log.iter()
                 .find(|e| e.date == date && e.prayer == prayer)
@@ -286,7 +284,6 @@ fn heatmap(span: Span, summary: &Summary) -> String {
     while !squares.len().is_multiple_of(7) {
         squares.push(OUTSIDE);
     }
-    // `chunks(7)` hands out the squares a week at a time.
     squares.chunks(7).map(|week| week.concat() + "\n").collect()
 }
 

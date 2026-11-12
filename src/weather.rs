@@ -344,9 +344,6 @@ struct MoonDaily {
 /// The first (only) day's moonrise and moonset. Pure, so it's tested with a
 /// saved reply.
 fn to_rise_set(reply: MoonReply) -> Result<RiseSet, String> {
-    // `Option<&Option<String>>` -> `Option<NaiveDateTime>`: `flatten` drops
-    // the outer "is there a first day" and inner "is there a time" layers
-    // into one, then the text is parsed if there is any.
     let parse = |times: &[Option<String>]| -> Result<Option<NaiveDateTime>, String> {
         times
             .first()
@@ -581,8 +578,7 @@ const HOURS: usize = 12;
 /// `/weather hourly`: the next 12 hours from the current one, with the
 /// day named when it passes midnight.
 fn format_hours(forecast: &Forecast, city: &str) -> String {
-    // The hour `current.time` is in: 20:15 → 20:00. `with_minute(0)` can't
-    // fail, but it returns an `Option`, so fall back to the time itself.
+    // The hour `current.time` is in: 20:15 → 20:00.
     let now = forecast.current.time;
     let this_hour = chrono::Timelike::with_minute(&now, 0).unwrap_or(now);
     let coming: Vec<&Hour> = forecast

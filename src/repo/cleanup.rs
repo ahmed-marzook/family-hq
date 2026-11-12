@@ -38,9 +38,8 @@ impl Person {
 
 /// Everyone.
 pub async fn people(conn: &mut SqliteConnection) -> Result<Vec<Person>, sqlx::Error> {
-    // `coalesce(a, b)`: `a`, or `b` if `a` is NULL. Rows from before
-    // migration 0006 had their `last_active_at` filled in by it, but a
-    // fallback costs nothing.
+    // Rows from before migration 0006 had their `last_active_at` filled in
+    // by it, but a `coalesce` fallback costs nothing.
     sqlx::query_as!(
         Person,
         r#"SELECT u.id AS "id!", u.display_name AS name,

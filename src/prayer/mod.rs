@@ -13,9 +13,6 @@
 //! * `tracking`: marking missed prayers and sending reports, on the
 //!   reminder loop's clock.
 
-// This file is the `prayer` module itself (`mod.rs` is what `mod prayer;`
-// loads for a folder), so the folder's other files are its submodules,
-// declared here. Other code reaches them as `crate::prayer::stats`.
 pub mod checkin;
 pub mod commands;
 pub mod stats;
@@ -103,8 +100,7 @@ impl FromStr for Prayer {
 }
 
 /// Where and how prayer times are calculated. Also the cache key for
-/// fetched times: two chats with equal `Location`s share one fetch, which
-/// is what `Hash` + `Eq` allow (a `HashMap` key needs both).
+/// fetched times: two chats with equal `Location`s share one fetch.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Location {
     /// For logs and the place key only; AlAdhan is asked by coordinates.
@@ -331,8 +327,6 @@ pub fn due_reminders(
     due
 }
 
-/// The reminder message.
-///
 /// Which day a `+prayed` for `prayer` at `now` is for. Usually `today`,
 /// but Isha's time runs on to Islamic midnight, which is often after
 /// midnight on the clock: until it ends, Isha is still yesterday's.
@@ -388,8 +382,6 @@ pub fn reaction_reply(prayer: Prayer, tick: Tick, prayed: usize, mention: Option
         Tick::MadeUp => (MADE_UP, "made up", Some(Status::Late)),
         Tick::Unticked => (UNDONE, "unticked", None),
     };
-    // `and_then` runs `for_prayer` only if there's a status, and passes
-    // a `None` straight through.
     let earned = points::earned_text(now.and_then(points::for_prayer).map(|a| a.points));
     let all = if done == total && tick != Tick::Unticked {
         " 🎉"
@@ -427,7 +419,6 @@ pub fn reminder_text(
 ) -> String {
     let prayer = window.prayer;
     let (start, end) = (settings.clock(window.start), settings.clock(window.end));
-    // `map_or(default, f)`: "" without a place, " in Colombo" with one.
     let place = place.map_or(String::new(), |p| format!(" in {p}"));
     let first_line = match kind {
         ReminderKind::Start => {
@@ -666,8 +657,7 @@ mod tests {
 
     #[test]
     fn a_window_shorter_than_the_warning_skips_the_start_reminder() {
-        // A copy of the normal day with a 15-minute Fajr. (`Window` is
-        // `Copy`, so the array is copied and changing it leaves `day()` alone.)
+        // A copy of the normal day with a 15-minute Fajr.
         let mut short = day();
         short.windows[0] = window(Prayer::Fajr, "2026-10-27T05:00:00Z", "2026-10-27T05:15:00Z");
         // Already inside the last 20 minutes when it starts: only "ending".

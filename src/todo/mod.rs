@@ -140,8 +140,7 @@ pub async fn add(
     // "fri" → a date, counting from the sender's own today (their
     // timezone, even in a group set to another one).
     let today = my_settings(conn, ctx, defaults).await?.today(ctx.now);
-    // `transpose` turns `Option<Result<..>>` into `Result<Option<..>>`, so
-    // one `match` covers "no date", "a date" and "a bad date".
+    // One `match` covers "no date", "a date" and "a bad date".
     let due = match due.map(|due| due.resolve(today)).transpose() {
         Ok(due) => due,
         Err(err) => return Ok(format!("{PROBLEM} {err}")),
@@ -279,7 +278,6 @@ pub async fn close_todo(
         Finish::Done => todos::complete(conn, id, chat, by, now).await?,
         Finish::Skipped => todos::skip(conn, id, chat, by, now).await?,
     };
-    // `let ... else`: carry on with the todo if there is one, else return.
     let Some(todo) = closed else {
         return Ok(None);
     };
@@ -304,7 +302,6 @@ pub async fn close_by_name(
     let mut closed_any = false;
     for name in names {
         let matches = todos::find_open(conn, ctx.chat_id, name).await?;
-        // A slice pattern: exactly one match, bound as `(id, title)`.
         match matches.as_slice() {
             [] => lines.push(format!("{PROBLEM} No open todo matches \"{name}\".")),
             [(id, title)] => {
