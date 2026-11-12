@@ -26,8 +26,10 @@ on:
 permissions:
   contents: read
 
+# Per PR, so two PRs opening together don't drop one's run (a group keeps
+# only one pending run).
 concurrency:
-  group: project-${{ github.event_name }}
+  group: project-${{ github.event_name }}-${{ github.event.pull_request.number || 'poll' }}
   cancel-in-progress: false
 
 env:
@@ -49,11 +51,16 @@ jobs:
         run: |
           # Until the secret exists, do nothing rather than fail every 5 minutes.
           [ -n "$GH_TOKEN" ] || { echo "::notice::PROJECT_TOKEN not set"; exit 0; }
+          # Without it a failed query (expired token) would leave the job green.
+          set -o pipefail
 
-          gh api graphql -F login="$OWNER" -F number="$PROJECT_NUMBER" -f query='
-            query($login: String!, $number: Int!) {
+          # Paginated: Done cards stay on the board, so it outgrows one page.
+          gh api graphql --paginate -F login="$OWNER" -F number="$PROJECT_NUMBER" -f query='
+            query($login: String!, $number: Int!, $endCursor: String) {
               user(login: $login) { projectV2(number: $number) {
-                items(first: 100) { nodes {
+                items(first: 100, after: $endCursor) {
+                  pageInfo { hasNextPage endCursor }
+                  nodes {
                   id
                   status: fieldValueByName(name: "Status") {
                     ... on ProjectV2ItemFieldSingleSelectValue { name }
@@ -92,6 +99,8 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
         run: |
           [ -n "$GH_TOKEN" ] || { echo "::notice::PROJECT_TOKEN not set"; exit 0; }
+          # Without it a failed query (expired token) would leave the job green.
+          set -o pipefail
 
           gh api graphql -F owner="${GH_REPO%/*}" -F name="${GH_REPO#*/}" -F pr="$PR" -f query='
             query($owner: String!, $name: String!, $pr: Int!) {
