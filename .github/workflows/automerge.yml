@@ -1,0 +1,36 @@
+# Turns on auto-merge for Claude's PRs, so they merge on their own once the
+# required checks on main pass. Done here rather than by Claude itself, so it
+# doesn't depend on the model remembering to and costs no Claude usage.
+#
+# Needs "Allow auto-merge" in Settings → General, and branch protection on
+# main requiring `checks`; without a required check, auto-merge would merge
+# at once.
+
+name: Auto-merge
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  enable:
+    # Claude's PRs: opened by the Claude GitHub App, or from one of its
+    # `claude/` branches when the PR was opened from its "Create PR" link.
+    # Same-repo only, so a fork can't name its branch `claude/...` to get in.
+    if: |
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository && (
+        github.event.pull_request.user.login == 'claude[bot]' ||
+        startsWith(github.event.pull_request.head.ref, 'claude/')
+      )
+    runs-on: ubuntu-latest
+    steps:
+      - run: gh pr merge --auto --squash "$PR"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
