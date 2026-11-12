@@ -255,13 +255,17 @@ async fn prayed(
         let user = ctx.sender.id;
         match checkin.timing {
             Timing::Auto => {
-                checkin::tick(conn, user, date, prayer, ctx.now).await?;
+                checkin::tick(conn, user, date, prayer, Some(ctx.chat_id), ctx.now).await?;
             }
             Timing::OnTime => {
-                checkin::correct(conn, user, date, prayer, Correction::OnTime, ctx.now).await?;
+                let said = Correction::OnTime;
+                checkin::correct(conn, user, date, prayer, said, Some(ctx.chat_id), ctx.now)
+                    .await?;
             }
             Timing::Late => {
-                checkin::correct(conn, user, date, prayer, Correction::Late, ctx.now).await?;
+                let said = Correction::Late;
+                checkin::correct(conn, user, date, prayer, said, Some(ctx.chat_id), ctx.now)
+                    .await?;
             }
         }
     }
@@ -426,9 +430,16 @@ mod tests {
         let mut conn = pool.acquire().await.unwrap();
         let mut ctx = setup(&mut conn).await;
         ctx.now = "2026-10-27T15:00:00Z".parse().unwrap();
-        checkin::tick(&mut conn, ctx.sender.id, day().date, Prayer::Dhuhr, ctx.now)
-            .await
-            .unwrap();
+        checkin::tick(
+            &mut conn,
+            ctx.sender.id,
+            day().date,
+            Prayer::Dhuhr,
+            None,
+            ctx.now,
+        )
+        .await
+        .unwrap();
 
         let Outcome::Reply(text) =
             run_command(&mut conn, &ctx, &Apis::new(times()), BotCommand::Prayers)

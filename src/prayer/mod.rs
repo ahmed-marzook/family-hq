@@ -28,6 +28,8 @@ use chrono::{DateTime, Duration, NaiveDate, Utc};
 use chrono_tz::Tz;
 
 use crate::geo::Coordinates;
+use crate::points;
+use crate::prayer::stats::Status;
 use crate::progress;
 use crate::push::{Action, Button, Notice};
 use crate::settings::Settings;
@@ -50,6 +52,17 @@ impl Prayer {
         Prayer::Maghrib,
         Prayer::Isha,
     ];
+
+    /// 1 for Fajr up to 5 for Isha: how `points.source_id` names a prayer.
+    pub fn number(self) -> i64 {
+        match self {
+            Prayer::Fajr => 1,
+            Prayer::Dhuhr => 2,
+            Prayer::Asr => 3,
+            Prayer::Maghrib => 4,
+            Prayer::Isha => 5,
+        }
+    }
 
     /// The exact text stored in the database (and allowed by its CHECK).
     pub fn as_db_str(self) -> &'static str {
@@ -361,18 +374,23 @@ pub enum Tick {
 }
 
 /// The reply to a reaction on a reminder, so the person knows it counted:
-/// "✅ *Asr* prayed · ■■■■■■□□□□ 3/5 prayed", "🕐 *Asr* made up · ...", or
+/// "✅ *Asr* prayed · +2 ⭐ · ■■■■■■□□□□ 3/5 prayed", "🕐 *Asr* made up ·
+/// +1 ⭐ · ...", or
 /// "↩️ *Asr* unticked · ..." when the reaction was removed. `prayed` is how
 /// many of that day's five they've now marked. In a group, `mention` (a
 /// phone number) @mentions them so it's clear whose it was.
 pub fn reaction_reply(prayer: Prayer, tick: Tick, prayed: usize, mention: Option<&str>) -> String {
     let done = prayed as i64;
     let total = Prayer::ALL.len() as i64;
-    let (mark, what) = match tick {
-        Tick::Prayed => (TICK, "prayed"),
-        Tick::MadeUp => (MADE_UP, "made up"),
-        Tick::Unticked => (UNDONE, "unticked"),
+    // The status the tick left it in, for its points (`points::for_prayer`).
+    let (mark, what, now) = match tick {
+        Tick::Prayed => (TICK, "prayed", Some(Status::Prayed)),
+        Tick::MadeUp => (MADE_UP, "made up", Some(Status::Late)),
+        Tick::Unticked => (UNDONE, "unticked", None),
     };
+    // `and_then` runs `for_prayer` only if there's a status, and passes
+    // a `None` straight through.
+    let earned = points::earned_text(now.and_then(points::for_prayer).map(|a| a.points));
     let all = if done == total && tick != Tick::Unticked {
         " 🎉"
     } else {
@@ -380,7 +398,7 @@ pub fn reaction_reply(prayer: Prayer, tick: Tick, prayed: usize, mention: Option
     };
     let who = mention.map_or(String::new(), |phone| format!("@{phone} "));
     let mut text = format!(
-        "{who}{mark} *{prayer}* {what} · {} {done}/{total} prayed{all}",
+        "{who}{mark} *{prayer}* {what}{earned} · {} {done}/{total} prayed{all}",
         progress::bar(done, total)
     );
     // People don't always have their phone to hand: it may well have been
@@ -502,7 +520,7 @@ mod tests {
     fn reaction_replies_say_what_changed() {
         assert_eq!(
             reaction_reply(Prayer::Asr, Tick::Prayed, 3, None),
-            "✅ *Asr* prayed · ■■■■■■□□□□ 3/5 prayed"
+            "✅ *Asr* prayed · +2 ⭐ · ■■■■■■□□□□ 3/5 prayed"
         );
         assert_eq!(
             reaction_reply(Prayer::Asr, Tick::Unticked, 2, None),
@@ -510,11 +528,11 @@ mod tests {
         );
         assert_eq!(
             reaction_reply(Prayer::Isha, Tick::Prayed, 5, Some("447700900001")),
-            "@447700900001 ✅ *Isha* prayed · ■■■■■■■■■■ 5/5 prayed 🎉"
+            "@447700900001 ✅ *Isha* prayed · +2 ⭐ · ■■■■■■■■■■ 5/5 prayed 🎉"
         );
         assert_eq!(
             reaction_reply(Prayer::Fajr, Tick::MadeUp, 4, None),
-            "🕐 *Fajr* made up · ■■■■■■■■□□ 4/5 prayed\n\
+            "🕐 *Fajr* made up · +1 ⭐ · ■■■■■■■■□□ 4/5 prayed\n\
              Prayed it in time? Send `+prayed fajr on time`."
         );
     }

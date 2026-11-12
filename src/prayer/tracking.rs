@@ -390,6 +390,7 @@ mod tests {
                     user,
                     date(SUNDAY),
                     prayer,
+                    None,
                     utc("2026-11-01T22:00:00Z"),
                 )
                 .await

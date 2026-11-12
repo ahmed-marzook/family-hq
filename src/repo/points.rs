@@ -4,6 +4,7 @@ use chrono::{DateTime, NaiveDate, Utc};
 use sqlx::SqliteConnection;
 
 use crate::points::{Award, DayPoints, Source};
+use crate::prayer::Prayer;
 use crate::reports::Period;
 
 /// Records `award` for `user_id`, earned in `chat_id` on their local `day`.
@@ -24,7 +25,7 @@ pub async fn award(
     sqlx::query!(
         "INSERT INTO points (user_id, chat_id, source, source_id, reason, points, day, at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT (source, source_id) DO NOTHING",
+         ON CONFLICT (source, source_id) WHERE source <> 'prayer' DO NOTHING",
         user_id,
         chat_id,
         source,
@@ -33,6 +34,83 @@ pub async fn award(
         award.points,
         day,
         now
+    )
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
+/// Sets what `user_id`'s `prayer` on `day` is worth, to match the prayer
+/// log (see `prayer::checkin`). A prayer has one row: the first award adds
+/// it, in `chat_id`, and later ones (made up → corrected to on time)
+/// change its points but keep it in the chat it was first earned in.
+///
+/// With no `chat_id` (the admin dashboard, for someone with no DM), only
+/// a row that's already there is changed: a row must belong to a chat.
+pub async fn set_prayer(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    chat_id: Option<i64>,
+    day: NaiveDate,
+    prayer: Prayer,
+    award: Award,
+    now: DateTime<Utc>,
+) -> Result<(), sqlx::Error> {
+    let (source, reason) = (Source::Prayer.as_db_str(), award.reason.as_db_str());
+    let number = prayer.number();
+    match chat_id {
+        // The `WHERE` after the conflict target names the partial unique
+        // index it means (`points_once_per_prayer`, see 0011).
+        Some(chat_id) => {
+            sqlx::query!(
+                "INSERT INTO points (user_id, chat_id, source, source_id, reason, points, day, at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 ON CONFLICT (user_id, day, source_id) WHERE source = 'prayer' DO UPDATE
+                 SET reason = excluded.reason, points = excluded.points",
+                user_id,
+                chat_id,
+                source,
+                number,
+                reason,
+                award.points,
+                day,
+                now
+            )
+            .execute(conn)
+            .await?;
+        }
+        None => {
+            sqlx::query!(
+                "UPDATE points SET reason = ?, points = ?
+                 WHERE source = 'prayer' AND user_id = ? AND day = ? AND source_id = ?",
+                reason,
+                award.points,
+                user_id,
+                day,
+                number
+            )
+            .execute(conn)
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+/// Takes away what `user_id`'s `prayer` on `day` earned: it was unticked,
+/// or set to missed. Nothing happens if it had earned nothing.
+pub async fn clear_prayer(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    day: NaiveDate,
+    prayer: Prayer,
+) -> Result<(), sqlx::Error> {
+    let number = prayer.number();
+    sqlx::query!(
+        "DELETE FROM points
+         WHERE source = 'prayer' AND user_id = ? AND day = ? AND source_id = ?",
+        user_id,
+        day,
+        number
     )
     .execute(conn)
     .await?;

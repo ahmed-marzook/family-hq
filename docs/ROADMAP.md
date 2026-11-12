@@ -19,9 +19,11 @@ family for at least two weeks**. The admin dashboard is outside this rule.
   [roadmap/todo-shop.md](roadmap/todo-shop.md)
 - **Admin dashboard**: A1–A5 done (0.15.0), nothing open →
   [roadmap/admin-dashboard.md](roadmap/admin-dashboard.md)
-- **Points (P1–P2)**: brought forward at the owner's request; points for
-  todos, the `/points` leaderboard and the Sunday summary built; waiting on
-  a week of family use → [roadmap/points.md](roadmap/points.md)
+- **Points (P1–P3)**: brought forward at the owner's request; points for
+  todos and prayers, the `/points` leaderboard and the Sunday summary
+  built; waiting on a week of family use. P4 (stats and levels per
+  category, weekly champions, history over weeks, months and years)
+  planned → [roadmap/points.md](roadmap/points.md)
 - **Habits and group goals (Stage 2.5, H1–H6)**: brought forward at the
   owner's request; planned, H1 first → [roadmap/habits.md](roadmap/habits.md)
 

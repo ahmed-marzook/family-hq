@@ -565,7 +565,10 @@ async fn handle_reaction(
     // `None` if nothing changed.
     let tick = match change {
         ReactionChange::Removed => checkin::untick(&mut tx, user.id, date, prayer, now).await?,
-        ReactionChange::Added => checkin::tick(&mut tx, user.id, date, prayer, now).await?,
+        ReactionChange::Added => {
+            // Its points count in the chat the reminder was in.
+            checkin::tick(&mut tx, user.id, date, prayer, Some(chat_id), now).await?
+        }
     };
     let prayed = prayers::prayed_on(&mut tx, user.id, date).await?.len();
     tx.commit().await?;

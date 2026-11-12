@@ -29,7 +29,7 @@ I keep shared lists for each group I'm in, and private ones when you message me 
 
 🛒 *Shopping*: `+shop milk, eggs` · `/shop` · `+got milk`
 📝 *Todos*: `+todo fix the tap -d fri -p high` · `/todo` · `+done 2` or `+done gym` · `+skip 2`
-⭐ *Points*: `/points`, earned by finishing todos
+⭐ *Points*: `/points`, earned by finishing todos and praying
 🕌 *Prayers*: `/prayers` · `/prayers on` · `+prayed asr` · `/prayers week`
 ⚙️ *Settings*: `/settings` · `/settings city Leicester, GB` · or share your location with me
 🌤️ *Weather*: `/weather` · `/weather hourly` · `/weather tomorrow` · `/weather week`
@@ -114,6 +114,11 @@ Finishing a todo earns points for whoever ticks it off:
 • Done after its due date: 1 less (but always at least 1)
 • Skipped: −1. Removing a todo neither earns nor costs anything.
 The reply to `done 2` shows what it earned, like \"✅ Done: *fix the tap* · +4 ⭐\".
+
+*Prayers*
+Each prayer you tick off earns points too, in the chat you ticked it in (a push button counts in your chat with me):
+• Prayed on time: 2 · made up: 1 · missed: 0
+Untick it and its points go; `+prayed asr on time` or `late` changes them.
 
 *See them*
 `/points` in a group: this week's leaderboard (Monday to Sunday) 🥇🥈🥉, and who has earned what today. Only points earned in that group count.

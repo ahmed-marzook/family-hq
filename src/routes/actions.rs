@@ -74,7 +74,8 @@ pub async fn action(
             if date > (now + Duration::days(1)).date_naive() {
                 return Ok((StatusCode::BAD_REQUEST, "That day hasn't come yet"));
             }
-            let tick = checkin::tick(&mut tx, user_id, date, prayer, now).await?;
+            // A push has no chat, so its points count in their DM.
+            let tick = checkin::tick(&mut tx, user_id, date, prayer, None, now).await?;
             let reply = if tick.is_some() {
                 "Marked as prayed"
             } else {

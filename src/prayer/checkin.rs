@@ -24,9 +24,10 @@ use chrono::{DateTime, NaiveDate, Utc};
 use sqlx::SqliteConnection;
 use tracing::info;
 
+use crate::points;
 use crate::prayer::stats::Status;
 use crate::prayer::{Prayer, Tick};
-use crate::repo::prayers;
+use crate::repo::{chats, points as stored_points, prayers};
 
 /// One prayer's entry in the log, as stored (a `prayer_log` row). The
 /// table's CHECKs allow only three shapes, which the constructors below
@@ -173,8 +174,12 @@ impl Logged {
 }
 
 /// Makes `event` happen to `user_id`'s `prayer` on `date`: loads the entry,
-/// works out the new one (`next`), and stores it. Returns what was
-/// written, or `None` if nothing changed.
+/// works out the new one (`next`), and stores it, with the points it's now
+/// worth (`sync_points`). Returns what was written, or `None` if nothing
+/// changed.
+///
+/// `earned_in` is the chat a newly earned prayer's points count in: where
+/// it was ticked (`None`: the person's DM).
 ///
 /// Reading then writing is two statements, so another writer could change
 /// the entry in between. `conn` must therefore be inside a write
@@ -188,28 +193,67 @@ async fn apply(
     date: NaiveDate,
     prayer: Prayer,
     event: Event,
+    earned_in: Option<i64>,
     now: DateTime<Utc>,
 ) -> Result<Option<Write>, sqlx::Error> {
     let current = prayers::load(conn, user_id, date, prayer).await?;
     let write = next(current, event, now);
     if let Some(write) = write {
         prayers::store(conn, user_id, date, prayer, write).await?;
+        sync_points(conn, user_id, date, prayer, write, earned_in, now).await?;
     }
     Ok(write)
+}
+
+/// Keeps the prayer's points in step with what was just written: 2 for
+/// prayed on time, 1 for made up, none for missed or no entry (see
+/// `points::for_prayer`). Done here, the one place every change goes
+/// through, so a reaction, the push button, `+prayed`, the dashboard and
+/// an untick can't disagree about the points.
+///
+/// In the same transaction as the log (see `apply`), so the two are saved
+/// together or not at all.
+async fn sync_points(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    date: NaiveDate,
+    prayer: Prayer,
+    write: Write,
+    earned_in: Option<i64>,
+    now: DateTime<Utc>,
+) -> Result<(), sqlx::Error> {
+    let award = match write {
+        Write::Store(logged) => points::for_prayer(logged.status),
+        Write::Delete => None,
+    };
+    let Some(award) = award else {
+        return stored_points::clear_prayer(conn, user_id, date, prayer).await;
+    };
+    // Where it was ticked, or else their DM. `Option::or` can't be used
+    // here, because finding the DM is `async`: a plain `match` can await.
+    let chat_id = match earned_in {
+        Some(chat_id) => Some(chat_id),
+        None => chats::dm_of(conn, user_id).await?.map(|(id, _)| id),
+    };
+    stored_points::set_prayer(conn, user_id, chat_id, date, prayer, award, now).await
 }
 
 /// Marks `prayer` on `date` as prayed by `user_id`: on time, or made up if
 /// its time had ended and it was marked missed. Returns what changed, or
 /// `None` if it was already ticked (a second reaction, a retried webhook,
 /// the button tapped twice), so the caller needn't say so twice.
+///
+/// Its points count in `earned_in`: the chat it was ticked in (`None`:
+/// their DM).
 pub async fn tick(
     conn: &mut SqliteConnection,
     user_id: i64,
     date: NaiveDate,
     prayer: Prayer,
+    earned_in: Option<i64>,
     now: DateTime<Utc>,
 ) -> Result<Option<Tick>, sqlx::Error> {
-    let write = apply(conn, user_id, date, prayer, Event::Ticked, now).await?;
+    let write = apply(conn, user_id, date, prayer, Event::Ticked, earned_in, now).await?;
     info!("prayed {prayer} on {date}");
     // Its time had ended and it was marked missed: made up.
     Ok(write.map(|w| match w {
@@ -230,23 +274,27 @@ pub async fn untick(
     prayer: Prayer,
     now: DateTime<Utc>,
 ) -> Result<Option<Tick>, sqlx::Error> {
-    let write = apply(conn, user_id, date, prayer, Event::Unticked, now).await?;
+    // Unticking only ever takes points away, so no chat is needed.
+    let write = apply(conn, user_id, date, prayer, Event::Unticked, None, now).await?;
     info!("unticked {prayer} on {date}");
     Ok(write.map(|_| Tick::Unticked))
 }
 
 /// Sets how a prayer went when the person says so themselves (`+prayed
 /// asr on time` / `late`): on time replaces a ❌ or a 🕐, late replaces
-/// a ✅ or a ❌. Unlike `tick`, this overrides what's there.
+/// a ✅ or a ❌. Unlike `tick`, this overrides what's there. Points as for
+/// `tick`.
 pub async fn correct(
     conn: &mut SqliteConnection,
     user_id: i64,
     date: NaiveDate,
     prayer: Prayer,
     said: Correction,
+    earned_in: Option<i64>,
     now: DateTime<Utc>,
 ) -> Result<(), sqlx::Error> {
-    apply(conn, user_id, date, prayer, Event::Corrected(said), now).await?;
+    let event = Event::Corrected(said);
+    apply(conn, user_id, date, prayer, event, earned_in, now).await?;
     Ok(())
 }
 
@@ -259,12 +307,14 @@ pub async fn mark_missed(
     prayer: Prayer,
     now: DateTime<Utc>,
 ) -> Result<bool, sqlx::Error> {
-    let write = apply(conn, user_id, date, prayer, Event::Missed, now).await?;
+    // Missed earns nothing, so no chat is needed.
+    let write = apply(conn, user_id, date, prayer, Event::Missed, None, now).await?;
     Ok(write.is_some())
 }
 
 /// Sets a prayer to exactly `status`, or (`None`) takes it out of the log,
-/// whatever it was before. For the admin dashboard's corrections.
+/// whatever it was before. For the admin dashboard's corrections. Points
+/// newly earned this way count in the person's DM.
 pub async fn set_status(
     conn: &mut SqliteConnection,
     user_id: i64,
@@ -273,7 +323,7 @@ pub async fn set_status(
     status: Option<Status>,
     now: DateTime<Utc>,
 ) -> Result<(), sqlx::Error> {
-    apply(conn, user_id, date, prayer, Event::Set(status), now).await?;
+    apply(conn, user_id, date, prayer, Event::Set(status), None, now).await?;
     Ok(())
 }
 
@@ -303,15 +353,15 @@ mod tests {
         let now = Utc::now();
         let user = register(&mut conn, "Bilal", "447700900001", now).await;
 
-        let first = tick(&mut conn, user.id, date(), Prayer::Fajr, now)
+        let first = tick(&mut conn, user.id, date(), Prayer::Fajr, None, now)
             .await
             .unwrap();
-        let again = tick(&mut conn, user.id, date(), Prayer::Fajr, now)
+        let again = tick(&mut conn, user.id, date(), Prayer::Fajr, None, now)
             .await
             .unwrap();
         assert_eq!(first, Some(Tick::Prayed));
         assert_eq!(again, None, "only the first one changes anything");
-        tick(&mut conn, user.id, date(), Prayer::Asr, now)
+        tick(&mut conn, user.id, date(), Prayer::Asr, None, now)
             .await
             .unwrap();
         let mut prayed = prayed_on(&mut conn, user.id, date()).await.unwrap();
@@ -375,9 +425,9 @@ mod tests {
         assert!(prayed_on(&mut conn, user, date()).await.unwrap().is_empty());
 
         // Prayed after its time: made up.
-        let late = tick(&mut conn, user, date(), Prayer::Asr, now).await;
+        let late = tick(&mut conn, user, date(), Prayer::Asr, None, now).await;
         assert_eq!(late.unwrap(), Some(Tick::MadeUp));
-        let again = tick(&mut conn, user, date(), Prayer::Asr, now).await;
+        let again = tick(&mut conn, user, date(), Prayer::Asr, None, now).await;
         assert_eq!(again.unwrap(), None, "already made up");
         assert_eq!(log(&mut conn).await, [asr(Status::Late)]);
         assert_eq!(
@@ -408,20 +458,37 @@ mod tests {
             date(),
             Prayer::Asr,
             Correction::OnTime,
+            None,
             now,
         )
         .await
         .unwrap();
         assert_eq!(log(&mut conn).await, [asr(Status::Prayed)]);
         // And the other way: ✅ → 🕐.
-        correct(&mut conn, user, date(), Prayer::Asr, Correction::Late, now)
-            .await
-            .unwrap();
+        correct(
+            &mut conn,
+            user,
+            date(),
+            Prayer::Asr,
+            Correction::Late,
+            None,
+            now,
+        )
+        .await
+        .unwrap();
         assert_eq!(log(&mut conn).await, [asr(Status::Late)]);
         // With no row yet, either works too.
-        correct(&mut conn, user, date(), Prayer::Isha, Correction::Late, now)
-            .await
-            .unwrap();
+        correct(
+            &mut conn,
+            user,
+            date(),
+            Prayer::Isha,
+            Correction::Late,
+            None,
+            now,
+        )
+        .await
+        .unwrap();
         untick(&mut conn, user, date(), Prayer::Asr, now)
             .await
             .unwrap();
@@ -473,7 +540,7 @@ mod tests {
         assert!(log(&mut conn).await.is_empty());
 
         // A prayer prayed in time is never marked missed afterwards.
-        tick(&mut conn, user, date(), Prayer::Fajr, now)
+        tick(&mut conn, user, date(), Prayer::Fajr, None, now)
             .await
             .unwrap();
         assert!(
@@ -481,6 +548,78 @@ mod tests {
                 .await
                 .unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn a_prayers_points_follow_the_log() {
+        use crate::repo::{chats, points};
+        use crate::reports::Period;
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let now = Utc::now();
+        let user = bilal(&mut conn).await;
+        let group = chats::find_or_create(&mut conn, "1@g.us", None, now)
+            .await
+            .unwrap();
+        let other = chats::find_or_create(&mut conn, "2@g.us", None, now)
+            .await
+            .unwrap();
+        let day = Period {
+            first: date(),
+            last: date(),
+        };
+        let total = async |conn: &mut SqliteConnection, chat| {
+            let got = points::totals(conn, chat, day).await.unwrap();
+            got.first().map_or(0, |(_, p)| *p)
+        };
+        let (asr, isha) = (Prayer::Asr, Prayer::Isha);
+
+        // Ticked on time in the group: 2 there.
+        tick(&mut conn, user, date(), asr, Some(group), now)
+            .await
+            .unwrap();
+        assert_eq!(total(&mut conn, group).await, 2);
+        // A second tick (a retried webhook) pays nothing more.
+        tick(&mut conn, user, date(), asr, Some(group), now)
+            .await
+            .unwrap();
+        assert_eq!(total(&mut conn, group).await, 2);
+        // Said late from another chat: 1, still in the first chat.
+        let late = Correction::Late;
+        correct(&mut conn, user, date(), asr, late, Some(other), now)
+            .await
+            .unwrap();
+        assert_eq!(total(&mut conn, group).await, 1);
+        assert_eq!(total(&mut conn, other).await, 0);
+        // Unticked: back to missed, which earns nothing.
+        untick(&mut conn, user, date(), asr, now).await.unwrap();
+        assert_eq!(total(&mut conn, group).await, 0);
+
+        // Missed, then made up: 1.
+        mark_missed(&mut conn, user, date(), isha, now)
+            .await
+            .unwrap();
+        assert_eq!(total(&mut conn, group).await, 0);
+        tick(&mut conn, user, date(), isha, Some(group), now)
+            .await
+            .unwrap();
+        assert_eq!(total(&mut conn, group).await, 1);
+        // The dashboard clears it: its point goes too.
+        set_status(&mut conn, user, date(), isha, None, now)
+            .await
+            .unwrap();
+        assert_eq!(total(&mut conn, group).await, 0);
+        // And sets one as prayed: he has no DM, so there's no chat to
+        // count it in, and nothing is added.
+        let prayed = Some(Status::Prayed);
+        set_status(&mut conn, user, date(), isha, prayed, now)
+            .await
+            .unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM points")
+            .fetch_one(&mut *conn)
+            .await
+            .unwrap();
+        assert_eq!(count, 0);
     }
 
     // ---- the rules alone ----
