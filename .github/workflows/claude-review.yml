@@ -1,0 +1,72 @@
+# Claude reviews each PR against CLAUDE.md and posts its findings as inline
+# review comments. Runs when a PR is opened, marked ready or reopened, not
+# on every push, to save Pro usage. Drafts are skipped.
+#
+# Needs the CLAUDE_CODE_OAUTH_TOKEN secret (`claude setup-token`) and the
+# Claude GitHub App installed on the repo.
+
+name: Claude review
+
+on:
+  pull_request:
+    types: [opened, ready_for_review, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: read
+  id-token: write
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # PRs opened by Claude itself (claude.yml) come from the Claude
+          # GitHub App, which the action refuses unless it's allowed here.
+          allowed_bots: claude
+          claude_args: |
+            --max-turns 30
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Read,Glob,Grep"
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            Review this pull request against the rules in CLAUDE.md. Read
+            CLAUDE.md and the diff (`gh pr diff`) first. Check in particular:
+
+            1. SQL only in `src/repo/`, and only with SQLx placeholders: never
+               `format!` (or any string building) with user input.
+            2. Times stored in UTC; the chat's timezone used only to decide
+               "today" and to show times (`Settings::today` / `Settings::clock`),
+               and `now`/`today` passed in rather than read inside functions.
+            3. Errors use `AppError` (thiserror), not `String`.
+            4. Admin API privacy: never a DM's list contents (counts only),
+               never anyone's exact coordinates, enforced in the API.
+            5. Schema changes only as new files in `migrations/`; an existing
+               migration must never be edited. If a query changed, `.sqlx/`
+               must be updated in the same PR.
+            6. The roadmap stage: check `docs/ROADMAP.md` and flag any feature
+               from a later phase than the current one.
+            7. Webhook dedup by message ID and ignoring `is_from_me` kept intact;
+               emoji as constants; comments explain why, not Rust syntax.
+            8. Bugs, missing tests for new behaviour, and edge cases.
+
+            Post each specific finding as an inline review comment on the
+            line it's about, with the fix. Only real problems: no praise, no
+            style nits that `cargo fmt` or clippy would catch. Finish with one
+            short top-level comment (`gh pr comment`) summarising the findings,
+            or saying there are none, and whether the PR keeps to the current
+            roadmap stage.

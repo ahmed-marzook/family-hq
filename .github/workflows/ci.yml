@@ -1,0 +1,46 @@
+# The checks every PR must pass before it can merge, and that main must keep
+# passing. The same checks as the `checks` job in release.yml, minus the
+# tag/version check. Make `checks` a required status check on main.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# A new push to a PR cancels that PR's run still in progress. Runs on main
+# are never cancelled, so every commit there gets a result.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    env:
+      # Build the SQLx macros from the committed .sqlx/ data, no database.
+      SQLX_OFFLINE: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Dashboard builds
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
