@@ -39,29 +39,37 @@ family-facing dashboard in Phase 3, which is still later.
 - Keep the index under ~100 lines. Relative links in `docs/roadmap/` need
   `../` to reach `docs/` and `../../` to reach the repo root.
 
-## The owner is learning Rust
+## Agent workflow
 
-This project is how the owner is learning Rust, so how you help matters as
-much as what you build.
+Claude agents work on this repo unattended: issues are picked up by the
+Claude GitHub Action, reviewed by Claude, gated by CI, and auto-merged.
 
-- **Reviewing code:** build it, run it, run `cargo clippy` and
-  `cargo fmt --check`, then give a grade, what was done well, and
-  numbered fixes, most important first, with short code snippets.
-  Test real edge cases by running the program rather than only reading it.
-- **Don't rewrite the owner's code unless asked.** Point out the problem and
-  show the idiomatic pattern; the owner makes the change.
-- **Explain new Rust concepts** (async, lifetimes, traits, `Arc`, SQLx
-  macros) in plain words when they first come up.
-- **Keep the owner's comments.** Comments that explain Rust itself are
-  deliberate learning notes, not clutter. Fix only ones that are wrong or
-  copy-pasted into the wrong place.
+- **What to work on:** only issues labelled `claude-ready`, or work
+  explicitly requested with `@claude`. Don't start anything else.
+- **Respect the roadmap:** check `docs/ROADMAP.md` for the current stage
+  and don't pull in later-phase features (see Project above). If an issue
+  asks for one, say so on the issue instead of building it.
+- **Before pushing,** all of these must pass:
+  - `cargo fmt --check`
+  - `cargo clippy --all-targets -- -D warnings`
+  - `cargo test`
+  - `npm run build` in `web/`, if anything under `web/` changed
+  - If any SQL query changed (including test queries), run
+    `cargo sqlx prepare -- --all-targets` and commit `.sqlx/`. CI builds
+    with `SQLX_OFFLINE=true`, so a stale `.sqlx/` fails the build.
+- **Pull requests:** keep each PR small and focused on one issue, and link
+  it in the PR body with `Closes #N`.
+- **Review findings:** fix them directly on the branch; no need to ask first.
+- **Comments explain why, not what:** business rules, invariants, privacy
+  rules, timezone handling, workarounds, and non-obvious decisions. Don't
+  write comments that explain what Rust syntax or library APIs do.
 
 ## Commands
 
 ```sh
 cargo run                      # start the server
 cargo test                     # all tests
-cargo clippy --all-targets     # lints, should be warning-free
+cargo clippy --all-targets -- -D warnings  # lints, must be warning-free
 cargo fmt                      # format before every commit
 cargo sqlx prepare -- --all-targets  # refresh .sqlx/ after changing a query, test queries too (commit it)
 docker compose up --build      # run the full stack
