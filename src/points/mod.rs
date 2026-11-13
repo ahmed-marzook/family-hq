@@ -33,6 +33,7 @@ use crate::todo::flags::Priority;
 
 pub mod award;
 pub mod commands;
+pub mod game;
 pub mod level_ups;
 pub mod levels;
 pub mod reports;
@@ -259,27 +260,42 @@ pub const RULES: &str = "🔴 high 3 · medium 2 · 🟢 low 1, +1 if it's done 
                          date (−1 if after), and a skip costs 1. A prayer: 2 on time, \
                          1 made up";
 
-/// `/points` in a group: this week's leaderboard for the group, and who has
-/// earned what today. Each list is `(name, points)`, anyone with no points
-/// left out. Someone whose day evens out at 0 (a done and a skip) isn't
-/// named in "Today:". `levels` is each person's Overall level, shown next
-/// to their name: lifetime and from every chat, unlike the week's points.
-pub fn group_text(
-    week: Period,
-    totals: &[(String, i64)],
-    today: &[(String, i64)],
-    levels: &[(String, i64)],
-) -> String {
-    if totals.is_empty() {
-        return format!(
-            "{TROPHY} No points yet this week. Tick off a todo or a prayer to earn some: {RULES}."
-        );
+/// What `/points` in a group shows. Each list is `(name, points)`, anyone
+/// with no points left out.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GroupBoard {
+    /// This week, Monday to Sunday on the reader's clock.
+    pub week: Period,
+    /// Each person's points in the group this week.
+    pub totals: Vec<(String, i64)>,
+    /// Each person's points in the group today.
+    pub today: Vec<(String, i64)>,
+    /// Each person's Overall level: lifetime and from every chat, unlike
+    /// the week's points.
+    pub levels: Vec<(String, i64)>,
+    /// Each person's points in the group last week, for the new-week text.
+    pub last_week: Vec<(String, i64)>,
+}
+
+/// `/points` in a group: this week's leaderboard with each person's level,
+/// and who has earned what today. Someone whose day evens out at 0 (a done
+/// and a skip) isn't named in "Today:". With nothing yet this week, last
+/// week's winner, so the Monday reset is visible.
+pub fn group_text(board: &GroupBoard) -> String {
+    if board.totals.is_empty() {
+        return game::new_week_text(&board.last_week).unwrap_or_else(|| {
+            format!(
+                "{TROPHY} No points yet this week. Tick off a todo or a prayer to earn some: \
+                 {RULES}."
+            )
+        });
     }
     let mut lines = vec![format!(
         "{TROPHY} *Points this week* ({})",
-        show_period(week)
+        show_period(board.week)
     )];
-    for r in rank(totals) {
+    let (levels, today) = (&board.levels, &board.today);
+    for r in rank(&board.totals) {
         let level = levels
             .iter()
             .find(|(name, _)| name == r.name)
@@ -435,9 +451,16 @@ fn best_day(days: &[DayPoints]) -> Option<&DayPoints> {
 }
 
 /// A group's weekly summary: the week's leaderboard, each person's change
-/// from last week (`last_week` is `(name, points)`), and the best day.
-/// `None` if nobody earned anything, so there's nothing to say.
-pub fn week_text(week: Period, days: &[DayPoints], last_week: &[(String, i64)]) -> Option<String> {
+/// from last week (`last_week` is `(name, points)`), the champion of each
+/// category (`by_category`, from `game::per_category`) and overall, the
+/// best day, and a reminder that scores start again tomorrow. `None` if
+/// nobody earned anything, so there's nothing to say.
+pub fn week_text(
+    week: Period,
+    days: &[DayPoints],
+    last_week: &[(String, i64)],
+    by_category: &[(String, levels::Category, i64)],
+) -> Option<String> {
     let totals: Vec<(String, i64)> = totals_by_person(days)
         .into_iter()
         .map(|(_, name, points)| (name, points))
@@ -462,15 +485,22 @@ pub fn week_text(week: Period, days: &[DayPoints], last_week: &[(String, i64)]) 
             total(r.points)
         ));
     }
-    if let Some(best) = best_day(days) {
-        lines.push(String::new());
-        lines.push(format!(
+    let champions = game::champions_text(&game::champions(&totals, by_category));
+    let best = best_day(days).map(|best| {
+        format!(
             "{SPARKLE} Best day: {}, {} on {}",
             best.name,
             best.points,
             best.day.format("%a %-d %b")
-        ));
+        )
+    });
+    if champions.is_some() || best.is_some() {
+        lines.push(String::new());
+        lines.extend(champions);
+        lines.extend(best);
     }
+    lines.push(String::new());
+    lines.push(game::RESET.to_string());
     Some(lines.join("\n"))
 }
 
@@ -645,8 +675,15 @@ mod tests {
         let today = totals(&[("Ahmed", 2), ("Khadija", 5)]);
         // Bilal's level is missing (it can't be, but): just left out.
         let levels = totals(&[("Ahmed", 7), ("Khadija", 9)]);
+        let board = GroupBoard {
+            week: week(),
+            totals: week_totals,
+            today,
+            levels,
+            last_week: Vec::new(),
+        };
         assert_eq!(
-            group_text(week(), &week_totals, &today, &levels),
+            group_text(&board),
             "🏆 *Points this week* (Mon 2 Nov – Sun 8 Nov)\n\
              🥇 Khadija · Lv 9 · 24\n\
              🥈 Ahmed · Lv 7 · 18\n\
@@ -658,9 +695,22 @@ mod tests {
 
     #[test]
     fn group_text_with_nothing_yet_says_how_to_earn() {
-        let text = group_text(week(), &[], &[], &[]);
+        let mut board = GroupBoard {
+            week: week(),
+            totals: Vec::new(),
+            today: Vec::new(),
+            levels: Vec::new(),
+            last_week: Vec::new(),
+        };
+        let text = group_text(&board);
         assert!(text.contains("No points yet"));
         assert!(text.contains("high 3"));
+
+        // With a winner last week, the reset is shown instead.
+        board.last_week = totals(&[("Sara", 34)]);
+        let text = group_text(&board);
+        assert!(text.contains("A new week"), "{text}");
+        assert!(text.contains("Sara (34)"), "{text}");
     }
 
     fn mine(days: &[i64], by_chat: Vec<(Option<String>, i64)>) -> Mine {
@@ -746,14 +796,25 @@ mod tests {
     fn week_text_ranks_compares_and_names_the_best_day() {
         // Khadija up 6, Ahmed down 4, Bilal had nothing last week.
         let last_week = totals(&[("Khadija", 18), ("Ahmed", 22)]);
+        // Khadija prayed most, Ahmed did the most todos.
+        let by_category = game::per_category([
+            ("Khadija".to_string(), Source::Prayer, 20),
+            ("Khadija".to_string(), Source::Todo, 4),
+            ("Ahmed".to_string(), Source::Prayer, 8),
+            ("Ahmed".to_string(), Source::Todo, 10),
+            ("Bilal".to_string(), Source::Todo, 9),
+        ]);
         assert_eq!(
-            week_text(week(), &family_week(), &last_week).unwrap(),
+            week_text(week(), &family_week(), &last_week, &by_category).unwrap(),
             "🏆 *This week's points* (Mon 2 Nov – Sun 8 Nov)\n\
              🥇 Khadija 24 ⬆️ 6\n\
              🥈 Ahmed 18 ⬇️ 4\n\
              🥉 Bilal 9\n\
              \n\
-             🌟 Best day: Ahmed, 18 on Wed 4 Nov"
+             🕌 Most prayers: Khadija · 📝 Most todos: Ahmed · 🏆 Overall: Khadija\n\
+             🌟 Best day: Ahmed, 18 on Wed 4 Nov\n\
+             \n\
+             Scores start again tomorrow. 🏁"
         );
     }
 
@@ -764,18 +825,26 @@ mod tests {
             day(2, "Ahmed", "2026-11-03", 10),
             day(3, "Bilal", "2026-11-03", 10),
         ];
-        let text = week_text(week(), &days, &[]).unwrap();
-        assert!(text.ends_with("Best day: Ahmed, 10 on Tue 3 Nov"), "{text}");
+        let text = week_text(week(), &days, &[], &[]).unwrap();
+        assert!(
+            text.contains("🌟 Best day: Ahmed, 10 on Tue 3 Nov\n"),
+            "{text}"
+        );
     }
 
     #[test]
     fn a_week_with_nothing_earned_says_nothing() {
-        assert_eq!(week_text(week(), &[], &[]), None);
-        // Only skips: still a leaderboard, but no best day.
+        assert_eq!(week_text(week(), &[], &[], &[]), None);
+        // Only skips: still a leaderboard, but no champion or best day.
         let skips = vec![day(3, "Bilal", "2026-11-06", -1)];
-        let text = week_text(week(), &skips, &[]).unwrap();
+        let text = week_text(week(), &skips, &[], &[]).unwrap();
         assert!(text.contains("🥇 Bilal −1"), "{text}");
         assert!(!text.contains("Best day"), "{text}");
+        assert!(!text.contains("Overall:"), "{text}");
+        assert!(
+            text.ends_with("\n\nScores start again tomorrow. 🏁"),
+            "{text}"
+        );
     }
 
     #[test]

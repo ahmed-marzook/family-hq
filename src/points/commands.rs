@@ -55,12 +55,28 @@ pub async fn show(
         first: today,
         last: today,
     };
+    // The previous Monday to Sunday: the week that the day before this
+    // Monday is in.
+    let last_week = Period::of(Span::Week, week.first - chrono::Duration::days(1));
     if ctx.is_group {
-        let totals = stored_points::totals(conn, ctx.chat_id, week).await?;
-        let today_totals = stored_points::totals(conn, ctx.chat_id, just_today).await?;
-        let xp = stored_points::xp_of_earners(conn, ctx.chat_id, week).await?;
-        let levels = levels::overall_by_person(xp);
-        return Ok(points::group_text(week, &totals, &today_totals, &levels));
+        let chat = ctx.chat_id;
+        let totals = stored_points::totals(conn, chat, week).await?;
+        // Only needed for the new-week text, when nobody has points yet.
+        let last_week = if totals.is_empty() {
+            stored_points::totals(conn, chat, last_week).await?
+        } else {
+            Vec::new()
+        };
+        let board = points::GroupBoard {
+            week,
+            today: stored_points::totals(conn, chat, just_today).await?,
+            levels: levels::overall_by_person(
+                stored_points::xp_of_earners(conn, chat, week).await?,
+            ),
+            totals,
+            last_week,
+        };
+        return Ok(points::group_text(&board));
     }
 
     let user = ctx.sender.id;
@@ -68,9 +84,6 @@ pub async fn show(
         first: today - chrono::Duration::days(6),
         last: today,
     };
-    // The previous Monday to Sunday: the week that the day before this
-    // Monday is in.
-    let last_week = Period::of(Span::Week, week.first - chrono::Duration::days(1));
     let sum = |days: &[(NaiveDate, i64)]| days.iter().map(|(_, p)| p).sum::<i64>();
 
     let earned = stored_points::by_day(conn, user, last_7).await?;
@@ -101,7 +114,8 @@ pub async fn show(
 /// The `/points reports` reply, in a group: where the summary goes now.
 fn format_points_reports(delivery: Delivery) -> String {
     let what = "every Sunday at 8pm, the week's points: the leaderboard, how \
-                each person did against last week, and the best day";
+                each person did against last week, the champion of each \
+                category, and the best day";
     let now = match delivery {
         Delivery::Off => format!("{BELL_OFF} The Sunday points summary is off in this group."),
         Delivery::Here => format!("{CHART} The points summary comes to this group: {what}."),
@@ -118,6 +132,64 @@ mod tests {
     use super::*;
     use crate::bot::tests::{setup, typed};
     use crate::db::test_pool;
+
+    /// `/points` in the group at `now` (UTC), as Bilal.
+    async fn board_at(conn: &mut SqliteConnection, ctx: &Context, now: &str) -> String {
+        let at = Context {
+            chat_id: ctx.chat_id,
+            is_group: ctx.is_group,
+            sender: ctx.sender.clone(),
+            now: now.parse().unwrap(),
+        };
+        typed(conn, &at, "/points").await.into_text()
+    }
+
+    #[tokio::test]
+    async fn group_totals_start_from_zero_each_monday_on_the_readers_clock() {
+        use crate::points::{Award, Reason, Source};
+        use crate::testkit::date;
+
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let ctx = setup(&mut conn).await;
+        let award = Award {
+            points: 3,
+            reason: Reason::Done,
+        };
+        // Points on the Sundays the clocks change in London (the default
+        // timezone): 29 March (to BST) and 25 October (back to GMT).
+        for (id, day) in [(1, "2026-03-29"), (2, "2026-10-25")] {
+            let day = date(day);
+            stored_points::award(
+                &mut conn,
+                ctx.sender.id,
+                ctx.chat_id,
+                Source::Todo,
+                id,
+                award,
+                day,
+                ctx.now,
+            )
+            .await
+            .unwrap();
+        }
+
+        // Sunday 23:30 BST: still that week.
+        let text = board_at(&mut conn, &ctx, "2026-03-29T22:30:00Z").await;
+        assert!(text.contains("🥇 Bilal · Lv 2 · 3"), "{text}");
+        // Monday 00:30 BST, though still Sunday in UTC: a new week, with
+        // last week's winner.
+        let text = board_at(&mut conn, &ctx, "2026-03-29T23:30:00Z").await;
+        assert!(text.starts_with("🏁 A new week"), "{text}");
+        assert!(text.contains("Bilal (3)"), "{text}");
+
+        // Back to GMT: Sunday 23:30 is 23:30 UTC, and Monday starts at
+        // midnight UTC.
+        let text = board_at(&mut conn, &ctx, "2026-10-25T23:30:00Z").await;
+        assert!(text.contains("🥇 Bilal"), "{text}");
+        let text = board_at(&mut conn, &ctx, "2026-10-26T00:30:00Z").await;
+        assert!(text.starts_with("🏁 A new week"), "{text}");
+    }
 
     #[tokio::test]
     async fn points_reports_are_set_per_group() {

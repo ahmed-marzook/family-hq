@@ -1,6 +1,7 @@
 //! The Sunday weekly points summary, in each group where anyone earned
 //! points that week: the leaderboard, each person's change from last week,
-//! and the best day.
+//! the champion of each category and overall (`points::game`), the best
+//! day, and a reminder that scores start again on Monday.
 //!
 //! * When: Sunday at `SUMMARY_HOUR` (20:00) on the group's own clock, or up
 //!   to `reports::LATE_REPORT_GRACE` later if the bot was down just then.
@@ -18,7 +19,8 @@ use tracing::warn;
 
 use crate::AppState;
 use crate::error::AppError;
-use crate::points::{self, DayPoints};
+use crate::points::levels::Category;
+use crate::points::{self, DayPoints, game};
 use crate::reminders::engine::{self, Planned};
 use crate::repo::points::{self as stored_points, ReportGroup};
 use crate::repo::reports as stored_reports;
@@ -85,8 +87,16 @@ async fn plan_group(
     let last_week = Period::of(Span::Week, week.first - Duration::days(1));
     let days = stored_points::by_person_day(&mut conn, group.id, week).await?;
     let before = stored_points::totals(&mut conn, group.id, last_week).await?;
+    let by_category =
+        game::per_category(stored_points::by_person_source(&mut conn, group.id, week).await?);
 
-    let outgoing = messages(delivery, group.name.as_deref(), week, &days, &before);
+    let summary = Summary {
+        week,
+        days: &days,
+        last_week: &before,
+        by_category: &by_category,
+    };
+    let outgoing = messages(delivery, group.name.as_deref(), &summary);
     let report = Report {
         feature: Feature::Points,
         kind: ReportKind::Summary(Span::Week),
@@ -111,24 +121,35 @@ pub fn summary_time(timezone: Tz, date: NaiveDate) -> Option<DateTime<Utc>> {
     )
 }
 
+/// What a group's week is summed up from, all read for that group only.
+#[derive(Debug, Clone, Copy)]
+pub struct Summary<'a> {
+    pub week: Period,
+    /// Each person's points on each day of the week.
+    pub days: &'a [DayPoints],
+    /// `(name, points)` for the week before.
+    pub last_week: &'a [(String, i64)],
+    /// Each person's week per category, for the champions.
+    pub by_category: &'a [(String, Category, i64)],
+}
+
 /// What a group's weekly summary sends, as `delivery` says:
 ///
 /// * `Here`: one message in the group, about everyone.
 /// * `Dm`: one message per person who earned points, to their DM.
 /// * `Off`, or nobody earned anything: nothing.
 ///
-/// `last_week` is `(name, points)` for the week before. Pure, so tested
-/// directly.
-pub fn messages(
-    delivery: Delivery,
-    group_name: Option<&str>,
-    week: Period,
-    days: &[DayPoints],
-    last_week: &[(String, i64)],
-) -> Vec<Draft> {
+/// Pure, so tested directly.
+pub fn messages(delivery: Delivery, group_name: Option<&str>, summary: &Summary) -> Vec<Draft> {
+    let Summary {
+        week,
+        days,
+        last_week,
+        by_category,
+    } = *summary;
     match delivery {
         Delivery::Off => Vec::new(),
-        Delivery::Here => points::week_text(week, days, last_week)
+        Delivery::Here => points::week_text(week, days, last_week, by_category)
             .into_iter()
             .map(|text| Draft {
                 to: To::Chat,
@@ -178,9 +199,25 @@ mod tests {
         ]
     }
 
+    /// `messages` for `week()`, with no champions unless a test adds them.
+    fn send(
+        delivery: Delivery,
+        group: Option<&str>,
+        days: &[DayPoints],
+        last_week: &[(String, i64)],
+    ) -> Vec<Draft> {
+        let summary = Summary {
+            week: week(),
+            days,
+            last_week,
+            by_category: &[],
+        };
+        messages(delivery, group, &summary)
+    }
+
     #[test]
     fn here_sends_one_leaderboard_to_the_group() {
-        let sent = messages(Delivery::Here, Some("Family"), week(), &days(), &[]);
+        let sent = send(Delivery::Here, Some("Family"), &days(), &[]);
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0].to, To::Chat);
         assert!(
@@ -193,7 +230,7 @@ mod tests {
     #[test]
     fn dm_sends_each_person_their_own() {
         let last_week = vec![("Bilal".to_string(), 6)];
-        let sent = messages(Delivery::Dm, Some("Family"), week(), &days(), &last_week);
+        let sent = send(Delivery::Dm, Some("Family"), &days(), &last_week);
         let to: Vec<&To> = sent.iter().map(|m| &m.to).collect();
         assert_eq!(to, vec![&To::Dm(1), &To::Dm(2)]);
         assert!(sent[0].text.contains("Your week in Family"));
@@ -208,9 +245,9 @@ mod tests {
 
     #[test]
     fn off_or_nothing_earned_sends_nothing() {
-        assert!(messages(Delivery::Off, None, week(), &days(), &[]).is_empty());
-        assert!(messages(Delivery::Here, None, week(), &[], &[]).is_empty());
-        assert!(messages(Delivery::Dm, None, week(), &[], &[]).is_empty());
+        assert!(send(Delivery::Off, None, &days(), &[]).is_empty());
+        assert!(send(Delivery::Here, None, &[], &[]).is_empty());
+        assert!(send(Delivery::Dm, None, &[], &[]).is_empty());
     }
 
     #[test]
@@ -376,11 +413,13 @@ mod tests {
         assert_eq!(plan.claim, claim);
         assert_eq!(plan.messages.len(), 1);
         assert_eq!(plan.messages[0].to, GROUP);
+        let text = &plan.messages[0].text;
+        assert!(text.contains("🥇 Khadija 3"), "{text}");
         assert!(
-            plan.messages[0].text.contains("🥇 Khadija 3"),
-            "{}",
-            plan.messages[0].text
+            text.contains("📝 Most todos: Khadija · 🏆 Overall: Khadija"),
+            "{text}"
         );
+        assert!(text.ends_with("Scores start again tomorrow. 🏁"), "{text}");
 
         // `/points reports off`: still claimed, with nothing to send.
         {

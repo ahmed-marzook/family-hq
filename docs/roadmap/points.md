@@ -1,7 +1,7 @@
 # Points (gamifying todos)
 
 > **Goal:** finishing todos and praying earns points, so each person can see how their day and week went, with a leaderboard in each group. Habits will earn points the same way later.
-> **Status:** Brought forward at the owner's request (2026-11-06). P1 (ledger, points for todos, `/points`), P2 (Sunday weekly summary) and P3 (points for prayers) built; waiting on a week of family use. P4 in progress: part 1 (stats and levels) built; weekly champions, history and reviews planned.
+> **Status:** Brought forward at the owner's request (2026-11-06). P1 (ledger, points for todos, `/points`), P2 (Sunday weekly summary) and P3 (points for prayers) built; waiting on a week of family use. P4 in progress: parts 1 (stats and levels) and 2 (the weekly game) built; history and reviews planned.
 > **Last updated:** 2026-11-13
 
 ## Rules
@@ -184,6 +184,18 @@ so parts 2–4 and habits reuse it:
 - Habits: add a `Category` variant and a `Track` db string; the compiler
   points at the rest, and the CHECK already allows `'habits'`.
 
+**Part 2 (the weekly game) is built** (2026-11-13):
+
+- `src/points/game.rs`, pure: `per_category`, `champions` (one per
+  category anyone earned in, then Overall; ties shared, only scores above
+  0 win), `champions_text`, `new_week_text` and `RESET`.
+- `repo::points::by_person_source` feeds the champions. The summary's
+  inputs are a `reports::Summary`, and `/points` in a group takes a
+  `GroupBoard`, so later additions don't grow the argument lists.
+- With nothing earned yet this week, `/points` in a group shows last
+  week's winner on any day, not only Monday (in practice it's empty only
+  early in the week).
+
 At the owner's request (2026-11-10): points should work like game stats.
 Each feature (prayers, todos, later habits) has its own category with its
 own XP and level, and the categories add up to an **Overall** level. That
@@ -349,8 +361,8 @@ Done when:
       and for XP that drops below a level
 - [x] Each level-up is announced once, even after an untick and a re-tick
 - [x] A skip lowers the week's points but not XP
-- [ ] The Sunday summary names a champion per category
-- [ ] Group totals start from 0 each Monday on each reader's clock (tested
+- [x] The Sunday summary names a champion per category
+- [x] Group totals start from 0 each Monday on each reader's clock (tested
       across a BST change)
 - [ ] `/points weeks`, `months` and `year` work in a DM and say so in a
       group; grouping, averages and bests are tested at month and year

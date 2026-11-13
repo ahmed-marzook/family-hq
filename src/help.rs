@@ -128,7 +128,7 @@ Everything you earn is also XP, which never resets: 🕌 Prayers and 📝 Todos 
 `/points` with me directly: your levels, then your own points from every chat: today, this week, last week, and each of the last 7 days.
 
 *Sunday summary*
-In a group, every Sunday at 8pm: the week's leaderboard, how each person did against last week, and the best day. Only in weeks when someone earned points.
+In a group, every Sunday at 8pm: the week's leaderboard, how each person did against last week, a champion for 🕌 prayers, 📝 todos and overall, and the best day. Only in weeks when someone earned points.
 `/points reports here` (the default), `/points reports dm` (each person gets just their own week, privately) or `/points reports off`.
 
 Clearing done todos doesn't take anyone's points away.";

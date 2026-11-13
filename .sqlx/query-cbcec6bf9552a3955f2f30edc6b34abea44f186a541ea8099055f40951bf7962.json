@@ -1,0 +1,45 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT u.display_name AS name, p.source, SUM(p.points) AS \"points!: i64\"\n           FROM points p\n           JOIN users u ON u.id = p.user_id\n           WHERE p.chat_id = ? AND p.day BETWEEN ? AND ?\n           GROUP BY p.user_id, p.source",
+  "describe": {
+    "columns": [
+      {
+        "name": "name",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "display_name"
+          }
+        }
+      },
+      {
+        "name": "source",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "points",
+            "name": "source"
+          }
+        }
+      },
+      {
+        "name": "points!: i64",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "cbcec6bf9552a3955f2f30edc6b34abea44f186a541ea8099055f40951bf7962"
+}

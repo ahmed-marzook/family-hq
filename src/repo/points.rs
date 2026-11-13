@@ -262,6 +262,32 @@ pub async fn by_source(
         .collect())
 }
 
+/// Each person's points from each source in `chat_id` over `period`, as
+/// `(name, source, points)`: what the weekly summary's category champions
+/// are worked out from (`points::game`). Net, like the week's points.
+pub async fn by_person_source(
+    conn: &mut SqliteConnection,
+    chat_id: i64,
+    period: Period,
+) -> Result<Vec<(String, Source, i64)>, sqlx::Error> {
+    let rows = sqlx::query!(
+        r#"SELECT u.display_name AS name, p.source, SUM(p.points) AS "points!: i64"
+           FROM points p
+           JOIN users u ON u.id = p.user_id
+           WHERE p.chat_id = ? AND p.day BETWEEN ? AND ?
+           GROUP BY p.user_id, p.source"#,
+        chat_id,
+        period.first,
+        period.last
+    )
+    .fetch_all(conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|r| Some((r.name, Source::from_db_str(&r.source)?, r.points)))
+        .collect())
+}
+
 /// Each person's points on each day of `period` in `chat_id`, for the
 /// weekly summary. Oldest first.
 pub async fn by_person_day(
