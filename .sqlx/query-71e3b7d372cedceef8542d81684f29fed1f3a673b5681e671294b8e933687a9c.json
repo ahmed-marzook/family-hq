@@ -1,0 +1,33 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT source, SUM(points) AS \"points!: i64\"\n           FROM points\n           WHERE user_id = ? AND day BETWEEN ? AND ?\n           GROUP BY source",
+  "describe": {
+    "columns": [
+      {
+        "name": "source",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "points",
+            "name": "source"
+          }
+        }
+      },
+      {
+        "name": "points!: i64",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "71e3b7d372cedceef8542d81684f29fed1f3a673b5681e671294b8e933687a9c"
+}

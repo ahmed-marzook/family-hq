@@ -187,6 +187,81 @@ pub async fn by_chat(
     Ok(rows.into_iter().map(|r| (r.name, r.points)).collect())
 }
 
+/// `user_id`'s lifetime XP from each source, from every chat: only
+/// positive awards count (see `points::levels`), so a skip never takes XP
+/// away. Sources this build doesn't know are left out.
+pub async fn xp_by_source(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+) -> Result<Vec<(Source, i64)>, sqlx::Error> {
+    let rows = sqlx::query!(
+        r#"SELECT source, SUM(points) AS "xp!: i64"
+           FROM points
+           WHERE user_id = ? AND points > 0
+           GROUP BY source"#,
+        user_id
+    )
+    .fetch_all(conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|r| Some((Source::from_db_str(&r.source)?, r.xp)))
+        .collect())
+}
+
+/// The lifetime XP from each source of everyone who earned points in
+/// `chat_id` over `period`, as `(name, source, xp)`: what the group
+/// leaderboard needs to show each person's level. XP counts from every
+/// chat, as levels are personal.
+pub async fn xp_of_earners(
+    conn: &mut SqliteConnection,
+    chat_id: i64,
+    period: Period,
+) -> Result<Vec<(String, Source, i64)>, sqlx::Error> {
+    let rows = sqlx::query!(
+        r#"SELECT u.display_name AS name, p.source, SUM(p.points) AS "xp!: i64"
+           FROM points p
+           JOIN users u ON u.id = p.user_id
+           WHERE p.points > 0
+             AND p.user_id IN (SELECT user_id FROM points
+                               WHERE chat_id = ? AND day BETWEEN ? AND ?)
+           GROUP BY p.user_id, p.source"#,
+        chat_id,
+        period.first,
+        period.last
+    )
+    .fetch_all(conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|r| Some((r.name, Source::from_db_str(&r.source)?, r.xp)))
+        .collect())
+}
+
+/// `user_id`'s points over `period` from each source, from every chat.
+/// Net, like the week's points: a skip's −1 counts here.
+pub async fn by_source(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    period: Period,
+) -> Result<Vec<(Source, i64)>, sqlx::Error> {
+    let rows = sqlx::query!(
+        r#"SELECT source, SUM(points) AS "points!: i64"
+           FROM points
+           WHERE user_id = ? AND day BETWEEN ? AND ?
+           GROUP BY source"#,
+        user_id,
+        period.first,
+        period.last
+    )
+    .fetch_all(conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|r| Some((Source::from_db_str(&r.source)?, r.points)))
+        .collect())
+}
+
 /// Each person's points on each day of `period` in `chat_id`, for the
 /// weekly summary. Oldest first.
 pub async fn by_person_day(

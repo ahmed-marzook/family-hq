@@ -281,6 +281,10 @@ async fn prayed(
             .ok_or_else(|| AppError::PrayerTimes(format!("no times looked up for {date}")))?;
         days.push(format_day(conn, ctx, settings, day).await?);
     }
+    let level_ups = crate::points::level_ups::for_sender(conn, ctx).await?;
+    if !level_ups.is_empty() {
+        days.push(level_ups.join("\n"));
+    }
     Ok(days.join("\n\n"))
 }
 

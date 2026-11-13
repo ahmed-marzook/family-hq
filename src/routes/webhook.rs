@@ -546,6 +546,12 @@ async fn handle_reaction(
         }
     };
     let prayed = prayers::prayed_on(&mut tx, user.id, date).await?.len();
+    // Only when something changed: a swapped emoji has no reply to add to,
+    // and the level-up then waits for the next one.
+    let level_ups = match tick {
+        Some(_) => crate::points::level_ups::lines(&mut tx, &user, is_group, now).await?,
+        None => Vec::new(),
+    };
     tx.commit().await?;
 
     // Swapping 👍 for ❤️ changes nothing, so it gets no second reply.
@@ -559,7 +565,11 @@ async fn handle_reaction(
         .split_once('@')
         .map_or(user.wa_jid.as_str(), |(number, _)| number);
     let mention = is_group.then_some(phone);
-    let text = prayer::reaction_reply(prayer, tick, prayed, mention);
+    let mut text = prayer::reaction_reply(prayer, tick, prayed, mention);
+    for line in level_ups {
+        text.push('\n');
+        text.push_str(&line);
+    }
     let mentions: Vec<String> = mention.map(str::to_string).into_iter().collect();
     // Saved already, so a failure here is logged, not returned: a 500
     // would only make GOWA retry, and the retry changes nothing.

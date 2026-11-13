@@ -22,6 +22,8 @@
 //! one earns nothing. Unlike a todo's, its points follow the prayer log:
 //! untick it and they go, correct it and they change.
 
+use std::collections::BTreeMap;
+
 use chrono::NaiveDate;
 
 use crate::prayer::stats::Status;
@@ -31,6 +33,8 @@ use crate::todo::flags::Priority;
 
 pub mod award;
 pub mod commands;
+pub mod level_ups;
+pub mod levels;
 pub mod reports;
 
 pub const STAR: &str = "⭐";
@@ -56,6 +60,14 @@ impl Source {
             Source::Todo => "todo",
             Source::Prayer => "prayer",
         }
+    }
+
+    /// The other way: `None` for a source this build doesn't award yet
+    /// ('habit', 'goal'), so a read can skip it.
+    pub fn from_db_str(s: &str) -> Option<Source> {
+        [Source::Todo, Source::Prayer]
+            .into_iter()
+            .find(|source| source.as_db_str() == s)
     }
 }
 
@@ -250,8 +262,14 @@ pub const RULES: &str = "🔴 high 3 · medium 2 · 🟢 low 1, +1 if it's done 
 /// `/points` in a group: this week's leaderboard for the group, and who has
 /// earned what today. Each list is `(name, points)`, anyone with no points
 /// left out. Someone whose day evens out at 0 (a done and a skip) isn't
-/// named in "Today:".
-pub fn group_text(week: Period, totals: &[(String, i64)], today: &[(String, i64)]) -> String {
+/// named in "Today:". `levels` is each person's Overall level, shown next
+/// to their name: lifetime and from every chat, unlike the week's points.
+pub fn group_text(
+    week: Period,
+    totals: &[(String, i64)],
+    today: &[(String, i64)],
+    levels: &[(String, i64)],
+) -> String {
     if totals.is_empty() {
         return format!(
             "{TROPHY} No points yet this week. Tick off a todo or a prayer to earn some: {RULES}."
@@ -262,7 +280,16 @@ pub fn group_text(week: Period, totals: &[(String, i64)], today: &[(String, i64)
         show_period(week)
     )];
     for r in rank(totals) {
-        lines.push(format!("{} {} {}", medal(r.place), r.name, total(r.points)));
+        let level = levels
+            .iter()
+            .find(|(name, _)| name == r.name)
+            .map_or(String::new(), |(_, level)| format!(" · Lv {level}"));
+        lines.push(format!(
+            "{} {}{level} · {}",
+            medal(r.place),
+            r.name,
+            total(r.points)
+        ));
     }
     let today: Vec<String> = rank(today)
         .iter()
@@ -287,15 +314,32 @@ pub struct Mine {
     /// This week's points in each chat: the group's name, or `None` for
     /// their DM with the bot.
     pub by_chat: Vec<(Option<String>, i64)>,
+    /// Lifetime XP and levels, for the stats card at the top.
+    pub stats: levels::Stats,
+    /// This week's points in each category (net, like `this_week`).
+    pub this_week_by_category: BTreeMap<levels::Category, i64>,
 }
 
-/// `/points` in a DM.
+/// `/points` in a DM: the stats card, then this week's points.
 pub fn mine_text(mine: &Mine) -> String {
     let today = mine.last_7_days.last().map_or(0, |(_, p)| *p);
+    // " (🕌 18 · 📝 13)", only when more than one category earned something.
+    let earned: Vec<String> = mine
+        .this_week_by_category
+        .iter()
+        .filter(|(_, p)| **p != 0)
+        .map(|(c, p)| format!("{} {}", c.emoji(), total(*p)))
+        .collect();
+    let split = if earned.len() > 1 {
+        format!(" ({})", earned.join(" · "))
+    } else {
+        String::new()
+    };
     let mut lines = vec![
-        format!("{STAR} *Your points*"),
+        mine.stats.to_string(),
+        String::new(),
         format!(
-            "Today: {} · This week: {} · Last week: {}",
+            "Today: {} · This week: {}{split} · Last week: {}",
             total(today),
             total(mine.this_week),
             total(mine.last_week)
@@ -599,12 +643,14 @@ mod tests {
     fn group_text_is_a_leaderboard_with_today_underneath() {
         let week_totals = totals(&[("Ahmed", 18), ("Khadija", 24), ("Bilal", -1)]);
         let today = totals(&[("Ahmed", 2), ("Khadija", 5)]);
+        // Bilal's level is missing (it can't be, but): just left out.
+        let levels = totals(&[("Ahmed", 7), ("Khadija", 9)]);
         assert_eq!(
-            group_text(week(), &week_totals, &today),
+            group_text(week(), &week_totals, &today, &levels),
             "🏆 *Points this week* (Mon 2 Nov – Sun 8 Nov)\n\
-             🥇 Khadija 24\n\
-             🥈 Ahmed 18\n\
-             🥉 Bilal −1\n\
+             🥇 Khadija · Lv 9 · 24\n\
+             🥈 Ahmed · Lv 7 · 18\n\
+             🥉 Bilal · −1\n\
              \n\
              Today: Khadija +5 · Ahmed +2"
         );
@@ -612,7 +658,7 @@ mod tests {
 
     #[test]
     fn group_text_with_nothing_yet_says_how_to_earn() {
-        let text = group_text(week(), &[], &[]);
+        let text = group_text(week(), &[], &[], &[]);
         assert!(text.contains("No points yet"));
         assert!(text.contains("high 3"));
     }
@@ -628,6 +674,8 @@ mod tests {
             this_week: days[2..].iter().sum(),
             last_week: 22,
             by_chat,
+            stats: levels::Stats::from_sources([(Source::Prayer, 650), (Source::Todo, 120)]),
+            this_week_by_category: levels::by_category([(Source::Prayer, 12), (Source::Todo, 8)]),
         }
     }
 
@@ -637,7 +685,16 @@ mod tests {
             &[6, 0, 2, 0, 3, 10, 5],
             vec![(Some("Family".to_string()), 14), (None, 6)],
         ));
-        assert!(text.starts_with("⭐ *Your points*\nToday: 5 · This week: 20 · Last week: 22"));
+        assert!(
+            text.starts_with(
+                "📊 *Your stats* · Overall Lv 10\n\
+                 🕌 Prayers Lv 6 ■■■■■■□□□□ 650 / 735\n\
+                 📝 Todos Lv 4 ■■■■■□□□□□ 120 / 150\n\
+                 \n\
+                 Today: 5 · This week: 20 (🕌 12 · 📝 8) · Last week: 22"
+            ),
+            "{text}"
+        );
         // The best day is a full bar, a day with none is empty.
         assert!(text.contains("Thu 5 ■■■■■■■■■■ 10"), "{text}");
         assert!(text.contains("Sun 1 □□□□□□□□□□ 0"), "{text}");

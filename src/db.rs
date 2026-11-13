@@ -281,6 +281,7 @@ mod tests {
                 "chat_settings",
                 "chats",
                 "command_log",
+                "levels_reached",
                 "points",
                 "prayer_log",
                 "prayer_reminders",

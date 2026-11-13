@@ -330,6 +330,7 @@ pub async fn close_by_name(
     if closed_any {
         let p = todos::progress(conn, ctx.chat_id).await?;
         lines.push(progress_bar(p.done, p.skipped, p.total));
+        lines.extend(points::level_ups::for_sender(conn, ctx).await?);
     }
     Ok(lines.join("\n"))
 }
@@ -574,8 +575,8 @@ mod tests {
         assert_eq!(
             typed(&mut conn, &ctx, "/points").await.into_text(),
             "🏆 *Points this week* (Mon 2 Nov – Sun 8 Nov)\n\
-             🥇 Bilal 4\n\
-             🥈 Khadija 1\n\
+             🥇 Bilal · Lv 2 · 4\n\
+             🥈 Khadija · Lv 2 · 1\n\
              \n\
              Today: Khadija +1"
         );
@@ -596,8 +597,15 @@ mod tests {
             now: ctx.now,
         };
         let mine = typed(&mut conn, &in_dm, "/points").await.into_text();
+        // His skip's −1 lowers the week (4) but not his XP (5).
         assert!(
-            mine.starts_with("⭐ *Your points*\nToday: 0 · This week: 4 · Last week: 0"),
+            mine.starts_with(
+                "📊 *Your stats* · Overall Lv 2\n\
+                 🕌 Prayers Lv 1 □□□□□□□□□□ 0 / 35\n\
+                 📝 Todos Lv 1 ■■■□□□□□□□ 5 / 15\n\
+                 \n\
+                 Today: 0 · This week: 4 · Last week: 0"
+            ),
             "{mine}"
         );
         assert!(mine.contains("Fri 6 ■■■■■■■■■■ 4"), "{mine}");

@@ -10,6 +10,7 @@ use crate::bot::emoji::BELL_OFF;
 use crate::bot::{Context, my_settings};
 use crate::error::AppError;
 use crate::points;
+use crate::points::{level_ups, levels};
 use crate::repo::points as stored_points;
 use crate::repo::reports as stored_reports;
 use crate::reports::{Delivery, Feature, Period, Span};
@@ -57,7 +58,9 @@ pub async fn show(
     if ctx.is_group {
         let totals = stored_points::totals(conn, ctx.chat_id, week).await?;
         let today_totals = stored_points::totals(conn, ctx.chat_id, just_today).await?;
-        return Ok(points::group_text(week, &totals, &today_totals));
+        let xp = stored_points::xp_of_earners(conn, ctx.chat_id, week).await?;
+        let levels = levels::overall_by_person(xp);
+        return Ok(points::group_text(week, &totals, &today_totals, &levels));
     }
 
     let user = ctx.sender.id;
@@ -87,6 +90,10 @@ pub async fn show(
         this_week: sum(&stored_points::by_day(conn, user, week).await?),
         last_week: sum(&stored_points::by_day(conn, user, last_week).await?),
         by_chat: stored_points::by_chat(conn, user, week).await?,
+        stats: level_ups::stats(conn, user).await?,
+        this_week_by_category: levels::by_category(
+            stored_points::by_source(conn, user, week).await?,
+        ),
     };
     Ok(points::mine_text(&mine))
 }

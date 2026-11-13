@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT category, level FROM levels_reached WHERE user_id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "category",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "levels_reached",
+            "name": "category"
+          }
+        }
+      },
+      {
+        "name": "level",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "levels_reached",
+            "name": "level"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "65ec821365085150c83f8326bee1e08ac7efe78274ce35c0bbd5e68f8b106a7f"
+}

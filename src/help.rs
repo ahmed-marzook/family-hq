@@ -120,9 +120,12 @@ Each prayer you tick off earns points too, in the chat you ticked it in (a push 
 • Prayed on time: 2 · made up: 1 · missed: 0
 Untick it and its points go; `+prayed asr on time` or `late` changes them.
 
+*Levels*
+Everything you earn is also XP, which never resets: 🕌 Prayers and 📝 Todos each have their own level, and your Overall level is the two added up. A skip doesn't cost XP. Each new level is announced once, in the reply that earned it.
+
 *See them*
-`/points` in a group: this week's leaderboard (Monday to Sunday) 🥇🥈🥉, and who has earned what today. Only points earned in that group count.
-`/points` with me directly: your own points from every chat: today, this week, last week, and each of the last 7 days.
+`/points` in a group: this week's leaderboard (Monday to Sunday) 🥇🥈🥉 with each person's Overall level, and who has earned what today. Only points earned in that group count; everyone starts from 0 each Monday.
+`/points` with me directly: your levels, then your own points from every chat: today, this week, last week, and each of the last 7 days.
 
 *Sunday summary*
 In a group, every Sunday at 8pm: the week's leaderboard, how each person did against last week, and the best day. Only in weeks when someone earned points.
