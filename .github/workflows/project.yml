@@ -1,0 +1,123 @@
+# Keeps the "Family HQ" project board (users/ahmed-marzook/projects/3) and
+# the issues in step:
+#   * an open issue moved to Ready gets the `claude-ready` label, which starts
+#     Claude (claude.yml), and moves on to In progress;
+#   * when a PR that closes an issue is opened, that issue moves to In review.
+# Done is left to the project's built-in "Item closed" workflow.
+#
+# Actions has no trigger for a card moving on a user-owned project, so Ready
+# is picked up by polling every few minutes.
+#
+# Needs a PROJECT_TOKEN secret: a classic personal access token of the repo
+# owner with the `project` and `public_repo` scopes. GITHUB_TOKEN can't see
+# user projects. Because the label is added with the owner's token, the
+# owner-only check in claude.yml lets it through; a label added by a bot or
+# GITHUB_TOKEN wouldn't start Claude at all.
+
+name: Project board
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+  pull_request:
+    types: [opened, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+# Per PR, so two PRs opening together don't drop one's run (a group keeps
+# only one pending run).
+concurrency:
+  group: project-${{ github.event_name }}-${{ github.event.pull_request.number || 'poll' }}
+  cancel-in-progress: false
+
+env:
+  OWNER: ahmed-marzook
+  PROJECT_NUMBER: "3"
+  PROJECT_ID: PVT_kwHOApN33s4BrVm8
+  STATUS_FIELD: PVTSSF_lAHOApN33s4BrVm8zhpoxqM
+  IN_PROGRESS: 104cb1a1
+  IN_REVIEW: 223d2b43
+  GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+  GH_REPO: ${{ github.repository }}
+
+jobs:
+  ready-to-claude:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Label issues moved to Ready
+        run: |
+          # Until the secret exists, do nothing rather than fail every 5 minutes.
+          [ -n "$GH_TOKEN" ] || { echo "::notice::PROJECT_TOKEN not set"; exit 0; }
+          # Without it a failed query (expired token) would leave the job green.
+          set -o pipefail
+
+          # Paginated: Done cards stay on the board, so it outgrows one page.
+          gh api graphql --paginate -F login="$OWNER" -F number="$PROJECT_NUMBER" -f query='
+            query($login: String!, $number: Int!, $endCursor: String) {
+              user(login: $login) { projectV2(number: $number) {
+                items(first: 100, after: $endCursor) {
+                  pageInfo { hasNextPage endCursor }
+                  nodes {
+                  id
+                  status: fieldValueByName(name: "Status") {
+                    ... on ProjectV2ItemFieldSingleSelectValue { name }
+                  }
+                  content { ... on Issue {
+                    number state
+                    repository { nameWithOwner }
+                    labels(first: 20) { nodes { name } }
+                  } }
+                } }
+              } }
+            }' --jq "
+              .data.user.projectV2.items.nodes[]
+              | select(.status.name == \"Ready\")
+              | select(.content.state == \"OPEN\")
+              | select(.content.repository.nameWithOwner == \"$GH_REPO\")
+              | select([.content.labels.nodes[].name] | index(\"claude-ready\") | not)
+              | \"\(.id) \(.content.number)\"" |
+          while read -r item issue; do
+            echo "Issue #$issue is Ready: labelling it claude-ready"
+            gh issue edit "$issue" --add-label claude-ready
+            gh project item-edit --id "$item" --project-id "$PROJECT_ID" \
+              --field-id "$STATUS_FIELD" --single-select-option-id "$IN_PROGRESS"
+          done
+
+  pr-to-review:
+    # A fork's PR gets no secrets, and isn't Claude's anyway.
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Move the issues this PR closes to In review
+        env:
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          [ -n "$GH_TOKEN" ] || { echo "::notice::PROJECT_TOKEN not set"; exit 0; }
+          # Without it a failed query (expired token) would leave the job green.
+          set -o pipefail
+
+          gh api graphql -F owner="${GH_REPO%/*}" -F name="${GH_REPO#*/}" -F pr="$PR" -f query='
+            query($owner: String!, $name: String!, $pr: Int!) {
+              repository(owner: $owner, name: $name) { pullRequest(number: $pr) {
+                closingIssuesReferences(first: 10) { nodes {
+                  number
+                  projectItems(first: 10) { nodes { id project { id } } }
+                } }
+              } }
+            }' --jq "
+              .data.repository.pullRequest.closingIssuesReferences.nodes[]
+              | .number as \$n
+              | .projectItems.nodes[]
+              | select(.project.id == \"$PROJECT_ID\")
+              | \"\(.id) \(\$n)\"" |
+          while read -r item issue; do
+            echo "PR #$PR closes issue #$issue: moving it to In review"
+            gh project item-edit --id "$item" --project-id "$PROJECT_ID" \
+              --field-id "$STATUS_FIELD" --single-select-option-id "$IN_REVIEW"
+          done
