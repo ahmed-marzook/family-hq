@@ -293,6 +293,9 @@ async fn run_plain(
         BotCommand::PrayerReports(change) => commands::reports(conn, ctx, change).await?,
         BotCommand::Points => points::commands::show(conn, ctx, defaults).await?,
         BotCommand::PointsReports(change) => points::commands::reports(conn, ctx, change).await?,
+        BotCommand::PointsHistory(which) => {
+            points::commands::show_history(conn, ctx, defaults, which).await?
+        }
         // `prepare` turns each of these into a step of its own, never into
         // `Step::Plain`, so they can't arrive here.
         BotCommand::Prayers

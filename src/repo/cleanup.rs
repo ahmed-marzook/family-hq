@@ -131,6 +131,9 @@ pub async fn clear(
     sqlx::query!("DELETE FROM levels_reached WHERE user_id = ?", user_id)
         .execute(&mut *conn)
         .await?;
+    sqlx::query!("DELETE FROM bests_announced WHERE user_id = ?", user_id)
+        .execute(&mut *conn)
+        .await?;
     sqlx::query!("DELETE FROM command_log WHERE user_id = ?", user_id)
         .execute(&mut *conn)
         .await?;

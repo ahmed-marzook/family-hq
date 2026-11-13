@@ -1,9 +1,11 @@
 //! Reports: the messages that sum up a feature (prayers and points now,
-//! habits later) for a day, a week or a month, and the rules every feature shares.
+//! habits later) for a day, a week, a month or a year, and the rules every
+//! feature shares.
 //!
 //! * When they're due: once the feature's day is over (for prayers, when
 //!   Isha ends), a day's report; on a Sunday the week's too; on a month's
-//!   last day the month's. Only for `LATE_REPORT_GRACE` after that.
+//!   last day the month's, and on 31 December the year's. Only for
+//!   `LATE_REPORT_GRACE` after that.
 //! * Where they go: each chat chooses, per feature (`Delivery`).
 //! * Never twice: each one is claimed in `reports_sent` before it's sent.
 //!
@@ -26,7 +28,9 @@ use crate::repo::reports;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Feature {
     Prayers,
-    /// The Sunday weekly summary of a group's points (`points::reports`).
+    /// The Sunday weekly summary of a group's points (`points::reports`),
+    /// and each person's monthly and yearly reviews in their DM
+    /// (`points::reviews`).
     Points,
 }
 
@@ -83,11 +87,26 @@ impl FromStr for Delivery {
     }
 }
 
-/// What a week or month summary covers.
+/// What a week, month or year summary covers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Span {
     Week,
     Month,
+    /// Only points have a year report (the year in review); prayers' stop
+    /// at a month.
+    Year,
+}
+
+impl Span {
+    /// The exact text stored for it (`reports_sent.kind`,
+    /// `bests_announced.span`).
+    pub fn as_db_str(self) -> &'static str {
+        match self {
+            Span::Week => "week",
+            Span::Month => "month",
+            Span::Year => "year",
+        }
+    }
 }
 
 /// The reports a chat can be sent, one of each per day, week or month.
@@ -104,8 +123,7 @@ impl ReportKind {
     pub fn as_db_str(self) -> &'static str {
         match self {
             ReportKind::Day => "day",
-            ReportKind::Summary(Span::Week) => "week",
-            ReportKind::Summary(Span::Month) => "month",
+            ReportKind::Summary(span) => span.as_db_str(),
         }
     }
 }
@@ -124,7 +142,8 @@ impl fmt::Display for ReportKind {
 pub const LATE_REPORT_GRACE: Duration = Duration::hours(3);
 
 /// The reports due at `now` for `date`, whose day is over at `day_over`:
-/// the day's, plus the week's on a Sunday and the month's on its last day.
+/// the day's, plus the week's on a Sunday, the month's on its last day,
+/// and the year's on 31 December.
 /// Nothing before `day_over`, or once `LATE_REPORT_GRACE` has passed.
 ///
 /// `day_over` can be after midnight on the clock (Isha ends at Islamic
@@ -142,6 +161,9 @@ pub fn due(date: NaiveDate, day_over: DateTime<Utc>, now: DateTime<Utc>) -> Vec<
     if date.succ_opt().is_none_or(|next| next.day() == 1) {
         due.push(ReportKind::Summary(Span::Month));
     }
+    if date.succ_opt().is_none_or(|next| next.ordinal() == 1) {
+        due.push(ReportKind::Summary(Span::Year));
+    }
     due
 }
 
@@ -153,7 +175,8 @@ pub struct Period {
 }
 
 impl Period {
-    /// The week (Monday to Sunday) or calendar month that `date` is in.
+    /// The week (Monday to Sunday), calendar month or calendar year that
+    /// `date` is in.
     pub fn of(span: Span, date: NaiveDate) -> Self {
         match span {
             Span::Week => {
@@ -174,6 +197,18 @@ impl Period {
                 Period {
                     first,
                     last: next_month.pred_opt().unwrap_or(next_month),
+                }
+            }
+            Span::Year => {
+                // `with_ordinal(1)` can't fail: every year has a 1 January.
+                // The last day is the one before next year's.
+                let first = date.with_ordinal(1).expect("every year has a 1 January");
+                let next_year = first
+                    .checked_add_months(chrono::Months::new(12))
+                    .unwrap_or(NaiveDate::MAX);
+                Period {
+                    first,
+                    last: next_year.pred_opt().unwrap_or(next_year),
                 }
             }
         }
@@ -332,6 +367,17 @@ mod tests {
             at("2027-02-28", "2027-02-28T23:40:00Z"),
             [ReportKind::Day, week, month]
         );
+        // Thursday 31 Dec 2026: the month and the year.
+        let year = ReportKind::Summary(Span::Year);
+        assert_eq!(
+            at("2026-12-31", "2026-12-31T23:40:00Z"),
+            [ReportKind::Day, month, year]
+        );
+        // Sunday 31 Dec 2028: all four.
+        assert_eq!(
+            at("2028-12-31", "2028-12-31T23:40:00Z"),
+            [ReportKind::Day, week, month, year]
+        );
     }
 
     #[test]
@@ -364,6 +410,17 @@ mod tests {
         let dec = Period::of(Span::Month, date("2026-12-31"));
         assert_eq!(dec.last, date("2026-12-31"), "the year end");
         assert_eq!(dec.days().count(), 31);
+
+        let year = Period::of(Span::Year, date("2028-02-29"));
+        assert_eq!(
+            (year.first, year.last),
+            (date("2028-01-01"), date("2028-12-31"))
+        );
+        assert_eq!(year.days().count(), 366, "a leap year");
+        assert_eq!(
+            Period::for_report(ReportKind::Summary(Span::Year), date("2026-12-31")),
+            Period::of(Span::Year, date("2026-01-01"))
+        );
 
         let day = Period::for_report(ReportKind::Day, date("2026-10-28"));
         assert_eq!(

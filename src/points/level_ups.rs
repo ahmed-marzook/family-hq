@@ -9,15 +9,23 @@
 //! `lines` once at the end, and it announces whatever is new since last
 //! time, however it was earned. A level reached through a push button is
 //! announced in the next reply instead of being lost.
+//!
+//! Personal bests ("🌟 Your best week ever") work the same way: worked out
+//! from the ledger (`points::history::new_best`), announced once per week
+//! or month (`repo::bests`), in whichever reply comes first.
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use sqlx::SqliteConnection;
 
 use crate::bot::Context;
+use crate::points::commands::ledger;
+use crate::points::history::{best_text, new_best};
 use crate::points::levels::{LevelUp, Stats, level_up_text, level_ups};
+use crate::repo::bests;
 use crate::repo::levels as reached;
 use crate::repo::points as stored_points;
 use crate::repo::users::User;
+use crate::reports::Span;
 
 /// `user_id`'s lifetime stats, from every chat.
 pub async fn stats(conn: &mut SqliteConnection, user_id: i64) -> Result<Stats, sqlx::Error> {
@@ -44,28 +52,60 @@ pub async fn announce(
     Ok(ups)
 }
 
-/// The lines to add to a reply to `user`: one per new level. In a group
-/// each names them, since the reply may sit under someone else's message.
+/// The weeks and months `user_id` has just set a personal best in, on
+/// their own `today`, with the points: each only the first time it's
+/// found, recorded so it isn't announced again that week or month. Must
+/// run in the same transaction as whatever earned it, like `announce`.
+pub async fn new_bests(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    today: NaiveDate,
+    now: DateTime<Utc>,
+) -> Result<Vec<(Span, i64)>, sqlx::Error> {
+    let ledger = ledger(conn, user_id, today).await?;
+    let mut bests = Vec::new();
+    for span in [Span::Week, Span::Month] {
+        let Some((period, points)) = new_best(&ledger, span, today) else {
+            continue;
+        };
+        if bests::announced(conn, user_id, span).await? == Some(period.first) {
+            continue;
+        }
+        bests::record(conn, user_id, span, period.first, now).await?;
+        bests.push((span, points));
+    }
+    Ok(bests)
+}
+
+/// The lines to add to a reply to `user`: one per new level, then one per
+/// new personal best. In a group each names them, since the reply may sit
+/// under someone else's message. `today` is on their own clock.
 pub async fn lines(
     conn: &mut SqliteConnection,
     user: &User,
     in_group: bool,
+    today: NaiveDate,
     now: DateTime<Utc>,
 ) -> Result<Vec<String>, sqlx::Error> {
     let who = in_group.then_some(user.display_name.as_str());
-    Ok(announce(conn, user.id, now)
+    let mut lines: Vec<String> = announce(conn, user.id, now)
         .await?
         .into_iter()
         .map(|up| level_up_text(up, who))
-        .collect())
+        .collect();
+    for (span, points) in new_bests(conn, user.id, today, now).await? {
+        lines.push(best_text(span, points, who));
+    }
+    Ok(lines)
 }
 
-/// `lines` for the sender of a command.
+/// `lines` for the sender of a command, on their own `today`.
 pub async fn for_sender(
     conn: &mut SqliteConnection,
     ctx: &Context,
+    today: NaiveDate,
 ) -> Result<Vec<String>, sqlx::Error> {
-    lines(conn, &ctx.sender, ctx.is_group, ctx.now).await
+    lines(conn, &ctx.sender, ctx.is_group, today, ctx.now).await
 }
 
 #[cfg(test)]
@@ -90,8 +130,10 @@ mod tests {
                 .await
                 .unwrap();
 
-        // 34 prayer XP: 17 days of one prayer on time. Still Lv 1.
+        // 34 prayer XP: 17 days of one prayer on time. Still Lv 1. (A
+        // steady 14 a week, so no personal best gets in the way.)
         let first = date("2026-10-01");
+        let today = date("2026-10-18");
         for d in 0..17 {
             let day = first + chrono::Duration::days(d);
             checkin::tick(&mut conn, sara.id, day, Prayer::Fajr, Some(dm), now)
@@ -99,7 +141,7 @@ mod tests {
                 .unwrap();
         }
         assert!(
-            lines(&mut conn, &sara, false, now)
+            lines(&mut conn, &sara, false, today, now)
                 .await
                 .unwrap()
                 .is_empty()
@@ -111,11 +153,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            lines(&mut conn, &sara, true, now).await.unwrap(),
+            lines(&mut conn, &sara, true, today, now).await.unwrap(),
             vec!["🎉 Sara: Prayers level 2!", "🏅 Sara: Overall level 3"]
         );
         assert!(
-            lines(&mut conn, &sara, false, now)
+            lines(&mut conn, &sara, false, today, now)
                 .await
                 .unwrap()
                 .is_empty(),
@@ -128,7 +170,7 @@ mod tests {
             .unwrap();
         assert_eq!(stats(&mut conn, sara.id).await.unwrap().overall(), 2);
         assert!(
-            lines(&mut conn, &sara, false, now)
+            lines(&mut conn, &sara, false, today, now)
                 .await
                 .unwrap()
                 .is_empty()
@@ -137,7 +179,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            lines(&mut conn, &sara, false, now)
+            lines(&mut conn, &sara, false, today, now)
                 .await
                 .unwrap()
                 .is_empty()
@@ -145,6 +187,66 @@ mod tests {
         assert_eq!(
             reached::reached(&mut conn, sara.id).await.unwrap()[&Track::Overall],
             3
+        );
+    }
+
+    #[tokio::test]
+    async fn a_personal_best_is_announced_once_in_the_reply_that_sets_it() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let now = Utc::now();
+        let sara = register(&mut conn, "Sara", "447700900002", now).await;
+        let group = chats::find_or_create(&mut conn, "1@g.us", None, now)
+            .await
+            .unwrap();
+        let mut todo_id = 0;
+        let mut earn = async |conn: &mut SqliteConnection, day: &str, points| {
+            todo_id += 1;
+            let award = Award {
+                points,
+                reason: Reason::Done,
+            };
+            stored_points::award(
+                conn,
+                sara.id,
+                group,
+                Source::Todo,
+                todo_id,
+                award,
+                date(day),
+                now,
+            )
+            .await
+            .unwrap();
+        };
+        // 2 in the week of 2 Nov, then 1 so far in the week of 9 Nov.
+        // (Under 15 XP throughout, so no level-up joins in.)
+        let today = date("2026-11-12");
+        earn(&mut conn, "2026-11-03", 2).await;
+        earn(&mut conn, "2026-11-10", 1).await;
+        let none = lines(&mut conn, &sara, false, today, now).await.unwrap();
+        assert!(none.is_empty(), "{none:?}");
+
+        // 3: her best week ever, announced once.
+        earn(&mut conn, "2026-11-12", 2).await;
+        assert_eq!(
+            lines(&mut conn, &sara, false, today, now).await.unwrap(),
+            ["🌟 Your best week ever (3)"]
+        );
+        earn(&mut conn, "2026-11-12", 1).await;
+        let again = lines(&mut conn, &sara, false, today, now).await.unwrap();
+        assert!(again.is_empty(), "not again that week: {again:?}");
+
+        // The next week beats it: announced again, by name in a group.
+        let monday = date("2026-11-16");
+        earn(&mut conn, "2026-11-16", 2).await;
+        earn(&mut conn, "2026-11-16", 2).await;
+        let equal = lines(&mut conn, &sara, true, monday, now).await.unwrap();
+        assert!(equal.is_empty(), "4 only equals it: {equal:?}");
+        earn(&mut conn, "2026-11-16", 1).await;
+        assert_eq!(
+            lines(&mut conn, &sara, true, monday, now).await.unwrap(),
+            ["🌟 Sara: best week ever!"]
         );
     }
 

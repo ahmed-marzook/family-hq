@@ -22,7 +22,7 @@ use crate::prayer::{DayTimes, checkin};
 use crate::reminders::engine::{self, Planned};
 use crate::reminders::{Place, Recipient};
 use crate::repo::prayers::{self, ReminderChat};
-use crate::reports::{self, Delivery, Draft, Feature, Period, Report, ReportKind, To};
+use crate::reports::{self, Delivery, Draft, Feature, Period, Report, ReportKind, Span, To};
 
 /// Marks missed prayers and sends due reports for one place in one chat.
 pub async fn check(
@@ -46,7 +46,11 @@ pub async fn check(
     for date in [today.pred_opt(), Some(today)].into_iter().flatten() {
         let day = state.apis.prayer_times.for_date(&location, date).await?;
         mark_missed(state, chat, place, &place_key, &day, now).await?;
-        for kind in reports::due(date, stats::day_over(&day), now) {
+        // Prayers have no year report: a month is the longest they sum up.
+        let due = reports::due(date, stats::day_over(&day), now)
+            .into_iter()
+            .filter(|kind| *kind != ReportKind::Summary(Span::Year));
+        for kind in due {
             // Planned, then sent straight away, so each report goes out in
             // the same order as before (this day's before the next's).
             let Some(report) = plan_report(state, chat, place, &place_key, date, kind).await?

@@ -549,7 +549,15 @@ async fn handle_reaction(
     // Only when something changed: a swapped emoji has no reply to add to,
     // and the level-up then waits for the next one.
     let level_ups = match tick {
-        Some(_) => crate::points::level_ups::lines(&mut tx, &user, is_group, now).await?,
+        Some(_) => {
+            // Their own today, for a personal best: not the prayer's date,
+            // which can be yesterday's Isha.
+            let defaults = &state.apis.prayer_times.defaults;
+            let settings =
+                repo::settings::effective(&mut tx, defaults, chat_id, Some(user.id)).await?;
+            let today = settings.today(now);
+            crate::points::level_ups::lines(&mut tx, &user, is_group, today, now).await?
+        }
         None => Vec::new(),
     };
     tx.commit().await?;

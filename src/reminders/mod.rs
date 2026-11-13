@@ -72,6 +72,11 @@ pub async fn run(state: Arc<AppState>) {
         if let Err(err) = crate::points::reports::check(&state, Utc::now()).await {
             error!("points summary: check failed: {err}");
         }
+        // The 1st of a month: each person's review of the month (and on
+        // 1 January, the year), in their DM.
+        if let Err(err) = crate::points::reviews::check(&state, Utc::now()).await {
+            error!("points reviews: check failed: {err}");
+        }
         // Not a reminder, but it runs on the same clock: warns, and clears
         // the data of, people who stopped using the bot. Not on the
         // engine: its warnings are marked only once really sent (no claim

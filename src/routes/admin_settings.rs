@@ -582,6 +582,14 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(page["reports"]["prayers"], "off");
+        // A person's points reports are their monthly and yearly reviews.
+        let (status, page) = post(
+            format!("/api/users/{bilal}/reports/points"),
+            json!({ "delivery": "off" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(page["reports"]["points"], "off");
 
         // A person's reports are already private: "dm" is for groups.
         let (status, page) = post(

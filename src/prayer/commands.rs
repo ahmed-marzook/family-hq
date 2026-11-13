@@ -163,6 +163,7 @@ pub async fn summary(
         let span = match span {
             Span::Week => "week",
             Span::Month => "month",
+            Span::Year => "year",
         };
         format!(
             "{MOSQUE} Nothing recorded yet this {span}. Turn on reminders with \
@@ -281,7 +282,7 @@ async fn prayed(
             .ok_or_else(|| AppError::PrayerTimes(format!("no times looked up for {date}")))?;
         days.push(format_day(conn, ctx, settings, day).await?);
     }
-    let level_ups = crate::points::level_ups::for_sender(conn, ctx).await?;
+    let level_ups = crate::points::level_ups::for_sender(conn, ctx, today).await?;
     if !level_ups.is_empty() {
         days.push(level_ups.join("\n"));
     }

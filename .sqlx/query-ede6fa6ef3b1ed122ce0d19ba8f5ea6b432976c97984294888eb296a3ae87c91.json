@@ -1,0 +1,45 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT day AS \"day: NaiveDate\", source, SUM(points) AS \"points!: i64\"\n           FROM points\n           WHERE user_id = ? AND day BETWEEN ? AND ?\n           GROUP BY day, source\n           ORDER BY day, source",
+  "describe": {
+    "columns": [
+      {
+        "name": "day: NaiveDate",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "points",
+            "name": "day"
+          }
+        }
+      },
+      {
+        "name": "source",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "points",
+            "name": "source"
+          }
+        }
+      },
+      {
+        "name": "points!: i64",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "ede6fa6ef3b1ed122ce0d19ba8f5ea6b432976c97984294888eb296a3ae87c91"
+}

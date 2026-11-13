@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT period_first AS \"period_first: NaiveDate\"\n           FROM bests_announced WHERE user_id = ? AND span = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "period_first: NaiveDate",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "bests_announced",
+            "name": "period_first"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "2bd560f9699eb71540b5701f1d482b4fe89762e8c1fcadec1dd0d0ab656b0274"
+}

@@ -177,9 +177,9 @@ pub fn prayed_all(log: &[Entry], date: NaiveDate) -> bool {
     prayed == Prayer::ALL.len()
 }
 
-const PRAYED: &str = "✅";
-const MADE_UP: &str = "🕐";
-const MISSED: &str = "❌";
+pub const PRAYED: &str = "✅";
+pub const MADE_UP: &str = "🕐";
+pub const MISSED: &str = "❌";
 const PARTY: &str = "🎉";
 const CHART: &str = "📊";
 const CALENDAR: &str = "🗓️";
@@ -234,6 +234,9 @@ pub fn summary_text(span: Span, period: Period, people: &[(Option<&str>, Summary
             "{CALENDAR} *Prayer month* · {}\n",
             period.first.format("%B %Y")
         ),
+        // Never sent (prayer reports stop at a month), but a year reads as
+        // a long month: a calendar of weeks.
+        Span::Year => format!("{CALENDAR} *Prayer year* · {}\n", period.first.format("%Y")),
     };
     for (name, summary) in people {
         text.push('\n');
@@ -261,7 +264,7 @@ pub fn summary_text(span: Span, period: Period, people: &[(Option<&str>, Summary
     }
     let rows = match span {
         Span::Week => "Mon to Sun",
-        Span::Month => "Each row is Mon to Sun",
+        Span::Month | Span::Year => "Each row is Mon to Sun",
     };
     text.push_str(&format!(
         "\n{rows}: {ALL_FIVE} all 5 · {THREE_OR_FOUR} 3–4 · {ONE_OR_TWO} 1–2 · \

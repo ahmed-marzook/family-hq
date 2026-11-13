@@ -277,6 +277,7 @@ mod tests {
         assert_eq!(
             names,
             [
+                "bests_announced",
                 "chat_members",
                 "chat_settings",
                 "chats",
