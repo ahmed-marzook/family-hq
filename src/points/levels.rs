@@ -17,8 +17,8 @@ use crate::progress;
 const PRAYERS: &str = "🕌";
 const TODOS: &str = "📝";
 const CHART: &str = "📊";
-const PARTY: &str = "🎉";
-const MEDAL: &str = "🏅";
+pub const PARTY: &str = "🎉";
+pub const MEDAL: &str = "🏅";
 
 /// A kind of thing people earn XP for, each with its own level. A new
 /// feature (habits) becomes a new variant, and the compiler then points at

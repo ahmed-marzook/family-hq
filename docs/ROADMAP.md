@@ -22,7 +22,8 @@ family for at least two weeks**. The admin dashboard is outside this rule.
 - **Points (P1–P3)**: brought forward at the owner's request; points for
   todos and prayers, the `/points` leaderboard and the Sunday summary
   built; waiting on a week of family use. P4 in progress: stats,
-  levels and the weekly game built; history and reviews planned →
+  levels, the weekly game and your history built; monthly and yearly
+  reviews planned →
   [roadmap/points.md](roadmap/points.md)
 - **Habits and group goals (Stage 2.5, H1–H6)**: brought forward at the
   owner's request; planned, H1 first → [roadmap/habits.md](roadmap/habits.md)

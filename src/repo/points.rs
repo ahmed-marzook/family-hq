@@ -338,6 +338,70 @@ pub async fn by_person_source(
         .collect())
 }
 
+/// The first day `user_id` earned (or lost) anything, from any chat, or
+/// `None` if they never have: where their history starts.
+pub async fn first_day(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+) -> Result<Option<NaiveDate>, sqlx::Error> {
+    sqlx::query_scalar!(
+        r#"SELECT MIN(day) AS "day: NaiveDate" FROM points WHERE user_id = ?"#,
+        user_id
+    )
+    .fetch_one(conn)
+    .await
+}
+
+/// `user_id`'s points on each day of `period`, from each source and every
+/// chat, as `(day, source, points)`, oldest first: what their history
+/// (`points::history`) is worked out from. Net, like the week's points.
+pub async fn by_day_and_source(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    period: Period,
+) -> Result<Vec<(NaiveDate, Source, i64)>, sqlx::Error> {
+    let rows = sqlx::query!(
+        r#"SELECT day AS "day: NaiveDate", source, SUM(points) AS "points!: i64"
+           FROM points
+           WHERE user_id = ? AND day BETWEEN ? AND ?
+           GROUP BY day, source
+           ORDER BY day, source"#,
+        user_id,
+        period.first,
+        period.last
+    )
+    .fetch_all(conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|r| Some((r.day, Source::from_db_str(&r.source)?, r.points)))
+        .collect())
+}
+
+/// `xp_by_source`, counting only what was earned on or before `last`: the
+/// XP someone had at the end of that day, for the levels they gained in a
+/// month or a year.
+pub async fn xp_by_source_until(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    last: NaiveDate,
+) -> Result<Vec<(Source, i64)>, sqlx::Error> {
+    let rows = sqlx::query!(
+        r#"SELECT source, SUM(points) AS "xp!: i64"
+           FROM points
+           WHERE user_id = ? AND points > 0 AND day <= ?
+           GROUP BY source"#,
+        user_id,
+        last
+    )
+    .fetch_all(conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|r| Some((Source::from_db_str(&r.source)?, r.xp)))
+        .collect())
+}
+
 /// Each person's points on each day of `period` in `chat_id`, for the
 /// weekly summary. Oldest first.
 pub async fn by_person_day(

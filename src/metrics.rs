@@ -11,7 +11,8 @@ use chrono_tz::Tz;
 
 use crate::help;
 use crate::parser::{
-    BotCommand, Got, PushCommand, ReplyCommand, SettingsCommand, TodoFilter, TodoView, Toggle,
+    BotCommand, Got, PointsHistory, PushCommand, ReplyCommand, SettingsCommand, TodoFilter,
+    TodoView, Toggle,
 };
 use crate::person::Assignee;
 use crate::repo::messages::ListKind;
@@ -207,6 +208,14 @@ pub fn command(command: &BotCommand) -> Event {
         BotCommand::PointsReports(reports) => event(
             "points.reports",
             Some(reports.map_or("status", |r| r.as_db_str())),
+        ),
+        BotCommand::PointsHistory(history) => event(
+            "points.history",
+            Some(match history {
+                PointsHistory::Weeks => "weeks",
+                PointsHistory::Months => "months",
+                PointsHistory::Year(_) => "year",
+            }),
         ),
         BotCommand::Push(command) => event(
             "push",

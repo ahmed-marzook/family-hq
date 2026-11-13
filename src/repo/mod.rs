@@ -12,6 +12,7 @@
 
 pub mod admin;
 pub mod backup;
+pub mod bests;
 pub mod chats;
 pub mod cleanup;
 pub mod levels;

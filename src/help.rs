@@ -20,7 +20,7 @@ const TOPICS: [(&str, &[&str]); 8] = [
     ("push", &["push", "notifications", "notification", "ntfy"]),
     (
         "points",
-        &["points", "point", "pts", "score", "leaderboard"],
+        &["points", "point", "pts", "score", "leaderboard", "history"],
     ),
 ];
 
@@ -128,6 +128,12 @@ Everything you earn is also XP, which never resets: 🕌 Prayers and 📝 Todos 
 *See them*
 `/points` in a group: this week's leaderboard (Monday to Sunday) 🥇🥈🥉 with each person's Overall level, and who has earned what today. Only points earned in that group count; everyone starts from 0 each Monday.
 `/points` with me directly: your levels, then your own points from every chat: today, this week, last week, and each of the last 7 days.
+
+*Your history* (only with me directly, it's private)
+`/points weeks`: your last 12 weeks as bars, this week against your average, and your best week ever.
+`/points months`: the same for your last 12 months, each next to the same month a year before.
+`/points year` (or `/points 2025`): the year's total, its best week, month and day, and the levels you gained.
+Beat your best week or month and I'll say so (🌟), once.
 
 *Sunday summary*
 In a group, every Sunday at 8pm: the week's leaderboard, how each person did against last week, a champion for 🕌 prayers, 📝 todos and overall, and the best day. Only in weeks when someone earned points.
@@ -282,6 +288,9 @@ mod tests {
         assert!(page(Some("todo")).contains("due 2 fri"));
         assert!(page(Some("todo")).contains("/todo overdue"));
         assert!(page(Some("points")).contains("/points reports dm"));
+        for history in ["/points weeks", "/points months", "/points year"] {
+            assert!(page(Some("points")).contains(history), "{history}");
+        }
         assert!(page(Some("prayers")).contains("+prayed all"));
         assert!(page(Some("settings")).contains("/settings everyone"));
         assert!(page(Some("moon")).contains("`/moon` (or `/m`)"));

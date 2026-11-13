@@ -89,8 +89,22 @@ pub enum BotCommand {
     /// `/points reports here|dm|off`, or just `/points reports` (`None`, to
     /// see which it is): where a group's Sunday summary goes
     PointsReports(Option<Delivery>),
+    /// `/points weeks`, `/points months`, `/points year` or `/points 2025`:
+    /// your own history, in a DM only
+    PointsHistory(PointsHistory),
     /// `/help` (overview) or `/help shop` (one topic's page)
     Help(Option<String>),
+}
+
+/// Which part of your own points history to show.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PointsHistory {
+    /// The last 12 weeks.
+    Weeks,
+    /// The last 12 months.
+    Months,
+    /// A calendar year: this one (`None`) or the one named.
+    Year(Option<i32>),
 }
 
 /// What a setting that is on or off is asked for: to show it, or to turn
@@ -322,7 +336,13 @@ pub fn parse(text: &str) -> Option<BotCommand> {
                 Some(BotCommand::PointsReports(Some(Delivery::Dm)))
             }
             "reports off" | "report off" => Some(BotCommand::PointsReports(Some(Delivery::Off))),
-            _ => None,
+            "weeks" | "week" => Some(BotCommand::PointsHistory(PointsHistory::Weeks)),
+            "months" | "month" => Some(BotCommand::PointsHistory(PointsHistory::Months)),
+            "year" | "this year" => Some(BotCommand::PointsHistory(PointsHistory::Year(None))),
+            other => {
+                let year = other.strip_prefix("year ").unwrap_or(other);
+                history_year(year).map(|y| BotCommand::PointsHistory(PointsHistory::Year(Some(y))))
+            }
         },
         "/push" => match rest.to_lowercase().as_str() {
             "" | "status" => Some(BotCommand::Push(PushCommand::Status)),
@@ -358,6 +378,16 @@ fn expand_shorthand(word: &str) -> &str {
         "/h" => "/help",
         other => other,
     }
+}
+
+/// A year for `/points 2025`: exactly four digits, from 2000 on (nobody
+/// earned points before the bot existed). Anything else isn't a year, so
+/// `/points 12` isn't taken for the year 12.
+fn history_year(text: &str) -> Option<i32> {
+    if text.len() != 4 || !text.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    text.parse().ok().filter(|year| *year >= 2000)
 }
 
 /// The part after `/settings`: a key word, then (for some) a value.
@@ -1341,6 +1371,51 @@ mod tests {
         );
         assert_eq!(parse("/points reports off"), reports(Some(Delivery::Off)));
         assert_eq!(parse("/points reports weekly"), None);
+    }
+
+    #[test]
+    fn points_history_commands() {
+        let history = |h| Some(BotCommand::PointsHistory(h));
+        assert_eq!(parse("/points weeks"), history(PointsHistory::Weeks));
+        assert_eq!(parse("/pts week"), history(PointsHistory::Weeks));
+        assert_eq!(parse("/Points WEEKS"), history(PointsHistory::Weeks));
+        assert_eq!(parse("/points months"), history(PointsHistory::Months));
+        assert_eq!(parse("/point month"), history(PointsHistory::Months));
+        assert_eq!(parse("/points year"), history(PointsHistory::Year(None)));
+        assert_eq!(
+            parse("/points this year"),
+            history(PointsHistory::Year(None))
+        );
+        assert_eq!(
+            parse("/points 2026"),
+            history(PointsHistory::Year(Some(2026)))
+        );
+        assert_eq!(
+            parse("/points year 2025"),
+            history(PointsHistory::Year(Some(2025)))
+        );
+        assert_eq!(
+            parse("  /pts   2027  "),
+            history(PointsHistory::Year(Some(2027)))
+        );
+    }
+
+    #[test]
+    fn points_history_rejects_what_isnt_a_year() {
+        for text in [
+            "/points 12",
+            "/points 1999",
+            "/points 20266",
+            "/points 2o26",
+            "/points year next",
+            "/points year 26",
+            "/points weeks 4",
+            "/points last year",
+            "/points -2026",
+            "/points ２０２６",
+        ] {
+            assert_eq!(parse(text), None, "{text}");
+        }
     }
 
     #[test]

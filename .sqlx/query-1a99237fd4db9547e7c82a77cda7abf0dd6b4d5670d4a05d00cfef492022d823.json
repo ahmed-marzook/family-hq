@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO bests_announced (user_id, span, period_first, announced_at)\n         VALUES (?, ?, ?, ?)\n         ON CONFLICT (user_id, span) DO UPDATE\n         SET period_first = excluded.period_first, announced_at = excluded.announced_at",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "1a99237fd4db9547e7c82a77cda7abf0dd6b4d5670d4a05d00cfef492022d823"
+}

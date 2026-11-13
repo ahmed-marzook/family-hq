@@ -37,6 +37,7 @@ use crate::todo::flags::Priority;
 pub mod award;
 pub mod commands;
 pub mod game;
+pub mod history;
 pub mod level_ups;
 pub mod levels;
 pub mod overdue;

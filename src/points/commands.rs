@@ -1,5 +1,6 @@
 //! The points commands: `/points` (the week's leaderboard in a group, the
-//! sender's own points in a DM) and `/points reports`. `bot` passes each
+//! sender's own points in a DM), `/points reports`, and the sender's own
+//! history (`/points weeks`, `months`, `year`). `bot` passes each
 //! one here. What a todo is worth is `points::for_todo`, and saving it is
 //! `points::award`.
 
@@ -9,7 +10,9 @@ use sqlx::SqliteConnection;
 use crate::bot::emoji::BELL_OFF;
 use crate::bot::{Context, my_settings};
 use crate::error::AppError;
+use crate::parser::PointsHistory;
 use crate::points;
+use crate::points::history::{self, Ledger};
 use crate::points::{level_ups, levels};
 use crate::repo::points as stored_points;
 use crate::repo::reports as stored_reports;
@@ -109,6 +112,76 @@ pub async fn show(
         ),
     };
     Ok(points::mine_text(&mine))
+}
+
+/// `/points weeks`, `/points months`, `/points year` (or `/points 2025`):
+/// the sender's own history, from every chat. Private, so in a group it
+/// only says where to ask.
+pub async fn show_history(
+    conn: &mut SqliteConnection,
+    ctx: &Context,
+    defaults: &Settings,
+    which: PointsHistory,
+) -> Result<String, AppError> {
+    if ctx.is_group {
+        return Ok(history::private_text());
+    }
+    let today = my_settings(conn, ctx, defaults).await?.today(ctx.now);
+    let user = ctx.sender.id;
+    let ledger = ledger(conn, user, today).await?;
+    Ok(match which {
+        PointsHistory::Weeks => history::weeks_text(&ledger, today),
+        PointsHistory::Months => history::months_text(&ledger, today),
+        PointsHistory::Year(year) => {
+            let year = year.unwrap_or(chrono::Datelike::year(&today));
+            let gained = match history::year(year) {
+                Some(whole) if whole.first <= today => {
+                    let end = whole.last.min(today);
+                    levels_gained(conn, user, whole.first, end).await?
+                }
+                _ => Vec::new(),
+            };
+            history::year_text(&ledger, year, today, &gained)
+        }
+    })
+}
+
+/// Everything `user_id` has ever earned, up to `today`: their whole
+/// history, a few thousand rows at most (see `points_by_user_day`).
+pub async fn ledger(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    today: NaiveDate,
+) -> Result<Ledger, sqlx::Error> {
+    let Some(first) = stored_points::first_day(conn, user_id).await? else {
+        return Ok(Ledger::default());
+    };
+    let all = Period {
+        first: first.min(today),
+        last: today,
+    };
+    Ok(Ledger::from_rows(
+        stored_points::by_day_and_source(conn, user_id, all).await?,
+    ))
+}
+
+/// The levels `user_id` went up from the start of `first` to the end of
+/// `last`, worked out from their XP at each end.
+pub async fn levels_gained(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    first: NaiveDate,
+    last: NaiveDate,
+) -> Result<Vec<(levels::Track, i64, i64)>, sqlx::Error> {
+    let before = match first.pred_opt() {
+        Some(day_before) => stored_points::xp_by_source_until(conn, user_id, day_before).await?,
+        None => Vec::new(),
+    };
+    let after = stored_points::xp_by_source_until(conn, user_id, last).await?;
+    Ok(history::levels_gained(
+        &levels::Stats::from_sources(before),
+        &levels::Stats::from_sources(after),
+    ))
 }
 
 /// The `/points reports` reply, in a group: where the summary goes now.
@@ -235,6 +308,134 @@ mod tests {
         let text = typed(&mut conn, &ctx, "/points").await.into_text();
         assert!(text.contains("🥇 Bilal-0009 · Lv 4 · 60"), "{text}");
         assert!(text.contains("🥈 Bilal · Lv 2 · 3"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn history_is_shown_in_a_dm_and_only_pointed_to_in_a_group() {
+        use crate::points::{Award, Reason, Source};
+        use crate::testkit::{date, utc};
+
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let group = setup(&mut conn).await;
+        let award = |points| Award {
+            points,
+            reason: Reason::Done,
+        };
+        // 3 last week and 5 this week (Fri 13 Nov), in the group.
+        for (id, day, points) in [(1, "2026-11-04", 3), (2, "2026-11-12", 5)] {
+            stored_points::award(
+                &mut conn,
+                group.sender.id,
+                group.chat_id,
+                Source::Todo,
+                id,
+                award(points),
+                date(day),
+                group.now,
+            )
+            .await
+            .unwrap();
+        }
+        let at = |is_group| Context {
+            chat_id: group.chat_id,
+            is_group,
+            sender: group.sender.clone(),
+            now: utc("2026-11-13T12:00:00Z"),
+        };
+        let (in_group, dm) = (at(true), at(false));
+
+        for text in [
+            "/points weeks",
+            "/points months",
+            "/points year",
+            "/points 2025",
+        ] {
+            let reply = typed(&mut conn, &in_group, text).await.into_text();
+            assert!(
+                reply.starts_with("🔒 Your history is just for you"),
+                "{reply}"
+            );
+        }
+
+        let weeks = typed(&mut conn, &dm, "/points weeks").await.into_text();
+        assert!(
+            weeks.starts_with(
+                "📈 *Your last 2 weeks*
+2 Nov"
+            ),
+            "{weeks}"
+        );
+        assert!(
+            weeks.contains("This week 5 · average 3 ⬆️ · best 5 (w/c 9 Nov)"),
+            "{weeks}"
+        );
+        let months = typed(&mut conn, &dm, "/points months").await.into_text();
+        assert!(months.starts_with("📈 *Your first month*"), "{months}");
+        let year = typed(&mut conn, &dm, "/points year").await.into_text();
+        assert!(
+            year.starts_with(
+                "🗓️ *Your 2026 so far*
+8 points"
+            ),
+            "{year}"
+        );
+        // 8 todo XP: still Todos Lv 1, so no levels gained.
+        assert!(!year.contains("Levels gained"), "{year}");
+        let before = typed(&mut conn, &dm, "/points 2025").await.into_text();
+        assert_eq!(before, "🗓️ Nothing earned in 2025.");
+    }
+
+    #[tokio::test]
+    async fn the_year_shows_the_levels_gained_in_it() {
+        use crate::points::{Award, Reason, Source};
+        use crate::testkit::{date, utc};
+
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let group = setup(&mut conn).await;
+        let dm = Context {
+            chat_id: group.chat_id,
+            is_group: false,
+            sender: group.sender.clone(),
+            now: utc("2027-03-01T12:00:00Z"),
+        };
+        // 10 todo XP in 2026, then 10 more in 2027: Todos Lv 1 → 2 (15 XP)
+        // in 2027, and Overall 2 → 3.
+        let award = Award {
+            points: 2,
+            reason: Reason::Done,
+        };
+        for id in 0..10 {
+            let day = if id < 5 { "2026-12-01" } else { "2027-01-10" };
+            stored_points::award(
+                &mut conn,
+                dm.sender.id,
+                dm.chat_id,
+                Source::Todo,
+                id,
+                award,
+                date(day),
+                dm.now,
+            )
+            .await
+            .unwrap();
+        }
+        let this_year = typed(&mut conn, &dm, "/points year").await.into_text();
+        assert!(
+            this_year.contains("🎉 Levels gained: 📝 Todos 1 → 2 · 🏅 Overall 2 → 3"),
+            "{this_year}"
+        );
+        assert!(this_year.contains("Against 2026: 10, flat"), "{this_year}");
+        let last_year = typed(&mut conn, &dm, "/points 2026").await.into_text();
+        assert!(
+            last_year.starts_with(
+                "🗓️ *Your 2026*
+10 points"
+            ),
+            "{last_year}"
+        );
+        assert!(!last_year.contains("Levels gained"), "{last_year}");
     }
 
     #[tokio::test]

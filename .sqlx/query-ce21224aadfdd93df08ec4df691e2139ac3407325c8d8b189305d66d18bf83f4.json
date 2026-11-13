@@ -1,0 +1,21 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT MIN(day) AS \"day: NaiveDate\" FROM points WHERE user_id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "day: NaiveDate",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "ce21224aadfdd93df08ec4df691e2139ac3407325c8d8b189305d66d18bf83f4"
+}

@@ -1,0 +1,33 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT source, SUM(points) AS \"xp!: i64\"\n           FROM points\n           WHERE user_id = ? AND points > 0 AND day <= ?\n           GROUP BY source",
+  "describe": {
+    "columns": [
+      {
+        "name": "source",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "points",
+            "name": "source"
+          }
+        }
+      },
+      {
+        "name": "xp!: i64",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "8140129b8b1d8605966464871a1865c879fc1ae41926b95779ddc31ae8029597"
+}

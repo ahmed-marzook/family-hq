@@ -1,7 +1,7 @@
 # Points (gamifying todos)
 
 > **Goal:** finishing todos and praying earns points, so each person can see how their day and week went, with a leaderboard in each group. Habits will earn points the same way later.
-> **Status:** Brought forward at the owner's request (2026-11-06). P1 (ledger, points for todos, `/points`), P2 (Sunday weekly summary) and P3 (points for prayers) built; waiting on a week of family use. P4 in progress: parts 1 (stats and levels) and 2 (the weekly game) built; history and reviews planned.
+> **Status:** Brought forward at the owner's request (2026-11-06). P1 (ledger, points for todos, `/points`), P2 (Sunday weekly summary) and P3 (points for prayers) built; waiting on a week of family use. P4 in progress: parts 1 (stats and levels), 2 (the weekly game) and 3 (history and personal bests) built; the monthly and yearly reviews planned.
 > **Last updated:** 2026-11-13
 
 ## Rules
@@ -214,6 +214,30 @@ so parts 2–4 and habits reuse it:
   week's winner on any day, not only Monday (in practice it's empty only
   early in the week).
 
+**Part 3 (history) is built** (2026-11-13):
+
+- `src/points/history.rs`, pure: `Ledger` (a person's points per day and
+  category, from every chat), `last`, `within` (weeks or months cut to
+  fit a range, so a year's weeks stop on 31 December), `average`, `best`,
+  `new_best`, `trend`, `levels_gained`, and the texts `weeks_text`,
+  `months_text`, `year_text`.
+- `repo::points`: `first_day`, `by_day_and_source`, `xp_by_source_until`
+  (the XP at the end of a day, for the levels gained in a year).
+  `points::commands::ledger` reads someone's whole history at once.
+- `BotCommand::PointsHistory`: `/points weeks`, `/points months`,
+  `/points year`, `/points year 2025` and `/points 2025`. In a group the
+  reply only says to ask in a DM: the history is private.
+- Only from the person's first point: someone who started last week sees
+  one week, not eleven empty ones. Within that, an empty week is a 0 bar.
+  Averages leave out the week or month in progress.
+- Personal bests: `level_ups::lines` (now given the person's own
+  `today`) adds `🌟 Your best week ever (45)` (or month) when the one in
+  progress beats every earlier one. Migration `0014_personal_bests.sql`
+  adds `bests_announced (user_id, span, period_first)`, so it's announced
+  once per week or month. Not in someone's first week or month (nothing
+  to beat). In a group it's `🌟 Sara: best week ever!`, without the
+  number, which comes from every chat.
+
 At the owner's request (2026-11-10): points should work like game stats.
 Each feature (prayers, todos, later habits) has its own category with its
 own XP and level, and the categories add up to an **Overall** level. That
@@ -382,7 +406,7 @@ Done when:
 - [x] The Sunday summary names a champion per category
 - [x] Group totals start from 0 each Monday on each reader's clock (tested
       across a BST change)
-- [ ] `/points weeks`, `months` and `year` work in a DM and say so in a
+- [x] `/points weeks`, `months` and `year` work in a DM and say so in a
       group; grouping, averages and bests are tested at month and year
       ends, and for someone with less than a week of data
 - [ ] The monthly DM review goes once on the 1st, and the year review on

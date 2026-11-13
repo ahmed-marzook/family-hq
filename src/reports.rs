@@ -90,6 +90,17 @@ pub enum Span {
     Month,
 }
 
+impl Span {
+    /// The exact text stored for it (`reports_sent.kind`,
+    /// `bests_announced.span`).
+    pub fn as_db_str(self) -> &'static str {
+        match self {
+            Span::Week => "week",
+            Span::Month => "month",
+        }
+    }
+}
+
 /// The reports a chat can be sent, one of each per day, week or month.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReportKind {
@@ -104,8 +115,7 @@ impl ReportKind {
     pub fn as_db_str(self) -> &'static str {
         match self {
             ReportKind::Day => "day",
-            ReportKind::Summary(Span::Week) => "week",
-            ReportKind::Summary(Span::Month) => "month",
+            ReportKind::Summary(span) => span.as_db_str(),
         }
     }
 }
