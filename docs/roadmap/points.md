@@ -19,6 +19,7 @@ Whoever closes a todo (`closed_by`) earns its points, worked out by
 | Skipped                        | −1                                 |
 | Removed                        | 0 (no ledger row)                  |
 | Still open at `/todo clear`    | −1, for its assignee (or creator)  |
+| Open past its due date         | −1 a day for 7 days, to its owner  |
 
 "On time" is judged on the **closer's own local day**, the same clock
 `-d fri` is resolved on.
@@ -42,6 +43,17 @@ Decisions:
   costs the person the todo was for (assignee, else creator), not whoever
   cleared it, on their own day, in the chat it was cleared in. Stored as
   reason `skipped`, so no migration. `/todo clear done` stays free.
+- **An overdue todo costs its owner 1 a day** (the owner's request,
+  2026-11-13): −1 on each of the 7 days after its due date while it's
+  open (`points::for_overdue`), to its assignee (else creator), on their
+  own clock, in its chat. `points::overdue::check` runs every minute from
+  the reminder loop; only today is charged, so a day the bot is down
+  isn't charged afterwards. Its own source, `overdue` (migration 0013),
+  with one row per todo per day, so a todo's done award still works and
+  doing it late still earns. Negative, so never XP. Nobody is messaged:
+  the 8am todo reminder adds `⚠️ 2 overdue: −2 ⭐ today`, counting only
+  the todos it lists (in a group, unassigned todos are charged to their
+  creator but aren't in their reminder).
 
 Known gaps, accepted for now:
 

@@ -1,0 +1,57 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\", chat_id,\n                  COALESCE(assignee_id, created_by) AS \"owner_id!: i64\",\n                  due_date AS \"due!: NaiveDate\"\n           FROM todos\n           WHERE status = 'pending' AND due_date BETWEEN ? AND ?\n           ORDER BY id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "todos",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "chat_id",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "todos",
+            "name": "chat_id"
+          }
+        }
+      },
+      {
+        "name": "owner_id!: i64",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "due!: NaiveDate",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "todos",
+            "name": "due_date"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "f17c42357c442e1a713576bbf785b3e2b1e170f20d4f5cde2d4347e95c501cfc"
+}

@@ -5,12 +5,13 @@
 //! and hands the plans to the reminder engine (`reminders::engine`) to
 //! claim and send, called by the reminder loop every minute.
 
-use chrono::{DateTime, Duration, NaiveTime, TimeZone, Utc};
+use chrono::{DateTime, Duration, NaiveDate, NaiveTime, TimeZone, Utc};
 use chrono_tz::Tz;
 use tracing::warn;
 
 use crate::AppState;
 use crate::error::AppError;
+use crate::points;
 use crate::reminders::engine::{self, Claim, OnSent, Outgoing, Planned};
 use crate::repo::messages::ListKind;
 use crate::repo::settings as stored;
@@ -20,11 +21,14 @@ use crate::settings::Settings;
 
 const REMINDER: &str = "⏰";
 const NOT_YET: &str = "⬜";
+/// The first reminder of the day: the one that says what overdue todos
+/// cost today (`points::overdue` charges them from midnight).
+const MORNING: &str = "Morning";
 
 /// The local hour and name of each reminder. Roughly six hours apart, kept
 /// to waking hours.
 const SLOTS: [(u32, &str); 4] = [
-    (8, "Morning"),
+    (8, MORNING),
     (13, "Afternoon"),
     (18, "After work"),
     (22, "Before bed"),
@@ -68,7 +72,13 @@ pub fn open_for<'a>(
 }
 
 /// The reminder's text. `mention` is a phone number to @mention in a group.
-pub fn format(slot: &str, todos: &[(usize, &ListedTodo)], mention: Option<&str>) -> String {
+/// `overdue` is the line about today's overdue charges, if any.
+pub fn format(
+    slot: &str,
+    todos: &[(usize, &ListedTodo)],
+    mention: Option<&str>,
+    overdue: Option<&str>,
+) -> String {
     let who = mention.map_or(String::new(), |phone| format!("@{phone} "));
     let count = match todos.len() {
         1 => "1 todo".to_string(),
@@ -77,6 +87,12 @@ pub fn format(slot: &str, todos: &[(usize, &ListedTodo)], mention: Option<&str>)
     let mut text = format!("{who}{REMINDER} *{slot}*: you have {count}\n");
     for (number, todo) in todos {
         text.push_str(&format!("{NOT_YET} {number}. {}\n", todo.title));
+    }
+    if let Some(overdue) = overdue {
+        text.push_str(&format!(
+            "{overdue}
+"
+        ));
     }
     let first = todos.first().map_or(1, |(number, _)| *number);
     text.push_str(&format!(
@@ -136,11 +152,13 @@ async fn plan_subscriber(
         return Ok(None);
     };
     let items = todos::list_all(&mut conn, subscriber.chat_id).await?;
-    Ok(Some(plan(subscriber, slot, slot_at, &items)))
+    let today = settings.today(now);
+    Ok(Some(plan(subscriber, slot, slot_at, today, &items)))
 }
 
 /// What one person's reminder for the slot at `slot_at` sends, given the
-/// chat's whole todo list. Pure, so tested directly.
+/// chat's whole todo list, on the person's `today`. Pure, so tested
+/// directly.
 ///
 /// Claimed before sending, like prayer reminders: a failed send is
 /// logged, never sent twice. Claimed even with nothing open (then no
@@ -149,6 +167,7 @@ pub fn plan(
     subscriber: &Subscriber,
     slot: &str,
     slot_at: DateTime<Utc>,
+    today: NaiveDate,
     items: &[ListedTodo],
 ) -> Planned {
     let (chat_id, user_id) = (subscriber.chat_id, subscriber.user_id);
@@ -172,7 +191,21 @@ pub fn plan(
         .split_once('@')
         .map_or(subscriber.wa_jid.as_str(), |(number, _)| number);
     let mention = (!is_dm).then_some(phone);
-    let text = format(slot, &open, mention);
+    // The same rule that charged them (`points::for_overdue`), so the
+    // count matches what was taken.
+    let overdue = (slot == MORNING)
+        .then(|| {
+            let charged = open
+                .iter()
+                .filter(|(_, t)| {
+                    t.due
+                        .is_some_and(|due| points::for_overdue(due, today).is_some())
+                })
+                .count();
+            points::overdue_text(charged)
+        })
+        .flatten();
+    let text = format(slot, &open, mention, overdue.as_deref());
     let mentions: Vec<String> = mention.map(str::to_string).into_iter().collect();
     Planned {
         claim,
@@ -198,7 +231,7 @@ pub fn plan(
 mod tests {
     use super::*;
     use crate::repo::todos::Closed;
-    use crate::testkit::utc;
+    use crate::testkit::{date, utc};
 
     const LONDON: Tz = chrono_tz::Europe::London;
 
@@ -271,13 +304,57 @@ mod tests {
         let items = sample();
         let open = open_for(&items, "Bilal", false);
         assert_eq!(
-            format("After work", &open, Some("447700900001")),
+            format("After work", &open, Some("447700900001"), None),
             "@447700900001 ⏰ *After work*: you have 2 todos\n\
              ⬜ 1. hoover\n⬜ 4. bins\n\n\
              Reply `done 1`, or send `+done 1` any time. `/todo reminders off` stops these."
         );
         let one = open_for(&items, "Khadija", false);
-        assert!(format("Morning", &one, None).starts_with("⏰ *Morning*: you have 1 todo\n"));
+        assert!(format("Morning", &one, None, None).starts_with("⏰ *Morning*: you have 1 todo\n"));
+    }
+
+    #[test]
+    fn the_morning_reminder_says_what_overdue_todos_cost_today() {
+        let due = |title: &str, d: &str| ListedTodo {
+            due: Some(date(d)),
+            ..todo(title, Some("Bilal"), false)
+        };
+        // On Wednesday 4 November: one due Monday, one due a fortnight
+        // ago (past the 7-day cap), one due today.
+        let items = vec![
+            due("hoover", "2026-11-02"),
+            due("bins", "2026-10-21"),
+            due("gym", "2026-11-04"),
+        ];
+        let open = open_for(&items, "Bilal", true);
+        let today = date("2026-11-04");
+        let morning = |slot| {
+            let at = utc("2026-11-04T08:00:00Z");
+            let subscriber = Subscriber {
+                chat_id: 1,
+                user_id: 1,
+                display_name: "Bilal".to_string(),
+                wa_jid: "447700900001@s.whatsapp.net".to_string(),
+                wa_chat_id: "447700900001@s.whatsapp.net".to_string(),
+                dm_user_id: Some(1),
+            };
+            plan(&subscriber, slot, at, today, &items).messages[0]
+                .text
+                .clone()
+        };
+        let text = morning("Morning");
+        assert!(
+            text.contains(
+                "⬜ 3. gym
+⚠️ 1 overdue: −1 ⭐ today."
+            ),
+            "only hoover is charged today: {text}"
+        );
+        assert!(
+            !morning("Afternoon").contains("overdue"),
+            "only in the morning"
+        );
+        assert_eq!(open.len(), 3);
     }
 
     // ---- whose settings apply (`settings_for`) ----
@@ -421,7 +498,7 @@ mod tests {
     fn the_plan_claims_the_slot_and_saves_the_whole_list() {
         let (khadija, items) = khadija_in_the_group();
         let at = utc("2026-11-02T18:00:00Z");
-        let plan = plan(&khadija, "After work", at, &items);
+        let plan = plan(&khadija, "After work", at, at.date_naive(), &items);
 
         assert_eq!(
             plan.claim,
@@ -458,7 +535,13 @@ mod tests {
     fn nothing_open_is_a_claim_with_no_message() {
         let (mut yusuf, items) = khadija_in_the_group();
         yusuf.display_name = "Yusuf".to_string();
-        let plan = plan(&yusuf, "Morning", utc("2026-11-02T08:00:00Z"), &items);
+        let plan = plan(
+            &yusuf,
+            "Morning",
+            utc("2026-11-02T08:00:00Z"),
+            date("2026-11-02"),
+            &items,
+        );
         assert!(matches!(plan.claim, Claim::TodoSlot { .. }));
         assert!(plan.messages.is_empty());
     }

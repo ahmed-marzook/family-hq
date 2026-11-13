@@ -61,6 +61,10 @@ pub async fn run(state: Arc<AppState>) {
         if let Err(err) = check(&state, Utc::now()).await {
             error!("check failed: {err}");
         }
+        // Before the todo reminders, so the morning one sees today's charges.
+        if let Err(err) = crate::points::overdue::check(&state, Utc::now()).await {
+            error!("overdue todos: check failed: {err}");
+        }
         if let Err(err) = todo_reminders::check(&state, Utc::now()).await {
             error!("todo reminders: check failed: {err}");
         }

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO points (user_id, chat_id, source, source_id, reason, points, day, at)\n         VALUES (?, ?, ?, ?, ?, ?, ?, ?)\n         ON CONFLICT (source, source_id) WHERE source NOT IN ('prayer', 'overdue') DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 8
+    },
+    "nullable": []
+  },
+  "hash": "69c0ef38e8ca0e1b6ff5de77fd9352cc0f1257b0b6ef922aaf07fd899ee27ce5"
+}

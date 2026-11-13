@@ -322,6 +322,39 @@ pub async fn open_with_owner(
     .await
 }
 
+/// An open todo that may be overdue on its owner's clock.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DueTodo {
+    pub id: i64,
+    pub chat_id: i64,
+    /// Who it's for: its assignee, or whoever added it if it has none.
+    pub owner_id: i64,
+    pub due: NaiveDate,
+}
+
+/// Every open todo, in every chat, due between `first` and `last`: the
+/// ones that could be charged as overdue today somewhere in the world
+/// (`points::overdue`). Oldest first.
+pub async fn due_between(
+    conn: &mut SqliteConnection,
+    first: NaiveDate,
+    last: NaiveDate,
+) -> Result<Vec<DueTodo>, sqlx::Error> {
+    sqlx::query_as!(
+        DueTodo,
+        r#"SELECT id AS "id!", chat_id,
+                  COALESCE(assignee_id, created_by) AS "owner_id!: i64",
+                  due_date AS "due!: NaiveDate"
+           FROM todos
+           WHERE status = 'pending' AND due_date BETWEEN ? AND ?
+           ORDER BY id"#,
+        first,
+        last
+    )
+    .fetch_all(conn)
+    .await
+}
+
 /// Deletes every todo in the chat (`/todo clear`). Returns how many.
 pub async fn clear_all(conn: &mut SqliteConnection, chat_id: i64) -> Result<u64, sqlx::Error> {
     let result = sqlx::query!("DELETE FROM todos WHERE chat_id = ?", chat_id)

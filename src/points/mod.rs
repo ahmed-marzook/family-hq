@@ -18,6 +18,9 @@
 //!
 //! Removing a todo is neither: it earns nothing and costs nothing.
 //!
+//! An open todo past its due date costs the person it's for 1 a day, for
+//! up to `OVERDUE_DAYS` days (`for_overdue`), charged by `points::overdue`.
+//!
 //! A prayer (`for_prayer`) earns 2 prayed on time and 1 made up; a missed
 //! one earns nothing. Unlike a todo's, its points follow the prayer log:
 //! untick it and they go, correct it and they change.
@@ -36,6 +39,7 @@ pub mod commands;
 pub mod game;
 pub mod level_ups;
 pub mod levels;
+pub mod overdue;
 pub mod reports;
 
 pub const STAR: &str = "⭐";
@@ -43,6 +47,7 @@ pub const TROPHY: &str = "🏆";
 const GOLD: &str = "🥇";
 const SILVER: &str = "🥈";
 const BRONZE: &str = "🥉";
+const WARNING: &str = "⚠️";
 /// A proper minus sign, which reads better than a hyphen in "−1".
 const MINUS: &str = "−";
 
@@ -52,6 +57,9 @@ const MINUS: &str = "−";
 pub enum Source {
     Todo,
     Prayer,
+    /// A day's charge for an open todo past its due date. Separate from
+    /// `Todo` because a todo awards once, but is charged once a day.
+    Overdue,
 }
 
 impl Source {
@@ -60,13 +68,14 @@ impl Source {
         match self {
             Source::Todo => "todo",
             Source::Prayer => "prayer",
+            Source::Overdue => "overdue",
         }
     }
 
     /// The other way: `None` for a source this build doesn't award yet
     /// ('habit', 'goal'), so a read can skip it.
     pub fn from_db_str(s: &str) -> Option<Source> {
-        [Source::Todo, Source::Prayer]
+        [Source::Todo, Source::Prayer, Source::Overdue]
             .into_iter()
             .find(|source| source.as_db_str() == s)
     }
@@ -94,6 +103,8 @@ pub enum Reason {
     Prayed,
     /// A prayer, made up after its time ended.
     MadeUp,
+    /// A todo still open the day after its due date (and each day after).
+    Overdue,
 }
 
 impl Reason {
@@ -106,6 +117,7 @@ impl Reason {
             Reason::Skipped => "skipped",
             Reason::Prayed => "prayed",
             Reason::MadeUp => "made_up",
+            Reason::Overdue => "overdue",
         }
     }
 }
@@ -152,6 +164,23 @@ pub fn for_todo(
             reason: Reason::DoneLate,
         },
     }
+}
+
+/// What an overdue todo costs each day.
+pub const OVERDUE_POINTS: i64 = -1;
+/// How many days an overdue todo is charged for: the first week after its
+/// due date. A cap, so one forgotten todo can't wipe out weeks of points.
+pub const OVERDUE_DAYS: i64 = 7;
+
+/// The charge for an open todo due on `due`, on its owner's `today`:
+/// −1 on each of the `OVERDUE_DAYS` days after it was due, and `None`
+/// before then (not overdue yet) or after (the cap).
+pub fn for_overdue(due: NaiveDate, today: NaiveDate) -> Option<Award> {
+    let days_late = (today - due).num_days();
+    (1..=OVERDUE_DAYS).contains(&days_late).then_some(Award {
+        points: OVERDUE_POINTS,
+        reason: Reason::Overdue,
+    })
 }
 
 /// A prayer prayed on time.
@@ -211,6 +240,18 @@ pub fn cleared_text(open: usize, losses: &[(String, i64)]) -> Option<String> {
         format!("{open} were still open, so each counts")
     };
     Some(format!("{what} as skipped: {} {STAR}", who.join(" · ")))
+}
+
+/// The morning todo reminder's line about `count` todos charged for being
+/// overdue today, or `None` if there are none.
+pub fn overdue_text(count: usize) -> Option<String> {
+    (count > 0).then(|| {
+        format!(
+            "{WARNING} {count} overdue: {} {STAR} today. Each costs 1 a day for its \
+             first {OVERDUE_DAYS} days late.",
+            signed(OVERDUE_POINTS * count as i64)
+        )
+    })
 }
 
 /// A total, with a proper minus sign if it's below zero ("−2", "18").
@@ -635,6 +676,38 @@ mod tests {
         assert_eq!(for_prayer(Status::Prayed), award(2, Reason::Prayed));
         assert_eq!(for_prayer(Status::Late), award(1, Reason::MadeUp));
         assert_eq!(for_prayer(Status::Missed), None);
+    }
+
+    #[test]
+    fn an_overdue_todo_costs_one_a_day_for_a_week() {
+        let charge = Some(Award {
+            points: -1,
+            reason: Reason::Overdue,
+        });
+        let due = date("2026-11-27");
+        let on = |d| for_overdue(due, date(d));
+        assert_eq!(on("2026-11-26"), None, "not due yet");
+        assert_eq!(on("2026-11-27"), None, "due today is still on time");
+        assert_eq!(on("2026-11-28"), charge, "the day after");
+        // Across a month end, up to the cap.
+        assert_eq!(on("2026-12-04"), charge, "the 7th day late");
+        assert_eq!(on("2026-12-05"), None, "the cap");
+        // And a year end.
+        assert_eq!(for_overdue(date("2026-12-31"), date("2027-01-01")), charge);
+    }
+
+    #[test]
+    fn overdue_text_counts_the_cost() {
+        assert_eq!(overdue_text(0), None);
+        assert_eq!(
+            overdue_text(1).unwrap(),
+            "⚠️ 1 overdue: −1 ⭐ today. Each costs 1 a day for its first 7 days late."
+        );
+        assert!(
+            overdue_text(3)
+                .unwrap()
+                .starts_with("⚠️ 3 overdue: −3 ⭐ today.")
+        );
     }
 
     #[test]

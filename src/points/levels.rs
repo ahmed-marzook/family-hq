@@ -37,7 +37,9 @@ impl Category {
     pub fn of(source: Source) -> Category {
         match source {
             Source::Prayer => Category::Prayers,
-            Source::Todo => Category::Todos,
+            // Only ever negative, so it lowers the week's todo points but
+            // never XP.
+            Source::Todo | Source::Overdue => Category::Todos,
         }
     }
 

@@ -114,6 +114,7 @@ Finishing a todo earns points for whoever ticks it off:
 • Done after its due date: 1 less (but always at least 1)
 • Skipped: −1. Removing a todo neither earns nor costs anything.
 • Still open when the list is cleared with `/todo clear`: −1, like a skip, for whoever it was for.
+• Overdue: −1 a day for whoever it's for, from the day after it was due, for up to 7 days. The 8am todo reminder says what it cost.
 The reply to `done 2` shows what it earned, like \"✅ Done: *fix the tap* · +4 ⭐\".
 
 *Prayers*

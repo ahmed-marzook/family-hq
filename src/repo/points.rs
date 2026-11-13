@@ -25,7 +25,7 @@ pub async fn award(
     sqlx::query!(
         "INSERT INTO points (user_id, chat_id, source, source_id, reason, points, day, at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT (source, source_id) WHERE source <> 'prayer' DO NOTHING",
+         ON CONFLICT (source, source_id) WHERE source NOT IN ('prayer', 'overdue') DO NOTHING",
         user_id,
         chat_id,
         source,
@@ -38,6 +38,39 @@ pub async fn award(
     .execute(conn)
     .await?;
     Ok(())
+}
+
+/// Charges `user_id` for todo `todo_id` being overdue on their local
+/// `day`, in the todo's chat. Once a day: a second call for the same todo
+/// and day changes nothing, so the check running every minute charges it
+/// once. Returns whether it was charged just now.
+#[allow(clippy::too_many_arguments)] // each is a column; a struct wouldn't be clearer
+pub async fn charge_overdue(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    chat_id: i64,
+    todo_id: i64,
+    award: Award,
+    day: NaiveDate,
+    now: DateTime<Utc>,
+) -> Result<bool, sqlx::Error> {
+    let (source, reason) = (Source::Overdue.as_db_str(), award.reason.as_db_str());
+    let result = sqlx::query!(
+        "INSERT INTO points (user_id, chat_id, source, source_id, reason, points, day, at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (source_id, day) WHERE source = 'overdue' DO NOTHING",
+        user_id,
+        chat_id,
+        source,
+        todo_id,
+        reason,
+        award.points,
+        day,
+        now
+    )
+    .execute(conn)
+    .await?;
+    Ok(result.rows_affected() == 1)
 }
 
 /// Sets what `user_id`'s `prayer` on `day` is worth, to match the prayer
