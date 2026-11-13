@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO levels_reached (user_id, category, level, reached_at)\n         VALUES (?, ?, ?, ?)\n         ON CONFLICT (user_id, category) DO UPDATE\n         SET level = excluded.level, reached_at = excluded.reached_at\n         WHERE excluded.level > levels_reached.level",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "ac7210402ad5180202ec979103d3800a758bc0bfb3acfda27f747789fc5d9ac0"
+}

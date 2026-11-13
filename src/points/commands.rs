@@ -10,6 +10,7 @@ use crate::bot::emoji::BELL_OFF;
 use crate::bot::{Context, my_settings};
 use crate::error::AppError;
 use crate::points;
+use crate::points::{level_ups, levels};
 use crate::repo::points as stored_points;
 use crate::repo::reports as stored_reports;
 use crate::reports::{Delivery, Feature, Period, Span};
@@ -54,10 +55,28 @@ pub async fn show(
         first: today,
         last: today,
     };
+    // The previous Monday to Sunday: the week that the day before this
+    // Monday is in.
+    let last_week = Period::of(Span::Week, week.first - chrono::Duration::days(1));
     if ctx.is_group {
-        let totals = stored_points::totals(conn, ctx.chat_id, week).await?;
-        let today_totals = stored_points::totals(conn, ctx.chat_id, just_today).await?;
-        return Ok(points::group_text(week, &totals, &today_totals));
+        let chat = ctx.chat_id;
+        let totals = stored_points::totals_by_user(conn, chat, week).await?;
+        // Only needed for the new-week text, when nobody has points yet.
+        let last_week = if totals.is_empty() {
+            stored_points::totals(conn, chat, last_week).await?
+        } else {
+            Vec::new()
+        };
+        let board = points::GroupBoard {
+            week,
+            today: stored_points::totals(conn, chat, just_today).await?,
+            levels: levels::overall_by_person(
+                stored_points::xp_of_earners(conn, chat, week).await?,
+            ),
+            totals,
+            last_week,
+        };
+        return Ok(points::group_text(&board));
     }
 
     let user = ctx.sender.id;
@@ -65,9 +84,6 @@ pub async fn show(
         first: today - chrono::Duration::days(6),
         last: today,
     };
-    // The previous Monday to Sunday: the week that the day before this
-    // Monday is in.
-    let last_week = Period::of(Span::Week, week.first - chrono::Duration::days(1));
     let sum = |days: &[(NaiveDate, i64)]| days.iter().map(|(_, p)| p).sum::<i64>();
 
     let earned = stored_points::by_day(conn, user, last_7).await?;
@@ -87,6 +103,10 @@ pub async fn show(
         this_week: sum(&stored_points::by_day(conn, user, week).await?),
         last_week: sum(&stored_points::by_day(conn, user, last_week).await?),
         by_chat: stored_points::by_chat(conn, user, week).await?,
+        stats: level_ups::stats(conn, user).await?,
+        this_week_by_category: levels::by_category(
+            stored_points::by_source(conn, user, week).await?,
+        ),
     };
     Ok(points::mine_text(&mine))
 }
@@ -94,7 +114,8 @@ pub async fn show(
 /// The `/points reports` reply, in a group: where the summary goes now.
 fn format_points_reports(delivery: Delivery) -> String {
     let what = "every Sunday at 8pm, the week's points: the leaderboard, how \
-                each person did against last week, and the best day";
+                each person did against last week, the champion of each \
+                category, and the best day";
     let now = match delivery {
         Delivery::Off => format!("{BELL_OFF} The Sunday points summary is off in this group."),
         Delivery::Here => format!("{CHART} The points summary comes to this group: {what}."),
@@ -111,6 +132,110 @@ mod tests {
     use super::*;
     use crate::bot::tests::{setup, typed};
     use crate::db::test_pool;
+
+    /// `/points` in the group at `now` (UTC), as Bilal.
+    async fn board_at(conn: &mut SqliteConnection, ctx: &Context, now: &str) -> String {
+        let at = Context {
+            chat_id: ctx.chat_id,
+            is_group: ctx.is_group,
+            sender: ctx.sender.clone(),
+            now: now.parse().unwrap(),
+        };
+        typed(conn, &at, "/points").await.into_text()
+    }
+
+    #[tokio::test]
+    async fn group_totals_start_from_zero_each_monday_on_the_readers_clock() {
+        use crate::points::{Award, Reason, Source};
+        use crate::testkit::date;
+
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let ctx = setup(&mut conn).await;
+        let award = Award {
+            points: 3,
+            reason: Reason::Done,
+        };
+        // Points on the Sundays the clocks change in London (the default
+        // timezone): 29 March (to BST) and 25 October (back to GMT).
+        for (id, day) in [(1, "2026-03-29"), (2, "2026-10-25")] {
+            let day = date(day);
+            stored_points::award(
+                &mut conn,
+                ctx.sender.id,
+                ctx.chat_id,
+                Source::Todo,
+                id,
+                award,
+                day,
+                ctx.now,
+            )
+            .await
+            .unwrap();
+        }
+
+        // Sunday 23:30 BST: still that week.
+        let text = board_at(&mut conn, &ctx, "2026-03-29T22:30:00Z").await;
+        assert!(text.contains("🥇 Bilal · Lv 2 · 3"), "{text}");
+        // Monday 00:30 BST, though still Sunday in UTC: a new week, with
+        // last week's winner.
+        let text = board_at(&mut conn, &ctx, "2026-03-29T23:30:00Z").await;
+        assert!(text.starts_with("🏁 A new week"), "{text}");
+        assert!(text.contains("Bilal (3)"), "{text}");
+
+        // Back to GMT: Sunday 23:30 is 23:30 UTC, and Monday starts at
+        // midnight UTC.
+        let text = board_at(&mut conn, &ctx, "2026-10-25T23:30:00Z").await;
+        assert!(text.contains("🥇 Bilal"), "{text}");
+        let text = board_at(&mut conn, &ctx, "2026-10-26T00:30:00Z").await;
+        assert!(text.starts_with("🏁 A new week"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn each_member_on_the_board_shows_their_own_level() {
+        use crate::points::{Award, Reason, Source};
+        use crate::repo::chats;
+        use crate::testkit::register;
+
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let ctx = setup(&mut conn).await;
+        // Registered as "Bilal" too: names are unique, so they're shown as
+        // "Bilal-0009", but their level must still come from their own XP.
+        let other = register(&mut conn, "Bilal", "447700900009", ctx.now).await;
+        chats::add_member(&mut conn, ctx.chat_id, other.id, ctx.now)
+            .await
+            .unwrap();
+        let award = Award {
+            points: 3,
+            reason: Reason::Done,
+        };
+        let today = crate::settings::tests::defaults().today(ctx.now);
+        // The sender earns 3 XP (Todos Lv 1, Overall 2); the other Bilal 60
+        // (Todos Lv 3, Overall 4).
+        let mut todo_id = 0;
+        for (user, times) in [(ctx.sender.id, 1), (other.id, 20)] {
+            for _ in 0..times {
+                todo_id += 1;
+                stored_points::award(
+                    &mut conn,
+                    user,
+                    ctx.chat_id,
+                    Source::Todo,
+                    todo_id,
+                    award,
+                    today,
+                    ctx.now,
+                )
+                .await
+                .unwrap();
+            }
+        }
+
+        let text = typed(&mut conn, &ctx, "/points").await.into_text();
+        assert!(text.contains("🥇 Bilal-0009 · Lv 4 · 60"), "{text}");
+        assert!(text.contains("🥈 Bilal · Lv 2 · 3"), "{text}");
+    }
 
     #[tokio::test]
     async fn points_reports_are_set_per_group() {

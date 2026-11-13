@@ -127,6 +127,10 @@ pub async fn clear(
     sqlx::query!("DELETE FROM points WHERE user_id = ?", user_id)
         .execute(&mut *conn)
         .await?;
+    // With their points gone, their levels start again from Lv 1.
+    sqlx::query!("DELETE FROM levels_reached WHERE user_id = ?", user_id)
+        .execute(&mut *conn)
+        .await?;
     sqlx::query!("DELETE FROM command_log WHERE user_id = ?", user_id)
         .execute(&mut *conn)
         .await?;

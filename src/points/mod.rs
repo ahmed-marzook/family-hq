@@ -18,9 +18,14 @@
 //!
 //! Removing a todo is neither: it earns nothing and costs nothing.
 //!
+//! An open todo past its due date costs the person it's for 1 a day, for
+//! up to `OVERDUE_DAYS` days (`for_overdue`), charged by `points::overdue`.
+//!
 //! A prayer (`for_prayer`) earns 2 prayed on time and 1 made up; a missed
 //! one earns nothing. Unlike a todo's, its points follow the prayer log:
 //! untick it and they go, correct it and they change.
+
+use std::collections::BTreeMap;
 
 use chrono::NaiveDate;
 
@@ -31,6 +36,10 @@ use crate::todo::flags::Priority;
 
 pub mod award;
 pub mod commands;
+pub mod game;
+pub mod level_ups;
+pub mod levels;
+pub mod overdue;
 pub mod reports;
 
 pub const STAR: &str = "⭐";
@@ -38,6 +47,7 @@ pub const TROPHY: &str = "🏆";
 const GOLD: &str = "🥇";
 const SILVER: &str = "🥈";
 const BRONZE: &str = "🥉";
+const WARNING: &str = "⚠️";
 /// A proper minus sign, which reads better than a hyphen in "−1".
 const MINUS: &str = "−";
 
@@ -47,6 +57,9 @@ const MINUS: &str = "−";
 pub enum Source {
     Todo,
     Prayer,
+    /// A day's charge for an open todo past its due date. Separate from
+    /// `Todo` because a todo awards once, but is charged once a day.
+    Overdue,
 }
 
 impl Source {
@@ -55,7 +68,16 @@ impl Source {
         match self {
             Source::Todo => "todo",
             Source::Prayer => "prayer",
+            Source::Overdue => "overdue",
         }
+    }
+
+    /// The other way: `None` for a source this build doesn't award yet
+    /// ('habit', 'goal'), so a read can skip it.
+    pub fn from_db_str(s: &str) -> Option<Source> {
+        [Source::Todo, Source::Prayer, Source::Overdue]
+            .into_iter()
+            .find(|source| source.as_db_str() == s)
     }
 }
 
@@ -81,6 +103,8 @@ pub enum Reason {
     Prayed,
     /// A prayer, made up after its time ended.
     MadeUp,
+    /// A todo still open the day after its due date (and each day after).
+    Overdue,
 }
 
 impl Reason {
@@ -93,6 +117,7 @@ impl Reason {
             Reason::Skipped => "skipped",
             Reason::Prayed => "prayed",
             Reason::MadeUp => "made_up",
+            Reason::Overdue => "overdue",
         }
     }
 }
@@ -141,6 +166,23 @@ pub fn for_todo(
     }
 }
 
+/// What an overdue todo costs each day.
+pub const OVERDUE_POINTS: i64 = -1;
+/// How many days an overdue todo is charged for: the first week after its
+/// due date. A cap, so one forgotten todo can't wipe out weeks of points.
+pub const OVERDUE_DAYS: i64 = 7;
+
+/// The charge for an open todo due on `due`, on its owner's `today`:
+/// −1 on each of the `OVERDUE_DAYS` days after it was due, and `None`
+/// before then (not overdue yet) or after (the cap).
+pub fn for_overdue(due: NaiveDate, today: NaiveDate) -> Option<Award> {
+    let days_late = (today - due).num_days();
+    (1..=OVERDUE_DAYS).contains(&days_late).then_some(Award {
+        points: OVERDUE_POINTS,
+        reason: Reason::Overdue,
+    })
+}
+
 /// A prayer prayed on time.
 pub const PRAYED_POINTS: i64 = 2;
 /// A prayer made up after its time ended: less, but still worth doing.
@@ -180,6 +222,38 @@ pub fn earned_text(points: Option<i64>) -> String {
     }
 }
 
+/// The line `/todo clear` adds when it cleared `open` todos that were
+/// still open: each one cost the person it was for, like a skip. `losses`
+/// is `(name, points)` per person, in the order to show them. `None` if
+/// nothing open was cleared.
+pub fn cleared_text(open: usize, losses: &[(String, i64)]) -> Option<String> {
+    if open == 0 || losses.is_empty() {
+        return None;
+    }
+    let who: Vec<String> = losses
+        .iter()
+        .map(|(name, p)| format!("{name} {}", signed(*p)))
+        .collect();
+    let what = if open == 1 {
+        "1 was still open, so it counts".to_string()
+    } else {
+        format!("{open} were still open, so each counts")
+    };
+    Some(format!("{what} as skipped: {} {STAR}", who.join(" · ")))
+}
+
+/// The morning todo reminder's line about `count` todos charged for being
+/// overdue today, or `None` if there are none.
+pub fn overdue_text(count: usize) -> Option<String> {
+    (count > 0).then(|| {
+        format!(
+            "{WARNING} {count} overdue: {} {STAR} today. Each costs 1 a day for its \
+             first {OVERDUE_DAYS} days late.",
+            signed(OVERDUE_POINTS * count as i64)
+        )
+    })
+}
+
 /// A total, with a proper minus sign if it's below zero ("−2", "18").
 fn total(points: i64) -> String {
     if points < 0 {
@@ -197,16 +271,19 @@ pub struct Ranked<'a> {
     pub place: usize,
     pub name: &'a str,
     pub points: i64,
+    /// Where this person is in the list given to `rank`, to find the rest
+    /// of what's known about them (by user id, not by name).
+    pub index: usize,
 }
 
 /// Puts `(name, points)` in leaderboard order: most points first, then by
 /// name so the order is the same every time.
 pub fn rank<'a>(totals: &'a [(String, i64)]) -> Vec<Ranked<'a>> {
-    let mut sorted: Vec<&(String, i64)> = totals.iter().collect();
-    sorted.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let mut sorted: Vec<(usize, &(String, i64))> = totals.iter().enumerate().collect();
+    sorted.sort_by(|(_, a), (_, b)| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
     let mut ranked: Vec<Ranked<'a>> = Vec::with_capacity(sorted.len());
-    for (i, (name, points)) in sorted.into_iter().enumerate() {
+    for (i, (index, (name, points))) in sorted.into_iter().enumerate() {
         // Same points as the one above: same place. Otherwise the place is
         // the position in the list, counting from 1.
         let place = match ranked.last() {
@@ -217,6 +294,7 @@ pub fn rank<'a>(totals: &'a [(String, i64)]) -> Vec<Ranked<'a>> {
             place,
             name,
             points: *points,
+            index,
         });
     }
     ranked
@@ -247,24 +325,60 @@ pub const RULES: &str = "🔴 high 3 · medium 2 · 🟢 low 1, +1 if it's done 
                          date (−1 if after), and a skip costs 1. A prayer: 2 on time, \
                          1 made up";
 
-/// `/points` in a group: this week's leaderboard for the group, and who has
-/// earned what today. Each list is `(name, points)`, anyone with no points
-/// left out. Someone whose day evens out at 0 (a done and a skip) isn't
-/// named in "Today:".
-pub fn group_text(week: Period, totals: &[(String, i64)], today: &[(String, i64)]) -> String {
-    if totals.is_empty() {
-        return format!(
-            "{TROPHY} No points yet this week. Tick off a todo or a prayer to earn some: {RULES}."
-        );
+/// What `/points` in a group shows. Each list is `(name, points)`, anyone
+/// with no points left out.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GroupBoard {
+    /// This week, Monday to Sunday on the reader's clock.
+    pub week: Period,
+    /// Each person's points in the group this week, as
+    /// `(user_id, name, points)`.
+    pub totals: Vec<(i64, String, i64)>,
+    /// Each person's points in the group today.
+    pub today: Vec<(String, i64)>,
+    /// Each person's Overall level by user id: lifetime and from every
+    /// chat, unlike the week's points.
+    pub levels: BTreeMap<i64, i64>,
+    /// Each person's points in the group last week, for the new-week text.
+    pub last_week: Vec<(String, i64)>,
+}
+
+/// `/points` in a group: this week's leaderboard with each person's level,
+/// and who has earned what today. Someone whose day evens out at 0 (a done
+/// and a skip) isn't named in "Today:". With nothing yet this week, last
+/// week's winner, so the Monday reset is visible.
+pub fn group_text(board: &GroupBoard) -> String {
+    if board.totals.is_empty() {
+        return game::new_week_text(&board.last_week).unwrap_or_else(|| {
+            format!(
+                "{TROPHY} No points yet this week. Tick off a todo or a prayer to earn some: \
+                 {RULES}."
+            )
+        });
     }
     let mut lines = vec![format!(
         "{TROPHY} *Points this week* ({})",
-        show_period(week)
+        show_period(board.week)
     )];
-    for r in rank(totals) {
-        lines.push(format!("{} {} {}", medal(r.place), r.name, total(r.points)));
+    let week: Vec<(String, i64)> = board
+        .totals
+        .iter()
+        .map(|(_, name, points)| (name.clone(), *points))
+        .collect();
+    for r in rank(&week) {
+        let user_id = board.totals[r.index].0;
+        let level = board
+            .levels
+            .get(&user_id)
+            .map_or(String::new(), |level| format!(" · Lv {level}"));
+        lines.push(format!(
+            "{} {}{level} · {}",
+            medal(r.place),
+            r.name,
+            total(r.points)
+        ));
     }
-    let today: Vec<String> = rank(today)
+    let today: Vec<String> = rank(&board.today)
         .iter()
         .filter(|r| r.points != 0)
         .map(|r| format!("{} {}", r.name, signed(r.points)))
@@ -287,15 +401,32 @@ pub struct Mine {
     /// This week's points in each chat: the group's name, or `None` for
     /// their DM with the bot.
     pub by_chat: Vec<(Option<String>, i64)>,
+    /// Lifetime XP and levels, for the stats card at the top.
+    pub stats: levels::Stats,
+    /// This week's points in each category (net, like `this_week`).
+    pub this_week_by_category: BTreeMap<levels::Category, i64>,
 }
 
-/// `/points` in a DM.
+/// `/points` in a DM: the stats card, then this week's points.
 pub fn mine_text(mine: &Mine) -> String {
     let today = mine.last_7_days.last().map_or(0, |(_, p)| *p);
+    // " (🕌 18 · 📝 13)", only when more than one category earned something.
+    let earned: Vec<String> = mine
+        .this_week_by_category
+        .iter()
+        .filter(|(_, p)| **p != 0)
+        .map(|(c, p)| format!("{} {}", c.emoji(), total(*p)))
+        .collect();
+    let split = if earned.len() > 1 {
+        format!(" ({})", earned.join(" · "))
+    } else {
+        String::new()
+    };
     let mut lines = vec![
-        format!("{STAR} *Your points*"),
+        mine.stats.to_string(),
+        String::new(),
         format!(
-            "Today: {} · This week: {} · Last week: {}",
+            "Today: {} · This week: {}{split} · Last week: {}",
             total(today),
             total(mine.this_week),
             total(mine.last_week)
@@ -391,9 +522,16 @@ fn best_day(days: &[DayPoints]) -> Option<&DayPoints> {
 }
 
 /// A group's weekly summary: the week's leaderboard, each person's change
-/// from last week (`last_week` is `(name, points)`), and the best day.
-/// `None` if nobody earned anything, so there's nothing to say.
-pub fn week_text(week: Period, days: &[DayPoints], last_week: &[(String, i64)]) -> Option<String> {
+/// from last week (`last_week` is `(name, points)`), the champion of each
+/// category (`by_category`, from `game::per_category`) and overall, the
+/// best day, and a reminder that scores start again tomorrow. `None` if
+/// nobody earned anything, so there's nothing to say.
+pub fn week_text(
+    week: Period,
+    days: &[DayPoints],
+    last_week: &[(String, i64)],
+    by_category: &[(String, levels::Category, i64)],
+) -> Option<String> {
     let totals: Vec<(String, i64)> = totals_by_person(days)
         .into_iter()
         .map(|(_, name, points)| (name, points))
@@ -418,15 +556,22 @@ pub fn week_text(week: Period, days: &[DayPoints], last_week: &[(String, i64)]) 
             total(r.points)
         ));
     }
-    if let Some(best) = best_day(days) {
-        lines.push(String::new());
-        lines.push(format!(
+    let champions = game::champions_text(&game::champions(&totals, by_category));
+    let best = best_day(days).map(|best| {
+        format!(
             "{SPARKLE} Best day: {}, {} on {}",
             best.name,
             best.points,
             best.day.format("%a %-d %b")
-        ));
+        )
+    });
+    if champions.is_some() || best.is_some() {
+        lines.push(String::new());
+        lines.extend(champions);
+        lines.extend(best);
     }
+    lines.push(String::new());
+    lines.push(game::RESET.to_string());
     Some(lines.join("\n"))
 }
 
@@ -544,6 +689,38 @@ mod tests {
     }
 
     #[test]
+    fn an_overdue_todo_costs_one_a_day_for_a_week() {
+        let charge = Some(Award {
+            points: -1,
+            reason: Reason::Overdue,
+        });
+        let due = date("2026-11-27");
+        let on = |d| for_overdue(due, date(d));
+        assert_eq!(on("2026-11-26"), None, "not due yet");
+        assert_eq!(on("2026-11-27"), None, "due today is still on time");
+        assert_eq!(on("2026-11-28"), charge, "the day after");
+        // Across a month end, up to the cap.
+        assert_eq!(on("2026-12-04"), charge, "the 7th day late");
+        assert_eq!(on("2026-12-05"), None, "the cap");
+        // And a year end.
+        assert_eq!(for_overdue(date("2026-12-31"), date("2027-01-01")), charge);
+    }
+
+    #[test]
+    fn overdue_text_counts_the_cost() {
+        assert_eq!(overdue_text(0), None);
+        assert_eq!(
+            overdue_text(1).unwrap(),
+            "⚠️ 1 overdue: −1 ⭐ today. Each costs 1 a day for its first 7 days late."
+        );
+        assert!(
+            overdue_text(3)
+                .unwrap()
+                .starts_with("⚠️ 3 overdue: −3 ⭐ today.")
+        );
+    }
+
+    #[test]
     fn signed_shows_the_sign() {
         assert_eq!(signed(4), "+4");
         assert_eq!(signed(-1), "−1");
@@ -597,14 +774,27 @@ mod tests {
 
     #[test]
     fn group_text_is_a_leaderboard_with_today_underneath() {
-        let week_totals = totals(&[("Ahmed", 18), ("Khadija", 24), ("Bilal", -1)]);
+        let week_totals = vec![
+            (1, "Ahmed".to_string(), 18),
+            (2, "Khadija".to_string(), 24),
+            (3, "Bilal".to_string(), -1),
+        ];
         let today = totals(&[("Ahmed", 2), ("Khadija", 5)]);
+        // Bilal's level is missing (it can't be, but): just left out.
+        let levels = BTreeMap::from([(1, 7), (2, 9)]);
+        let board = GroupBoard {
+            week: week(),
+            totals: week_totals,
+            today,
+            levels,
+            last_week: Vec::new(),
+        };
         assert_eq!(
-            group_text(week(), &week_totals, &today),
+            group_text(&board),
             "🏆 *Points this week* (Mon 2 Nov – Sun 8 Nov)\n\
-             🥇 Khadija 24\n\
-             🥈 Ahmed 18\n\
-             🥉 Bilal −1\n\
+             🥇 Khadija · Lv 9 · 24\n\
+             🥈 Ahmed · Lv 7 · 18\n\
+             🥉 Bilal · −1\n\
              \n\
              Today: Khadija +5 · Ahmed +2"
         );
@@ -612,9 +802,22 @@ mod tests {
 
     #[test]
     fn group_text_with_nothing_yet_says_how_to_earn() {
-        let text = group_text(week(), &[], &[]);
+        let mut board = GroupBoard {
+            week: week(),
+            totals: Vec::new(),
+            today: Vec::new(),
+            levels: BTreeMap::new(),
+            last_week: Vec::new(),
+        };
+        let text = group_text(&board);
         assert!(text.contains("No points yet"));
         assert!(text.contains("high 3"));
+
+        // With a winner last week, the reset is shown instead.
+        board.last_week = totals(&[("Sara", 34)]);
+        let text = group_text(&board);
+        assert!(text.contains("A new week"), "{text}");
+        assert!(text.contains("Sara (34)"), "{text}");
     }
 
     fn mine(days: &[i64], by_chat: Vec<(Option<String>, i64)>) -> Mine {
@@ -628,6 +831,8 @@ mod tests {
             this_week: days[2..].iter().sum(),
             last_week: 22,
             by_chat,
+            stats: levels::Stats::from_sources([(Source::Prayer, 650), (Source::Todo, 120)]),
+            this_week_by_category: levels::by_category([(Source::Prayer, 12), (Source::Todo, 8)]),
         }
     }
 
@@ -637,7 +842,16 @@ mod tests {
             &[6, 0, 2, 0, 3, 10, 5],
             vec![(Some("Family".to_string()), 14), (None, 6)],
         ));
-        assert!(text.starts_with("⭐ *Your points*\nToday: 5 · This week: 20 · Last week: 22"));
+        assert!(
+            text.starts_with(
+                "📊 *Your stats* · Overall Lv 10\n\
+                 🕌 Prayers Lv 6 ■■■■■■□□□□ 650 / 735\n\
+                 📝 Todos Lv 4 ■■■■■□□□□□ 120 / 150\n\
+                 \n\
+                 Today: 5 · This week: 20 (🕌 12 · 📝 8) · Last week: 22"
+            ),
+            "{text}"
+        );
         // The best day is a full bar, a day with none is empty.
         assert!(text.contains("Thu 5 ■■■■■■■■■■ 10"), "{text}");
         assert!(text.contains("Sun 1 □□□□□□□□□□ 0"), "{text}");
@@ -689,14 +903,25 @@ mod tests {
     fn week_text_ranks_compares_and_names_the_best_day() {
         // Khadija up 6, Ahmed down 4, Bilal had nothing last week.
         let last_week = totals(&[("Khadija", 18), ("Ahmed", 22)]);
+        // Khadija prayed most, Ahmed did the most todos.
+        let by_category = game::per_category([
+            ("Khadija".to_string(), Source::Prayer, 20),
+            ("Khadija".to_string(), Source::Todo, 4),
+            ("Ahmed".to_string(), Source::Prayer, 8),
+            ("Ahmed".to_string(), Source::Todo, 10),
+            ("Bilal".to_string(), Source::Todo, 9),
+        ]);
         assert_eq!(
-            week_text(week(), &family_week(), &last_week).unwrap(),
+            week_text(week(), &family_week(), &last_week, &by_category).unwrap(),
             "🏆 *This week's points* (Mon 2 Nov – Sun 8 Nov)\n\
              🥇 Khadija 24 ⬆️ 6\n\
              🥈 Ahmed 18 ⬇️ 4\n\
              🥉 Bilal 9\n\
              \n\
-             🌟 Best day: Ahmed, 18 on Wed 4 Nov"
+             🕌 Most prayers: Khadija · 📝 Most todos: Ahmed · 🏆 Overall: Khadija\n\
+             🌟 Best day: Ahmed, 18 on Wed 4 Nov\n\
+             \n\
+             Scores start again tomorrow. 🏁"
         );
     }
 
@@ -707,18 +932,26 @@ mod tests {
             day(2, "Ahmed", "2026-11-03", 10),
             day(3, "Bilal", "2026-11-03", 10),
         ];
-        let text = week_text(week(), &days, &[]).unwrap();
-        assert!(text.ends_with("Best day: Ahmed, 10 on Tue 3 Nov"), "{text}");
+        let text = week_text(week(), &days, &[], &[]).unwrap();
+        assert!(
+            text.contains("🌟 Best day: Ahmed, 10 on Tue 3 Nov\n"),
+            "{text}"
+        );
     }
 
     #[test]
     fn a_week_with_nothing_earned_says_nothing() {
-        assert_eq!(week_text(week(), &[], &[]), None);
-        // Only skips: still a leaderboard, but no best day.
+        assert_eq!(week_text(week(), &[], &[], &[]), None);
+        // Only skips: still a leaderboard, but no champion or best day.
         let skips = vec![day(3, "Bilal", "2026-11-06", -1)];
-        let text = week_text(week(), &skips, &[]).unwrap();
+        let text = week_text(week(), &skips, &[], &[]).unwrap();
         assert!(text.contains("🥇 Bilal −1"), "{text}");
         assert!(!text.contains("Best day"), "{text}");
+        assert!(!text.contains("Overall:"), "{text}");
+        assert!(
+            text.ends_with("\n\nScores start again tomorrow. 🏁"),
+            "{text}"
+        );
     }
 
     #[test]

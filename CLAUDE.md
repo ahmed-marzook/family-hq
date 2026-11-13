@@ -16,8 +16,10 @@ Exception, at the owner's request: basic prayer times, reminders and
 tracking were brought forward and already exist (see the note at the top
 of `docs/roadmap/reminders-prayer.md`). Habits and group goals (Stage 2.5,
 H1–H6) were brought forward too, but are planned only and not started.
-Points for todos and prayers (P1–P3, `docs/roadmap/points.md`) were
-brought forward as well; P1–P3 are built.
+Points for todos and prayers (P1–P4, `docs/roadmap/points.md`) were
+brought forward as well; P1–P3 are built, and P4 is in progress (stats,
+levels, the weekly game and the todo penalties are built; history and
+reviews aren't).
 The admin dashboard (React, in `web/`) is also
 at the owner's request, and has its own file in the roadmap. It isn't the
 family-facing dashboard in Phase 3, which is still later.

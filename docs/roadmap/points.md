@@ -1,8 +1,8 @@
 # Points (gamifying todos)
 
 > **Goal:** finishing todos and praying earns points, so each person can see how their day and week went, with a leaderboard in each group. Habits will earn points the same way later.
-> **Status:** Brought forward at the owner's request (2026-11-06). P1 (ledger, points for todos, `/points`), P2 (Sunday weekly summary) and P3 (points for prayers) built; waiting on a week of family use. P4 (stats and levels per category, weekly champions, history over weeks, months and years) planned.
-> **Last updated:** 2026-11-10
+> **Status:** Brought forward at the owner's request (2026-11-06). P1 (ledger, points for todos, `/points`), P2 (Sunday weekly summary) and P3 (points for prayers) built; waiting on a week of family use. P4 in progress: parts 1 (stats and levels) and 2 (the weekly game) built; history and reviews planned.
+> **Last updated:** 2026-11-13
 
 ## Rules
 
@@ -18,6 +18,8 @@ Whoever closes a todo (`closed_by`) earns its points, worked out by
 | Done after its due date        | −1, but never less than 1 point    |
 | Skipped                        | −1                                 |
 | Removed                        | 0 (no ledger row)                  |
+| Still open at `/todo clear`    | −1, for its assignee (or creator)  |
+| Open past its due date         | −1 a day for 7 days, to its owner  |
 
 "On time" is judged on the **closer's own local day**, the same clock
 `-d fri` is resolved on.
@@ -36,6 +38,22 @@ Decisions:
   only points earned in that group.
 - **A DM's `/points` shows the person's own points from every chat.**
 - `source` already allows `'habit'` and `'goal'`, for Stage 2.5.
+- **`/todo clear` charges each open todo as a skip** (the owner's request,
+  2026-11-13), so clearing the list can't dodge the −1. Unlike a skip it
+  costs the person the todo was for (assignee, else creator), not whoever
+  cleared it, on their own day, in the chat it was cleared in. Stored as
+  reason `skipped`, so no migration. `/todo clear done` stays free.
+- **An overdue todo costs its owner 1 a day** (the owner's request,
+  2026-11-13): −1 on each of the 7 days after its due date while it's
+  open (`points::for_overdue`), to its assignee (else creator), on their
+  own clock, in its chat. `points::overdue::check` runs every minute from
+  the reminder loop; only today is charged, so a day the bot is down
+  isn't charged afterwards. Its own source, `overdue` (migration 0013),
+  with one row per todo per day, so a todo's done award still works and
+  doing it late still earns. Negative, so never XP. Nobody is messaged:
+  the 8am todo reminder adds `⚠️ 2 overdue: −2 ⭐ today`, counting only
+  the todos it lists (in a group, unassigned todos are charged to their
+  creator but aren't in their reminder).
 
 Known gaps, accepted for now:
 
@@ -160,7 +178,41 @@ Done when:
 - [x] Existing todo points survive the migration
 - [ ] Used by the family for a week, and the numbers feel fair
 
-## Stage P4: stats, levels, a weekly game and a history (planned)
+## Stage P4: stats, levels, a weekly game and a history (in progress)
+
+**Part 1 (stats and levels) is built** (2026-11-13). How it's laid out,
+so parts 2–4 and habits reuse it:
+
+- `src/points/levels.rs`, pure: `Category` (`of`, `pace`, `emoji`,
+  `ALL`), `Track` (each category plus Overall, with its `start` level),
+  `level`, `xp_to_reach`, `overall`, `by_category`, `Stats` (its
+  `Display` is the stats card), `overall_by_person`, `level_ups` and
+  `level_up_text`.
+- `src/points/level_ups.rs`, the glue: `stats(user)`, `announce(user)`,
+  and `lines` / `for_sender` for a reply. **Announcing is separate from
+  awarding**: any reply to someone who may have earned something calls
+  `for_sender` once at the end (todo replies, `+prayed`, a prayer
+  reaction). A level reached where there's no reply (a push button, the
+  dashboard) is announced in that person's next one.
+- `repo::points::xp_by_source`, `xp_of_earners`, `by_source`, and
+  `repo::levels` (`reached`, `record`, never lowering a level).
+- Migration `0012_levels_reached.sql` fills in everyone's current levels,
+  so nobody gets weeks of old level-ups at once. With no row, a track
+  counts from its `start` (Lv 1; Overall one per category).
+- Habits: add a `Category` variant and a `Track` db string; the compiler
+  points at the rest, and the CHECK already allows `'habits'`.
+
+**Part 2 (the weekly game) is built** (2026-11-13):
+
+- `src/points/game.rs`, pure: `per_category`, `champions` (one per
+  category anyone earned in, then Overall; ties shared, only scores above
+  0 win), `champions_text`, `new_week_text` and `RESET`.
+- `repo::points::by_person_source` feeds the champions. The summary's
+  inputs are a `reports::Summary`, and `/points` in a group takes a
+  `GroupBoard`, so later additions don't grow the argument lists.
+- With nothing earned yet this week, `/points` in a group shows last
+  week's winner on any day, not only Monday (in practice it's empty only
+  early in the week).
 
 At the owner's request (2026-11-10): points should work like game stats.
 Each feature (prayers, todos, later habits) has its own category with its
@@ -323,12 +375,12 @@ yet" in averages.
 
 Done when:
 
-- [ ] `level` and `overall` have tests at each level boundary, for 0 XP,
+- [x] `level` and `overall` have tests at each level boundary, for 0 XP,
       and for XP that drops below a level
-- [ ] Each level-up is announced once, even after an untick and a re-tick
-- [ ] A skip lowers the week's points but not XP
-- [ ] The Sunday summary names a champion per category
-- [ ] Group totals start from 0 each Monday on each reader's clock (tested
+- [x] Each level-up is announced once, even after an untick and a re-tick
+- [x] A skip lowers the week's points but not XP
+- [x] The Sunday summary names a champion per category
+- [x] Group totals start from 0 each Monday on each reader's clock (tested
       across a BST change)
 - [ ] `/points weeks`, `months` and `year` work in a DM and say so in a
       group; grouping, averages and bests are tested at month and year

@@ -103,7 +103,7 @@ For a todo that won't be done: reply `skip 2` to a `/todo` list, or send `+skip 
 *Delete*
 Reply `remove 2` to a `/todo` list.
 `/todo clear done`: removes the ✅ done and ⏭️ skipped todos.
-`/todo clear`: empties the whole list.
+`/todo clear`: empties the whole list. Each todo still open counts as skipped (−1 ⭐ for whoever it was for).
 
 The numbers always mean the list you replied to, even if it's old.";
 
@@ -113,6 +113,8 @@ Finishing a todo earns points for whoever ticks it off:
 • Done on or before its due date: +1
 • Done after its due date: 1 less (but always at least 1)
 • Skipped: −1. Removing a todo neither earns nor costs anything.
+• Still open when the list is cleared with `/todo clear`: −1, like a skip, for whoever it was for.
+• Overdue: −1 a day for whoever it's for, from the day after it was due, for up to 7 days. The 8am todo reminder says what it cost.
 The reply to `done 2` shows what it earned, like \"✅ Done: *fix the tap* · +4 ⭐\".
 
 *Prayers*
@@ -120,12 +122,15 @@ Each prayer you tick off earns points too, in the chat you ticked it in (a push 
 • Prayed on time: 2 · made up: 1 · missed: 0
 Untick it and its points go; `+prayed asr on time` or `late` changes them.
 
+*Levels*
+Everything you earn is also XP, which never resets: 🕌 Prayers and 📝 Todos each have their own level, and your Overall level is the two added up. A skip doesn't cost XP. Each new level is announced once, in the reply that earned it.
+
 *See them*
-`/points` in a group: this week's leaderboard (Monday to Sunday) 🥇🥈🥉, and who has earned what today. Only points earned in that group count.
-`/points` with me directly: your own points from every chat: today, this week, last week, and each of the last 7 days.
+`/points` in a group: this week's leaderboard (Monday to Sunday) 🥇🥈🥉 with each person's Overall level, and who has earned what today. Only points earned in that group count; everyone starts from 0 each Monday.
+`/points` with me directly: your levels, then your own points from every chat: today, this week, last week, and each of the last 7 days.
 
 *Sunday summary*
-In a group, every Sunday at 8pm: the week's leaderboard, how each person did against last week, and the best day. Only in weeks when someone earned points.
+In a group, every Sunday at 8pm: the week's leaderboard, how each person did against last week, a champion for 🕌 prayers, 📝 todos and overall, and the best day. Only in weeks when someone earned points.
 `/points reports here` (the default), `/points reports dm` (each person gets just their own week, privately) or `/points reports off`.
 
 Clearing done todos doesn't take anyone's points away.";

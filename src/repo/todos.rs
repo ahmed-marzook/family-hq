@@ -294,6 +294,67 @@ pub async fn clear_done(conn: &mut SqliteConnection, chat_id: i64) -> Result<u64
     Ok(result.rows_affected())
 }
 
+/// A todo still open when the list is cleared, and whose it was.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClearedTodo {
+    pub id: i64,
+    /// Who it was for: its assignee, or whoever added it if it had none.
+    pub owner_id: i64,
+    pub owner_name: String,
+}
+
+/// The chat's open todos and whose each one is, oldest first: what
+/// `/todo clear` charges for before it deletes them.
+pub async fn open_with_owner(
+    conn: &mut SqliteConnection,
+    chat_id: i64,
+) -> Result<Vec<ClearedTodo>, sqlx::Error> {
+    sqlx::query_as!(
+        ClearedTodo,
+        r#"SELECT t.id AS "id!", u.id AS "owner_id!", u.display_name AS owner_name
+           FROM todos t
+           JOIN users u ON u.id = COALESCE(t.assignee_id, t.created_by)
+           WHERE t.chat_id = ? AND t.status = 'pending'
+           ORDER BY t.id"#,
+        chat_id
+    )
+    .fetch_all(conn)
+    .await
+}
+
+/// An open todo that may be overdue on its owner's clock.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DueTodo {
+    pub id: i64,
+    pub chat_id: i64,
+    /// Who it's for: its assignee, or whoever added it if it has none.
+    pub owner_id: i64,
+    pub due: NaiveDate,
+}
+
+/// Every open todo, in every chat, due between `first` and `last`: the
+/// ones that could be charged as overdue today somewhere in the world
+/// (`points::overdue`). Oldest first.
+pub async fn due_between(
+    conn: &mut SqliteConnection,
+    first: NaiveDate,
+    last: NaiveDate,
+) -> Result<Vec<DueTodo>, sqlx::Error> {
+    sqlx::query_as!(
+        DueTodo,
+        r#"SELECT id AS "id!", chat_id,
+                  COALESCE(assignee_id, created_by) AS "owner_id!: i64",
+                  due_date AS "due!: NaiveDate"
+           FROM todos
+           WHERE status = 'pending' AND due_date BETWEEN ? AND ?
+           ORDER BY id"#,
+        first,
+        last
+    )
+    .fetch_all(conn)
+    .await
+}
+
 /// Deletes every todo in the chat (`/todo clear`). Returns how many.
 pub async fn clear_all(conn: &mut SqliteConnection, chat_id: i64) -> Result<u64, sqlx::Error> {
     let result = sqlx::query!("DELETE FROM todos WHERE chat_id = ?", chat_id)

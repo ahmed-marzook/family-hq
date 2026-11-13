@@ -277,7 +277,7 @@ async fn run_plain(
         BotCommand::SkipTodo(Got::Names(names)) => {
             todo::close_by_name(conn, ctx, defaults, &names, Finish::Skipped).await?
         }
-        BotCommand::ClearTodos { done_only } => todo::clear(conn, ctx, done_only).await?,
+        BotCommand::ClearTodos { done_only } => todo::clear(conn, ctx, defaults, done_only).await?,
         BotCommand::TodoReminders(toggle) => todo::reminders(conn, ctx, toggle).await?,
         BotCommand::AddShop(names) => shop::add(conn, ctx, &names).await?,
         BotCommand::ListShop => return shop::list(conn, ctx).await,

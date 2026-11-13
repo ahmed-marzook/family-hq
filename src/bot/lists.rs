@@ -180,6 +180,7 @@ pub async fn act_on_list(
     if closed_any {
         let p = todos::progress(conn, ctx.chat_id).await?;
         lines.push(progress_bar(p.done, p.skipped, p.total));
+        lines.extend(points::level_ups::for_sender(conn, ctx).await?);
     }
     Ok(Outcome::Reply(lines.join("\n")))
 }
