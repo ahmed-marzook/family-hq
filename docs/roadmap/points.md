@@ -1,7 +1,7 @@
 # Points (gamifying todos)
 
 > **Goal:** finishing todos and praying earns points, so each person can see how their day and week went, with a leaderboard in each group. Habits will earn points the same way later.
-> **Status:** Brought forward at the owner's request (2026-11-06). P1 (ledger, points for todos, `/points`), P2 (Sunday weekly summary) and P3 (points for prayers) built; waiting on a week of family use. P4 in progress: parts 1 (stats and levels), 2 (the weekly game) and 3 (history and personal bests) built; the monthly and yearly reviews planned.
+> **Status:** Brought forward at the owner's request (2026-11-06). P1 (ledger, points for todos, `/points`), P2 (Sunday weekly summary) and P3 (points for prayers) built; waiting on a week of family use. P4 (stats and levels, the weekly game, your history and personal bests, the monthly and yearly DM reviews) done and archived.
 > **Last updated:** 2026-11-13
 
 ## Rules
@@ -112,8 +112,9 @@ Built on `src/reports.rs`, as the prayer reports are:
   later that evening still count in the week, but come after the summary.
   It keeps only `ReportKind::Summary(Span::Week)` from `reports::due` and
   claims with `place = ''`.
-- **Groups only.** In a DM, `/points` shows your own week any time, and
-  `/points reports` there says so.
+- **Groups only.** In a DM, `/points` shows your own week any time.
+  (Since P4, `/points reports` in a DM turns the monthly and yearly
+  reviews on and off instead.)
 - Message (`points::week_text`): the week's leaderboard with medals, each
   person's change from last week (⬆️ 6 / ⬇️ 4, only for someone who earned
   something last week), and 🌟 the best single day. Nothing is sent in a
@@ -123,7 +124,8 @@ Built on `src/reports.rs`, as the prayer reports are:
   each person who earned points gets only their own week
   (`points::own_week_text`), if they have a DM with the bot.
 - Admin: `reports.points` in the API, a "Points" section on the Group page
-  to change it, and `POST /api/users/{id}/reports/points` is a 404.
+  to change it. (`POST /api/users/{id}/reports/points` was a 404; since
+  P4 it sets that person's reviews.)
 
 Done when:
 
@@ -178,236 +180,10 @@ Done when:
 - [x] Existing todo points survive the migration
 - [ ] Used by the family for a week, and the numbers feel fair
 
-## Stage P4: stats, levels, a weekly game and a history (in progress)
+## Stage P4: stats, levels, a weekly game and a history (done)
 
-**Part 1 (stats and levels) is built** (2026-11-13). How it's laid out,
-so parts 2–4 and habits reuse it:
-
-- `src/points/levels.rs`, pure: `Category` (`of`, `pace`, `emoji`,
-  `ALL`), `Track` (each category plus Overall, with its `start` level),
-  `level`, `xp_to_reach`, `overall`, `by_category`, `Stats` (its
-  `Display` is the stats card), `overall_by_person`, `level_ups` and
-  `level_up_text`.
-- `src/points/level_ups.rs`, the glue: `stats(user)`, `announce(user)`,
-  and `lines` / `for_sender` for a reply. **Announcing is separate from
-  awarding**: any reply to someone who may have earned something calls
-  `for_sender` once at the end (todo replies, `+prayed`, a prayer
-  reaction). A level reached where there's no reply (a push button, the
-  dashboard) is announced in that person's next one.
-- `repo::points::xp_by_source`, `xp_of_earners`, `by_source`, and
-  `repo::levels` (`reached`, `record`, never lowering a level).
-- Migration `0012_levels_reached.sql` fills in everyone's current levels,
-  so nobody gets weeks of old level-ups at once. With no row, a track
-  counts from its `start` (Lv 1; Overall one per category).
-- Habits: add a `Category` variant and a `Track` db string; the compiler
-  points at the rest, and the CHECK already allows `'habits'`.
-
-**Part 2 (the weekly game) is built** (2026-11-13):
-
-- `src/points/game.rs`, pure: `per_category`, `champions` (one per
-  category anyone earned in, then Overall; ties shared, only scores above
-  0 win), `champions_text`, `new_week_text` and `RESET`.
-- `repo::points::by_person_source` feeds the champions. The summary's
-  inputs are a `reports::Summary`, and `/points` in a group takes a
-  `GroupBoard`, so later additions don't grow the argument lists.
-- With nothing earned yet this week, `/points` in a group shows last
-  week's winner on any day, not only Monday (in practice it's empty only
-  early in the week).
-
-**Part 3 (history) is built** (2026-11-13):
-
-- `src/points/history.rs`, pure: `Ledger` (a person's points per day and
-  category, from every chat), `last`, `within` (weeks or months cut to
-  fit a range, so a year's weeks stop on 31 December), `average`, `best`,
-  `new_best`, `trend`, `levels_gained`, and the texts `weeks_text`,
-  `months_text`, `year_text`.
-- `repo::points`: `first_day`, `by_day_and_source`, `xp_by_source_until`
-  (the XP at the end of a day, for the levels gained in a year).
-  `points::commands::ledger` reads someone's whole history at once.
-- `BotCommand::PointsHistory`: `/points weeks`, `/points months`,
-  `/points year`, `/points year 2025` and `/points 2025`. In a group the
-  reply only says to ask in a DM: the history is private.
-- Only from the person's first point: someone who started last week sees
-  one week, not eleven empty ones. Within that, an empty week is a 0 bar.
-  Averages leave out the week or month in progress.
-- Personal bests: `level_ups::lines` (now given the person's own
-  `today`) adds `🌟 Your best week ever (45)` (or month) when the one in
-  progress beats every earlier one. Migration `0014_personal_bests.sql`
-  adds `bests_announced (user_id, span, period_first)`, so it's announced
-  once per week or month. Not in someone's first week or month (nothing
-  to beat). In a group it's `🌟 Sara: best week ever!`, without the
-  number, which comes from every chat.
-
-At the owner's request (2026-11-10): points should work like game stats.
-Each feature (prayers, todos, later habits) has its own category with its
-own XP and level, and the categories add up to an **Overall** level. That
-lifetime progress never resets. Next to it, the group game starts from 0
-every week. And each person gets a private history, so they can improve
-on their own past, not only against each other.
-
-### The three views of the same ledger
-
-| | Stats and levels | The weekly game | Your history |
-| --- | --- | --- | --- |
-| What | Lifetime XP and a level per category, plus Overall | This week's points, everyone from 0 on Monday | Every week, month and year you've had |
-| Where | Everywhere: your DM, and next to your name in groups | The group (`/points`, Sunday summary) | Your DM only (private) |
-| Compared with | Your next level | Each other: 🥇🥈🥉, and a champion per category | Yourself: your average, your best, last year |
-| Resets | Never | Monday 00:00 on the reader's clock | Never |
-
-**Nothing new is stored for any of them** except the levels people have
-reached (for announcements, below). The ledger keeps every row with its
-`source` and `day`: lifetime XP is a sum, a category is `GROUP BY source`,
-"this week" is the Monday–Sunday window a query reads (as `/points` does
-now), and history is the same rows grouped by week or month.
-
-### Categories
-
-| Category | Sources       | Pace (XP per level step) |
-| -------- | ------------- | ------------------------ |
-| 🕌 Prayers | `prayer`      | 35                       |
-| 📝 Todos   | `todo`        | 15                       |
-| 🌱 Habits  | `habit`, `goal` | decided in H1          |
-
-- `Category::of(Source)` maps each source to a category. Group goals count
-  under Habits rather than having a category of their own.
-- A new feature becomes a new `Category` variant, and the compiler then
-  points at every `match` that has to handle it.
-
-### Levels
-
-- Going from level L to L+1 costs `pace × L` XP, so reaching level L takes
-  `pace × L × (L − 1) / 2` in total. Early levels come quickly, later ones
-  take real effort. Everyone starts at level 1.
-- The paces are set so a steady week moves each category at about the same
-  speed. A steady person earns about 65 prayer XP and 25 todo XP a week,
-  which gives roughly:
-
-  | Level | Prayers XP | Todos XP | Roughly when |
-  | ----- | ---------- | -------- | ------------ |
-  | 2     | 35         | 15       | first few days |
-  | 5     | 350        | 150      | ~6 weeks     |
-  | 10    | 1,575      | 675      | ~6 months    |
-  | 15    | 3,675      | 1,575    | ~14 months   |
-
-  Tune the paces after a few weeks of real data. A change only moves
-  levels, never the XP itself.
-- **Overall = the sum of the category levels** (option B). It rewards
-  being well-rounded rather than maxing one category, and stays balanced
-  when habits arrive. When they do, everyone gains a Habits Lv 1 and their
-  Overall goes up by one: announce it ("🌱 Habits are here").
-- **XP only counts what was earned.** A skipped todo's −1 lowers that
-  week's points, but not XP: lifetime progress isn't lost for being honest
-  about a skip. XP only drops when an earned award is undone (a prayer
-  unticked, a mistake corrected), which is right, since it shouldn't have
-  counted.
-- **Level-ups are announced once.** A table, `levels_reached (user_id,
-  category, level, reached_at)`, holds each person's highest level per
-  category. A level above it gets a line added to the reply that earned
-  it (`🎉 Prayers level 6!`), and the row is updated in the same
-  transaction. If an untick drops someone below a level and they earn it
-  back, it isn't announced again. Overall level-ups are announced too, as
-  a separate line (`🏅 Overall level 12`).
-- XP and levels are **lifetime and personal**: XP from every chat counts.
-  The weekly leaderboard stays per group, as now.
-
-### What people see
-
-`/points` in a DM:
-
-```
-📊 Your stats · Overall Lv 10
-🕌 Prayers  Lv 6 ■■■■■■□□□□ 650 / 735
-📝 Todos    Lv 4 ■■■■■□□□□□ 120 / 150
-This week: 31 (🕌 18 · 📝 13) · Last week: 26
-```
-
-(Overall 10 = 6 + 4. Each bar is the way through the current level:
-Prayers 6 starts at 525 XP and 7 at 735. Today, the 7-day bars and the
-split by chat stay below it.)
-
-`/points` in a group, with each person's Overall level:
-
-```
-🥇 Sara · Lv 9 · 34
-🥈 Bilal · Lv 7 · 31
-```
-
-### The weekly game
-
-- Weekly points stay the raw sum of points earned in the group, as now.
-  Prayers can outweigh todos there, so the **category champions** balance
-  it: the Sunday summary names the top earner in each category as well as
-  the overall winner (`🕌 Most prayers: Khadija · 📝 Most todos: Bilal ·
-  🏆 Overall: Sara`). More people can win something each week.
-- **The reset is made visible:** the Sunday summary ends with "Scores start
-  again tomorrow. 🏁", and on a Monday with nothing earned yet, `/points`
-  in a group shows last week's winner instead of the empty text.
-
-### History (DM only)
-
-- `/points weeks`: the last 12 weeks as bars, this week marked, with your
-  12-week average and your best week ever.
-  `This week 31 · average 26 ⬆️ · best 44 (w/c 5 Oct)`
-- `/points months`: the last 12 months as bars, each against the same month
-  last year once there's a year of data.
-- `/points year` (`/points 2026`): the year's total, best week, best month,
-  and the levels gained that year.
-- Each of them per category too: "Prayer XP up 20% this month, todos flat."
-- A personal best is announced once, in the reply that sets it ("🌟 Your
-  best week ever (45)"), worked out from the ledger.
-
-### Monthly and yearly reviews
-
-- **Monthly, in your DM** on the 1st at 20:00 your time: last month's total
-  and each category against the month before and the same month last year,
-  levels gained, best week, best day, and your prayer record (on time /
-  made up / missed, from `prayer_log`). Built on `reports.rs`, which
-  already has `Span::Month`; opt out with `/points reports off` in the DM.
-- **Year in review**, in your DM on 1 January: the year's XP per category,
-  levels gained, each month as a bar, best month and week. Needs
-  `Span::Year` in `reports.rs` and its `kind` CHECK (a migration).
-
-### How it's built
-
-- New reads in `repo::points`: `xp_by_source(user)` (lifetime XP per
-  source, only positive awards), `by_day_and_source(user, period)` for
-  history, and the group week by person and source for the champions.
-  History reads at most a year for one person: a few thousand rows
-  through `points_by_user_day`.
-- Pure functions in `points` (no database, most of the tests):
-  `Category::of`, `level(xp, pace) -> Level { level, into, needed }`,
-  `overall(&levels)`, `by_week`, `by_month`, `average`, `best`,
-  `champions`.
-- Weeks are Monday–Sunday and months calendar months, on the person's own
-  clock, as everywhere else. A week or month with nothing is a 0 bar, not
-  left out. Averages only count weeks since the person's first point.
-- Admin dashboard (optional, later): a chart of XP per week per person.
-
-New concepts: a `Category` enum with a `const` table of paces,
-`impl Display` for the stats card, `BTreeMap<Category, i64>` for a stable
-order, iterator grouping (`fold`, `chunk_by`), and `Option` for "no data
-yet" in averages.
-
-### Order
-
-1. **Stats and levels**: categories, `level`, `overall`, the stats card in
-   `/points`, Lv next to names, `levels_reached` and the level-up lines.
-2. **The weekly game**: category champions in the Sunday summary and the
-   visible reset.
-3. **History**: `/points weeks`, `months`, `year`, and personal bests.
-4. **Reviews**: monthly in the DM, then the year in review.
-
-Done when:
-
-- [x] `level` and `overall` have tests at each level boundary, for 0 XP,
-      and for XP that drops below a level
-- [x] Each level-up is announced once, even after an untick and a re-tick
-- [x] A skip lowers the week's points but not XP
-- [x] The Sunday summary names a champion per category
-- [x] Group totals start from 0 each Monday on each reader's clock (tested
-      across a BST change)
-- [x] `/points weeks`, `months` and `year` work in a DM and say so in a
-      group; grouping, averages and bests are tested at month and year
-      ends, and for someone with less than a week of data
-- [ ] The monthly DM review goes once on the 1st, and the year review on
-      1 January
+Finished on 2026-11-13: lifetime XP and levels per category, the weekly
+game with category champions, `/points weeks|months|year` with personal
+bests, and the monthly and yearly DM reviews. The whole stage, with its
+design notes (categories, paces, how habits plug in), is in
+[archive.md](archive.md).

@@ -12,7 +12,7 @@ use crate::bot::{Context, my_settings};
 use crate::error::AppError;
 use crate::parser::PointsHistory;
 use crate::points;
-use crate::points::history::{self, Ledger};
+use crate::points::history::{self, Ledger, Progress};
 use crate::points::{level_ups, levels};
 use crate::repo::points as stored_points;
 use crate::repo::reports as stored_reports;
@@ -21,27 +21,48 @@ use crate::settings::Settings;
 
 const CHART: &str = "📊";
 
-/// `/points reports [here|dm|off]`: where this group's Sunday summary
-/// goes, changed first if a new place is given. Groups only.
+/// `/points reports [here|dm|off]`, changed first if a new setting is
+/// given. In a group: where its Sunday summary goes. In a DM: whether the
+/// monthly and yearly reviews (`points::reviews`) come.
 pub async fn reports(
     conn: &mut SqliteConnection,
     ctx: &Context,
     change: Option<Delivery>,
 ) -> Result<String, AppError> {
-    if !ctx.is_group {
-        return Ok(format!(
-            "{CHART} The Sunday points summary is for groups. Here, `/points` shows \
-             your own week any time."
-        ));
-    }
     let delivery = match change {
         Some(delivery) => {
+            // In a DM, "privately" is the same as "here".
+            let delivery = if ctx.is_group || delivery != Delivery::Dm {
+                delivery
+            } else {
+                Delivery::Here
+            };
             stored_reports::set_delivery(conn, ctx.chat_id, Feature::Points, delivery).await?;
             delivery
         }
         None => stored_reports::delivery(conn, ctx.chat_id, Feature::Points).await?,
     };
-    Ok(format_points_reports(delivery))
+    Ok(if ctx.is_group {
+        format_points_reports(delivery)
+    } else {
+        format_reviews(delivery)
+    })
+}
+
+/// The `/points reports` reply in a DM: whether the reviews come.
+fn format_reviews(delivery: Delivery) -> String {
+    match delivery {
+        Delivery::Off => format!(
+            "{BELL_OFF} Your monthly and yearly points reviews are off.\n\
+             Turn them back on with `/points reports on`."
+        ),
+        Delivery::Here | Delivery::Dm => format!(
+            "{CHART} Your points review comes here on the 1st of each month at 8pm: \
+             the month against the one before and a year before, the levels you \
+             gained, your best week and day, and your prayer record. On 1 January, \
+             your year in review too.\nTurn them off with `/points reports off`."
+        ),
+    }
 }
 
 /// `/points`. In a group: this week's leaderboard for the group, Monday to
@@ -134,14 +155,13 @@ pub async fn show_history(
         PointsHistory::Months => history::months_text(&ledger, today),
         PointsHistory::Year(year) => {
             let year = year.unwrap_or(chrono::Datelike::year(&today));
-            let gained = match history::year(year) {
+            let progress = match history::year(year) {
                 Some(whole) if whole.first <= today => {
-                    let end = whole.last.min(today);
-                    levels_gained(conn, user, whole.first, end).await?
+                    progress(conn, user, whole.first, whole.last.min(today)).await?
                 }
-                _ => Vec::new(),
+                _ => Progress::none(),
             };
-            history::year_text(&ledger, year, today, &gained)
+            history::year_text(&ledger, year, today, &progress)
         }
     })
 }
@@ -165,23 +185,23 @@ pub async fn ledger(
     ))
 }
 
-/// The levels `user_id` went up from the start of `first` to the end of
-/// `last`, worked out from their XP at each end.
-pub async fn levels_gained(
+/// `user_id`'s stats at the start of `first` and at the end of `last`,
+/// for the levels and XP they gained in between.
+pub async fn progress(
     conn: &mut SqliteConnection,
     user_id: i64,
     first: NaiveDate,
     last: NaiveDate,
-) -> Result<Vec<(levels::Track, i64, i64)>, sqlx::Error> {
+) -> Result<Progress, sqlx::Error> {
     let before = match first.pred_opt() {
         Some(day_before) => stored_points::xp_by_source_until(conn, user_id, day_before).await?,
         None => Vec::new(),
     };
     let after = stored_points::xp_by_source_until(conn, user_id, last).await?;
-    Ok(history::levels_gained(
-        &levels::Stats::from_sources(before),
-        &levels::Stats::from_sources(after),
-    ))
+    Ok(Progress {
+        before: levels::Stats::from_sources(before),
+        after: levels::Stats::from_sources(after),
+    })
 }
 
 /// The `/points reports` reply, in a group: where the summary goes now.
@@ -466,16 +486,48 @@ mod tests {
                 .unwrap(),
             Delivery::Here
         );
+    }
 
+    #[tokio::test]
+    async fn points_reports_in_a_dm_turn_the_reviews_on_and_off() {
+        use crate::repo::chats;
+
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let ctx = setup(&mut conn).await;
+        let jid = "447700900001@s.whatsapp.net";
+        let dm_chat = chats::find_or_create(&mut conn, jid, Some(ctx.sender.id), ctx.now)
+            .await
+            .unwrap();
         let dm = Context {
-            chat_id: ctx.chat_id,
+            chat_id: dm_chat,
             is_group: false,
             sender: ctx.sender.clone(),
             now: ctx.now,
         };
+        let stored = async |conn: &mut SqliteConnection, chat| {
+            stored_reports::delivery(conn, chat, Feature::Points)
+                .await
+                .unwrap()
+        };
+
+        let reply = typed(&mut conn, &dm, "/points reports").await.into_text();
+        assert!(
+            reply.starts_with("📊 Your points review comes here on the 1st"),
+            "on by default: {reply}"
+        );
         let reply = typed(&mut conn, &dm, "/points reports off")
             .await
             .into_text();
-        assert!(reply.contains("for groups"), "{reply}");
+        assert!(reply.contains("reviews are off"), "{reply}");
+        assert_eq!(stored(&mut conn, dm_chat).await, Delivery::Off);
+        assert_eq!(
+            stored(&mut conn, ctx.chat_id).await,
+            Delivery::Here,
+            "the group's summary is a separate setting"
+        );
+        // "Privately" in a DM is just "here".
+        typed(&mut conn, &dm, "/points reports dm").await;
+        assert_eq!(stored(&mut conn, dm_chat).await, Delivery::Here);
     }
 }

@@ -161,6 +161,7 @@ pub fn command(command: &BotCommand) -> Event {
             Some(match span {
                 Span::Week => "week",
                 Span::Month => "month",
+                Span::Year => "year",
             }),
         ),
         BotCommand::PrayerReports(reports) => event(

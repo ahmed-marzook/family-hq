@@ -454,6 +454,33 @@ pub async fn report_groups(
     .await
 }
 
+/// A person's DM with the bot, which may be due a monthly or yearly review.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReviewDm {
+    pub chat_id: i64,
+    pub wa_chat_id: String,
+    pub user_id: i64,
+}
+
+/// The DMs the bot still has whose owner earned (or lost) points, in any
+/// chat, on or after `since`. Only these can have a review to send.
+pub async fn review_dms(
+    conn: &mut SqliteConnection,
+    since: NaiveDate,
+) -> Result<Vec<ReviewDm>, sqlx::Error> {
+    sqlx::query_as!(
+        ReviewDm,
+        r#"SELECT c.id AS chat_id, c.wa_chat_id, c.dm_user_id AS "user_id!: i64"
+           FROM chats c
+           WHERE c.kind = 'dm' AND c.left_at IS NULL
+             AND EXISTS (SELECT 1 FROM points p WHERE p.user_id = c.dm_user_id AND p.day >= ?)
+           ORDER BY c.id"#,
+        since
+    )
+    .fetch_all(conn)
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

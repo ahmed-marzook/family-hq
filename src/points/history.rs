@@ -280,7 +280,7 @@ fn categories_line(ledger: &Ledger, current: Period, before: &[Period]) -> Optio
 }
 
 /// " (🕌 18 · 📝 13)", when more than one category has points in `period`.
-fn split(ledger: &Ledger, period: Period) -> String {
+pub(crate) fn split(ledger: &Ledger, period: Period) -> String {
     let parts: Vec<String> = ledger
         .by_category(period)
         .into_iter()
@@ -296,7 +296,7 @@ fn split(ledger: &Ledger, period: Period) -> String {
 
 /// "w/c 5 Oct": a week by its Monday, even when it was cut short at the
 /// start of a year. With the year when it isn't `today`'s.
-fn week_label(week: Period, today: NaiveDate) -> String {
+pub(crate) fn week_label(week: Period, today: NaiveDate) -> String {
     let monday = Period::of(Span::Week, week.last).first;
     if monday.year() == today.year() {
         format!("w/c {}", monday.format("%-d %b"))
@@ -419,6 +419,50 @@ fn periods_text(ledger: &Ledger, today: NaiveDate, span: Span) -> String {
     lines.join("\n")
 }
 
+/// Someone's lifetime stats at the start and at the end of a month or a
+/// year: what the levels and XP they gained in it are worked out from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Progress {
+    pub before: Stats,
+    pub after: Stats,
+}
+
+impl Progress {
+    /// Nothing gained: the same stats at both ends.
+    pub fn none() -> Progress {
+        let nothing = Stats::from_sources([]);
+        Progress {
+            before: nothing.clone(),
+            after: nothing,
+        }
+    }
+
+    /// The levels gained, as `levels_gained`.
+    pub fn gained(&self) -> Vec<(Track, i64, i64)> {
+        levels_gained(&self.before, &self.after)
+    }
+
+    /// The XP earned in each category: only what was earned, as XP always
+    /// is, so a skip doesn't take any away.
+    pub fn xp(&self) -> BTreeMap<Category, i64> {
+        Category::ALL
+            .into_iter()
+            .map(|c| (c, self.after.xp(c) - self.before.xp(c)))
+            .collect()
+    }
+}
+
+/// "XP earned: 🕌 +900 · 📝 +360", or `None` if none was.
+pub fn xp_text(progress: &Progress) -> Option<String> {
+    let parts: Vec<String> = progress
+        .xp()
+        .into_iter()
+        .filter(|(_, xp)| *xp > 0)
+        .map(|(c, xp)| format!("{} +{xp}", c.emoji()))
+        .collect();
+    (!parts.is_empty()).then(|| format!("XP earned: {}", parts.join(" · ")))
+}
+
 /// The levels someone moved up between two snapshots of their stats, as
 /// `(track, from, to)`: each category, then Overall.
 pub fn levels_gained(before: &Stats, after: &Stats) -> Vec<(Track, i64, i64)> {
@@ -453,12 +497,7 @@ pub fn levels_text(gained: &[(Track, i64, i64)]) -> Option<String> {
 /// before, the best week, month and day, the levels gained (`gained`, worked
 /// out by the caller from the XP at each end), and each month as a bar.
 /// A year still in progress is "so far", up to `today`.
-pub fn year_text(
-    ledger: &Ledger,
-    which: i32,
-    today: NaiveDate,
-    gained: &[(Track, i64, i64)],
-) -> String {
+pub fn year_text(ledger: &Ledger, which: i32, today: NaiveDate, progress: &Progress) -> String {
     let Some(whole) = year(which) else {
         return format!("{CALENDAR} I can't show the year {which}.");
     };
@@ -515,7 +554,8 @@ pub fn year_text(
             day.format("%a %-d %b")
         ));
     }
-    lines.extend(levels_text(gained));
+    lines.extend(levels_text(&progress.gained()));
+    lines.extend(xp_text(progress));
 
     lines.push(String::new());
     lines.push("*Each month*".to_string());
@@ -814,7 +854,7 @@ mod tests {
         for text in [
             weeks_text(&empty, date("2026-11-13")),
             months_text(&empty, date("2026-11-13")),
-            year_text(&empty, 2026, date("2026-11-13"), &[]),
+            year_text(&empty, 2026, date("2026-11-13"), &Progress::none()),
         ] {
             assert!(text.starts_with("📈 No points yet"), "{text}");
         }
@@ -871,11 +911,12 @@ Oct 2026 ■■■■■■■■■■ 30
             (date("2026-03-10"), Source::Prayer, 8),
             (date("2026-12-31"), Source::Todo, 2),
         ]);
-        let gained = [
-            (Track::Category(Category::Prayers), 1, 2),
-            (Track::Overall, 2, 3),
-        ];
-        let text = year_text(&ledger, 2026, date("2027-01-01"), &gained);
+        // 30 prayer XP (Lv 1) at the start of the year, 40 (Lv 2) at the end.
+        let progress = Progress {
+            before: Stats::from_sources([(Source::Prayer, 30)]),
+            after: Stats::from_sources([(Source::Prayer, 40)]),
+        };
+        let text = year_text(&ledger, 2026, date("2027-01-01"), &progress);
         let expected = "🗓️ *Your 2026*\n\
                         21 points (🕌 14 · 📝 7)\n\
                         Against 2025: 150, down 86%\n\
@@ -883,6 +924,7 @@ Oct 2026 ■■■■■■■■■■ 30
                         🌟 Best month: 11, January\n\
                         🌟 Best day: 8, Tue 10 Mar\n\
                         🎉 Levels gained: 🕌 Prayers 1 → 2 · 🏅 Overall 2 → 3\n\
+                        XP earned: 🕌 +10\n\
                         \n\
                         *Each month*\n";
         assert!(text.starts_with(expected), "{text}");
@@ -899,7 +941,7 @@ Oct 2026 ■■■■■■■■■■ 30
     #[test]
     fn year_text_so_far_stops_at_today() {
         let ledger = todos(&[("2026-02-10", 4), ("2026-11-12", 6)]);
-        let text = year_text(&ledger, 2026, date("2026-11-13"), &[]);
+        let text = year_text(&ledger, 2026, date("2026-11-13"), &Progress::none());
         assert!(
             text.starts_with("🗓️ *Your 2026 so far*\n10 points\n🌟"),
             "{text}"
@@ -913,11 +955,11 @@ Oct 2026 ■■■■■■■■■■ 30
     fn year_text_for_a_year_with_nothing_or_still_to_come() {
         let ledger = todos(&[("2026-02-10", 4)]);
         assert_eq!(
-            year_text(&ledger, 2025, date("2026-11-13"), &[]),
+            year_text(&ledger, 2025, date("2026-11-13"), &Progress::none()),
             "🗓️ Nothing earned in 2025."
         );
         assert_eq!(
-            year_text(&ledger, 2030, date("2026-11-13"), &[]),
+            year_text(&ledger, 2030, date("2026-11-13"), &Progress::none()),
             "🗓️ 2030 hasn't started yet."
         );
     }

@@ -139,6 +139,10 @@ Beat your best week or month and I'll say so (🌟), once.
 In a group, every Sunday at 8pm: the week's leaderboard, how each person did against last week, a champion for 🕌 prayers, 📝 todos and overall, and the best day. Only in weeks when someone earned points.
 `/points reports here` (the default), `/points reports dm` (each person gets just their own week, privately) or `/points reports off`.
 
+*Monthly review*
+With me directly, on the 1st of each month at 8pm: last month against the one before and a year before, the levels you gained, your best week and day, and your prayer record. On 1 January, your year in review too. Only for a month you earned something in.
+`/points reports off` (with me directly) stops them; `/points reports on` brings them back.
+
 Clearing done todos doesn't take anyone's points away.";
 
 const PRAYERS: &str = "🕌 *Help: prayers*
@@ -288,6 +292,7 @@ mod tests {
         assert!(page(Some("todo")).contains("due 2 fri"));
         assert!(page(Some("todo")).contains("/todo overdue"));
         assert!(page(Some("points")).contains("/points reports dm"));
+        assert!(page(Some("points")).contains("*Monthly review*"));
         for history in ["/points weeks", "/points months", "/points year"] {
             assert!(page(Some("points")).contains(history), "{history}");
         }

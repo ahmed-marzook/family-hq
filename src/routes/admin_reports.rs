@@ -24,7 +24,8 @@ use crate::routes::admin_settings::dm_for;
 #[derive(Debug, Serialize)]
 pub(crate) struct ReportsView {
     prayers: String,
-    /// The Sunday points summary. Only means anything for a group.
+    /// Points: a group's Sunday summary (`points::reports`), or a person's
+    /// monthly and yearly reviews in their DM (`points::reviews`).
     points: String,
 }
 
@@ -86,10 +87,6 @@ pub async fn user_reports(
     Json(body): Json<DeliveryBody>,
 ) -> Result<Json<UserDetail>, AppError> {
     let (feature, delivery) = parse(&feature, &body, false)?;
-    // The points summary is for groups only (`points::reports`).
-    if feature == Feature::Points {
-        return Err(AppError::NotFound);
-    }
     let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
     let dm = dm_for(&mut tx, id).await?;
     reports::set_delivery(&mut tx, dm, feature, delivery).await?;

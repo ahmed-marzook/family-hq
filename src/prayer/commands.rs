@@ -163,6 +163,7 @@ pub async fn summary(
         let span = match span {
             Span::Week => "week",
             Span::Month => "month",
+            Span::Year => "year",
         };
         format!(
             "{MOSQUE} Nothing recorded yet this {span}. Turn on reminders with \
