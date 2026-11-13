@@ -17,6 +17,7 @@ use crate::parser::{TodoView, Toggle};
 use crate::person::Assignee;
 use crate::points::{self, Finish, Source};
 use crate::repo::messages::{self, ListKind, SentList};
+use crate::repo::settings as stored_settings;
 use crate::repo::todo_reminders;
 use crate::repo::todos::{self, Details};
 use crate::repo::users;
@@ -70,16 +71,28 @@ pub async fn list(
 
 /// `/todo clear` empties the list; `/todo clear done` takes off only the
 /// done and skipped ones.
+///
+/// Clearing a todo that's still open counts as skipping it, so clearing
+/// the list can't be used to dodge a skip's −1. It costs the person it was
+/// for (its assignee, or whoever added it), not whoever cleared it, on
+/// their own day. Done and skipped todos have earned theirs already, so
+/// `/todo clear done` costs nothing.
 pub async fn clear(
     conn: &mut SqliteConnection,
     ctx: &Context,
+    defaults: &Settings,
     done_only: bool,
 ) -> Result<String, AppError> {
     if !done_only {
-        return Ok(match todos::clear_all(conn, ctx.chat_id).await? {
+        let open = charge_open_todos(conn, ctx, defaults).await?;
+        let reply = match todos::clear_all(conn, ctx.chat_id).await? {
             0 => format!("{LIST} There are no todos to clear."),
             1 => format!("{CLEARED} Cleared the todo list (1 todo)."),
             n => format!("{CLEARED} Cleared the todo list ({n} todos)."),
+        };
+        return Ok(match open {
+            Some(open) => format!("{reply}\n{open}"),
+            None => reply,
         });
     }
     // Counted first, to say how many of each went.
@@ -95,6 +108,40 @@ pub async fn clear(
             ),
         },
     )
+}
+
+/// Before `/todo clear` deletes them: records a skip for each open todo,
+/// against the person it was for. Returns the line saying so, or `None` if
+/// nothing was open.
+async fn charge_open_todos(
+    conn: &mut SqliteConnection,
+    ctx: &Context,
+    defaults: &Settings,
+) -> Result<Option<String>, AppError> {
+    let open = todos::open_with_owner(conn, ctx.chat_id).await?;
+    // Each person's total, in the order they first appear.
+    let mut losses: Vec<(String, i64)> = Vec::new();
+    for todo in &open {
+        let theirs = stored_settings::effective(conn, defaults, ctx.chat_id, Some(todo.owner_id));
+        let today = theirs.await?.today(ctx.now);
+        // A skip's rule: priority and due date don't change it.
+        let award = points::for_todo(Finish::Skipped, None, None, today);
+        let points = points::award::award_to(
+            conn,
+            ctx,
+            todo.owner_id,
+            Source::Todo,
+            todo.id,
+            award,
+            today,
+        )
+        .await?;
+        match losses.iter_mut().find(|(name, _)| *name == todo.owner_name) {
+            Some((_, total)) => *total += points,
+            None => losses.push((todo.owner_name.clone(), points)),
+        }
+    }
+    Ok(points::cleared_text(open.len(), &losses))
 }
 
 /// `/todo reminders [on|off]`: the sender's own todo reminders in this
@@ -995,7 +1042,68 @@ mod tests {
             .await
             .unwrap()
             .into_text();
-        assert_eq!(reply, "🧹 Cleared the todo list (1 todo).");
+        assert_eq!(
+            reply,
+            "🧹 Cleared the todo list (1 todo).\n\
+             1 was still open, so it counts as skipped: Bilal −1 ⭐"
+        );
+    }
+
+    #[tokio::test]
+    async fn clearing_open_todos_costs_whoever_they_were_for() {
+        use crate::repo::points as stored_points;
+        use crate::reports::Period;
+
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let ctx = setup(&mut conn).await;
+        // Bilal adds one for himself, one for Khadija and one he then does.
+        typed(&mut conn, &ctx, "+todo fix the tap").await;
+        typed(&mut conn, &ctx, "+todo @Khadija call gran").await;
+        typed(&mut conn, &ctx, "+todo go gym").await;
+        typed(&mut conn, &ctx, "+done gym").await;
+        // Khadija adds one with nobody named: hers.
+        let khadija = users::find_member_by_name(&mut conn, ctx.chat_id, "Khadija")
+            .await
+            .unwrap()
+            .unwrap();
+        let hers = Context {
+            chat_id: ctx.chat_id,
+            is_group: true,
+            sender: khadija,
+            now: ctx.now,
+        };
+        typed(&mut conn, &hers, "+todo book dentist").await;
+
+        // Clearing done ones first costs nothing.
+        typed(&mut conn, &hers, "/todo clear done").await;
+        // Khadija clears the list: the two open todos that were hers cost
+        // her, and Bilal's open one costs him, though she cleared it.
+        let reply = typed(&mut conn, &hers, "/todo clear").await.into_text();
+        assert_eq!(
+            reply,
+            "🧹 Cleared the todo list (3 todos).\n\
+             3 were still open, so each counts as skipped: Bilal −1 · Khadija −2 ⭐"
+        );
+
+        let today = ctx.now.date_naive();
+        let around = Period {
+            first: today - chrono::Duration::days(1),
+            last: today + chrono::Duration::days(1),
+        };
+        let mut totals = stored_points::totals(&mut conn, ctx.chat_id, around)
+            .await
+            .unwrap();
+        totals.sort();
+        // Bilal: +2 for the gym, −1 for the tap.
+        assert_eq!(
+            totals,
+            vec![("Bilal".to_string(), 1), ("Khadija".to_string(), -2)]
+        );
+
+        // An empty list: nothing more to charge.
+        let reply = typed(&mut conn, &hers, "/todo clear").await.into_text();
+        assert_eq!(reply, "📋 There are no todos to clear.");
     }
 
     #[tokio::test]

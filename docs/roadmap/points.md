@@ -18,6 +18,7 @@ Whoever closes a todo (`closed_by`) earns its points, worked out by
 | Done after its due date        | −1, but never less than 1 point    |
 | Skipped                        | −1                                 |
 | Removed                        | 0 (no ledger row)                  |
+| Still open at `/todo clear`    | −1, for its assignee (or creator)  |
 
 "On time" is judged on the **closer's own local day**, the same clock
 `-d fri` is resolved on.
@@ -36,6 +37,11 @@ Decisions:
   only points earned in that group.
 - **A DM's `/points` shows the person's own points from every chat.**
 - `source` already allows `'habit'` and `'goal'`, for Stage 2.5.
+- **`/todo clear` charges each open todo as a skip** (the owner's request,
+  2026-11-13), so clearing the list can't dodge the −1. Unlike a skip it
+  costs the person the todo was for (assignee, else creator), not whoever
+  cleared it, on their own day, in the chat it was cleared in. Stored as
+  reason `skipped`, so no migration. `/todo clear done` stays free.
 
 Known gaps, accepted for now:
 

@@ -103,7 +103,7 @@ For a todo that won't be done: reply `skip 2` to a `/todo` list, or send `+skip 
 *Delete*
 Reply `remove 2` to a `/todo` list.
 `/todo clear done`: removes the ✅ done and ⏭️ skipped todos.
-`/todo clear`: empties the whole list.
+`/todo clear`: empties the whole list. Each todo still open counts as skipped (−1 ⭐ for whoever it was for).
 
 The numbers always mean the list you replied to, even if it's old.";
 
@@ -113,6 +113,7 @@ Finishing a todo earns points for whoever ticks it off:
 • Done on or before its due date: +1
 • Done after its due date: 1 less (but always at least 1)
 • Skipped: −1. Removing a todo neither earns nor costs anything.
+• Still open when the list is cleared with `/todo clear`: −1, like a skip, for whoever it was for.
 The reply to `done 2` shows what it earned, like \"✅ Done: *fix the tap* · +4 ⭐\".
 
 *Prayers*

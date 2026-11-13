@@ -27,7 +27,22 @@ pub async fn award(
     award: Award,
     today: NaiveDate,
 ) -> Result<i64, AppError> {
-    let (chat, by, now) = (ctx.chat_id, ctx.sender.id, ctx.now);
-    stored_points::award(conn, by, chat, source, source_id, award, today, now).await?;
+    award_to(conn, ctx, ctx.sender.id, source, source_id, award, today).await
+}
+
+/// `award`, for `user_id` rather than the sender: someone else's todo
+/// cleared with `/todo clear` costs *them*. Still in `ctx`'s chat, at
+/// `ctx.now`; `today` is `user_id`'s own local day.
+pub async fn award_to(
+    conn: &mut SqliteConnection,
+    ctx: &Context,
+    user_id: i64,
+    source: Source,
+    source_id: i64,
+    award: Award,
+    today: NaiveDate,
+) -> Result<i64, AppError> {
+    let (chat, now) = (ctx.chat_id, ctx.now);
+    stored_points::award(conn, user_id, chat, source, source_id, award, today, now).await?;
     Ok(award.points)
 }

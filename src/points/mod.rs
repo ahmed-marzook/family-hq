@@ -193,6 +193,26 @@ pub fn earned_text(points: Option<i64>) -> String {
     }
 }
 
+/// The line `/todo clear` adds when it cleared `open` todos that were
+/// still open: each one cost the person it was for, like a skip. `losses`
+/// is `(name, points)` per person, in the order to show them. `None` if
+/// nothing open was cleared.
+pub fn cleared_text(open: usize, losses: &[(String, i64)]) -> Option<String> {
+    if open == 0 || losses.is_empty() {
+        return None;
+    }
+    let who: Vec<String> = losses
+        .iter()
+        .map(|(name, p)| format!("{name} {}", signed(*p)))
+        .collect();
+    let what = if open == 1 {
+        "1 was still open, so it counts".to_string()
+    } else {
+        format!("{open} were still open, so each counts")
+    };
+    Some(format!("{what} as skipped: {} {STAR}", who.join(" · ")))
+}
+
 /// A total, with a proper minus sign if it's below zero ("−2", "18").
 fn total(points: i64) -> String {
     if points < 0 {
