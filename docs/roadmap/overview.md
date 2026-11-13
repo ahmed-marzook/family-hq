@@ -70,6 +70,7 @@ new file. In short:
 | `todos`              | Todos on a chat's list: `chat_id`, `title`, `created_by`, `assignee_id`, `status` (pending, completed, skipped), `closed_by` + `closed_at`, `due_date`, `priority` (`0009`) |
 | `points`             | One row per award: `user_id`, `chat_id`, `source` (todo, prayer, overdue; habit, goal later), `source_id`, `reason`, `points`, the earner's local `day` (`0010`, `0011`, `0013`) |
 | `levels_reached`     | Each person's highest level announced per category and Overall, so a level-up is announced once (`0012`) |
+| `bests_announced`    | Each personal best week or month announced, so it is announced once (`0014`) |
 | `prayer_reminders`   | Each prayer reminder sent, per chat, day, prayer, kind (start/ending) and place (`0002`)                               |
 | `prayer_log`         | Who prayed what, per person per day                                                                                    |
 | `processed_messages` | WhatsApp message IDs already handled, so webhook retries can't add things twice                                        |
