@@ -60,7 +60,7 @@ pub async fn show(
     let last_week = Period::of(Span::Week, week.first - chrono::Duration::days(1));
     if ctx.is_group {
         let chat = ctx.chat_id;
-        let totals = stored_points::totals(conn, chat, week).await?;
+        let totals = stored_points::totals_by_user(conn, chat, week).await?;
         // Only needed for the new-week text, when nobody has points yet.
         let last_week = if totals.is_empty() {
             stored_points::totals(conn, chat, last_week).await?
@@ -189,6 +189,52 @@ mod tests {
         assert!(text.contains("🥇 Bilal"), "{text}");
         let text = board_at(&mut conn, &ctx, "2026-10-26T00:30:00Z").await;
         assert!(text.starts_with("🏁 A new week"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn each_member_on_the_board_shows_their_own_level() {
+        use crate::points::{Award, Reason, Source};
+        use crate::repo::chats;
+        use crate::testkit::register;
+
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let ctx = setup(&mut conn).await;
+        // Registered as "Bilal" too: names are unique, so they're shown as
+        // "Bilal-0009", but their level must still come from their own XP.
+        let other = register(&mut conn, "Bilal", "447700900009", ctx.now).await;
+        chats::add_member(&mut conn, ctx.chat_id, other.id, ctx.now)
+            .await
+            .unwrap();
+        let award = Award {
+            points: 3,
+            reason: Reason::Done,
+        };
+        let today = crate::settings::tests::defaults().today(ctx.now);
+        // The sender earns 3 XP (Todos Lv 1, Overall 2); the other Bilal 60
+        // (Todos Lv 3, Overall 4).
+        let mut todo_id = 0;
+        for (user, times) in [(ctx.sender.id, 1), (other.id, 20)] {
+            for _ in 0..times {
+                todo_id += 1;
+                stored_points::award(
+                    &mut conn,
+                    user,
+                    ctx.chat_id,
+                    Source::Todo,
+                    todo_id,
+                    award,
+                    today,
+                    ctx.now,
+                )
+                .await
+                .unwrap();
+            }
+        }
+
+        let text = typed(&mut conn, &ctx, "/points").await.into_text();
+        assert!(text.contains("🥇 Bilal-0009 · Lv 4 · 60"), "{text}");
+        assert!(text.contains("🥈 Bilal · Lv 2 · 3"), "{text}");
     }
 
     #[tokio::test]

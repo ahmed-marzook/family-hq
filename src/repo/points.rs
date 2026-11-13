@@ -158,10 +158,25 @@ pub async fn totals(
     chat_id: i64,
     period: Period,
 ) -> Result<Vec<(String, i64)>, sqlx::Error> {
+    let totals = totals_by_user(conn, chat_id, period).await?;
+    Ok(totals
+        .into_iter()
+        .map(|(_, name, points)| (name, points))
+        .collect())
+}
+
+/// `totals` with each person's user id first, as `(user_id, name, points)`:
+/// for matching people up with other lists by who they are, not by the
+/// name they're shown under.
+pub async fn totals_by_user(
+    conn: &mut SqliteConnection,
+    chat_id: i64,
+    period: Period,
+) -> Result<Vec<(i64, String, i64)>, sqlx::Error> {
     // `BETWEEN` includes both ends. Dates stored as "YYYY-MM-DD" compare
     // correctly as text, so no date maths is needed in SQL.
     let rows = sqlx::query!(
-        r#"SELECT u.display_name AS name, SUM(p.points) AS "points!: i64"
+        r#"SELECT p.user_id, u.display_name AS name, SUM(p.points) AS "points!: i64"
            FROM points p
            JOIN users u ON u.id = p.user_id
            WHERE p.chat_id = ? AND p.day BETWEEN ? AND ?
@@ -172,7 +187,10 @@ pub async fn totals(
     )
     .fetch_all(conn)
     .await?;
-    Ok(rows.into_iter().map(|r| (r.name, r.points)).collect())
+    Ok(rows
+        .into_iter()
+        .map(|r| (r.user_id, r.name, r.points))
+        .collect())
 }
 
 /// `user_id`'s points on each day of `period` that has any, from every
@@ -243,18 +261,17 @@ pub async fn xp_by_source(
 }
 
 /// The lifetime XP from each source of everyone who earned points in
-/// `chat_id` over `period`, as `(name, source, xp)`: what the group
+/// `chat_id` over `period`, as `(user_id, source, xp)`: what the group
 /// leaderboard needs to show each person's level. XP counts from every
 /// chat, as levels are personal.
 pub async fn xp_of_earners(
     conn: &mut SqliteConnection,
     chat_id: i64,
     period: Period,
-) -> Result<Vec<(String, Source, i64)>, sqlx::Error> {
+) -> Result<Vec<(i64, Source, i64)>, sqlx::Error> {
     let rows = sqlx::query!(
-        r#"SELECT u.display_name AS name, p.source, SUM(p.points) AS "xp!: i64"
+        r#"SELECT p.user_id, p.source, SUM(p.points) AS "xp!: i64"
            FROM points p
-           JOIN users u ON u.id = p.user_id
            WHERE p.points > 0
              AND p.user_id IN (SELECT user_id FROM points
                                WHERE chat_id = ? AND day BETWEEN ? AND ?)
@@ -267,7 +284,7 @@ pub async fn xp_of_earners(
     .await?;
     Ok(rows
         .into_iter()
-        .filter_map(|r| Some((r.name, Source::from_db_str(&r.source)?, r.xp)))
+        .filter_map(|r| Some((r.user_id, Source::from_db_str(&r.source)?, r.xp)))
         .collect())
 }
 

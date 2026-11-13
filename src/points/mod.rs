@@ -271,16 +271,19 @@ pub struct Ranked<'a> {
     pub place: usize,
     pub name: &'a str,
     pub points: i64,
+    /// Where this person is in the list given to `rank`, to find the rest
+    /// of what's known about them (by user id, not by name).
+    pub index: usize,
 }
 
 /// Puts `(name, points)` in leaderboard order: most points first, then by
 /// name so the order is the same every time.
 pub fn rank<'a>(totals: &'a [(String, i64)]) -> Vec<Ranked<'a>> {
-    let mut sorted: Vec<&(String, i64)> = totals.iter().collect();
-    sorted.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let mut sorted: Vec<(usize, &(String, i64))> = totals.iter().enumerate().collect();
+    sorted.sort_by(|(_, a), (_, b)| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
     let mut ranked: Vec<Ranked<'a>> = Vec::with_capacity(sorted.len());
-    for (i, (name, points)) in sorted.into_iter().enumerate() {
+    for (i, (index, (name, points))) in sorted.into_iter().enumerate() {
         // Same points as the one above: same place. Otherwise the place is
         // the position in the list, counting from 1.
         let place = match ranked.last() {
@@ -291,6 +294,7 @@ pub fn rank<'a>(totals: &'a [(String, i64)]) -> Vec<Ranked<'a>> {
             place,
             name,
             points: *points,
+            index,
         });
     }
     ranked
@@ -327,13 +331,14 @@ pub const RULES: &str = "🔴 high 3 · medium 2 · 🟢 low 1, +1 if it's done 
 pub struct GroupBoard {
     /// This week, Monday to Sunday on the reader's clock.
     pub week: Period,
-    /// Each person's points in the group this week.
-    pub totals: Vec<(String, i64)>,
+    /// Each person's points in the group this week, as
+    /// `(user_id, name, points)`.
+    pub totals: Vec<(i64, String, i64)>,
     /// Each person's points in the group today.
     pub today: Vec<(String, i64)>,
-    /// Each person's Overall level: lifetime and from every chat, unlike
-    /// the week's points.
-    pub levels: Vec<(String, i64)>,
+    /// Each person's Overall level by user id: lifetime and from every
+    /// chat, unlike the week's points.
+    pub levels: BTreeMap<i64, i64>,
     /// Each person's points in the group last week, for the new-week text.
     pub last_week: Vec<(String, i64)>,
 }
@@ -355,12 +360,17 @@ pub fn group_text(board: &GroupBoard) -> String {
         "{TROPHY} *Points this week* ({})",
         show_period(board.week)
     )];
-    let (levels, today) = (&board.levels, &board.today);
-    for r in rank(&board.totals) {
-        let level = levels
-            .iter()
-            .find(|(name, _)| name == r.name)
-            .map_or(String::new(), |(_, level)| format!(" · Lv {level}"));
+    let week: Vec<(String, i64)> = board
+        .totals
+        .iter()
+        .map(|(_, name, points)| (name.clone(), *points))
+        .collect();
+    for r in rank(&week) {
+        let user_id = board.totals[r.index].0;
+        let level = board
+            .levels
+            .get(&user_id)
+            .map_or(String::new(), |level| format!(" · Lv {level}"));
         lines.push(format!(
             "{} {}{level} · {}",
             medal(r.place),
@@ -368,7 +378,7 @@ pub fn group_text(board: &GroupBoard) -> String {
             total(r.points)
         ));
     }
-    let today: Vec<String> = rank(today)
+    let today: Vec<String> = rank(&board.today)
         .iter()
         .filter(|r| r.points != 0)
         .map(|r| format!("{} {}", r.name, signed(r.points)))
@@ -764,10 +774,14 @@ mod tests {
 
     #[test]
     fn group_text_is_a_leaderboard_with_today_underneath() {
-        let week_totals = totals(&[("Ahmed", 18), ("Khadija", 24), ("Bilal", -1)]);
+        let week_totals = vec![
+            (1, "Ahmed".to_string(), 18),
+            (2, "Khadija".to_string(), 24),
+            (3, "Bilal".to_string(), -1),
+        ];
         let today = totals(&[("Ahmed", 2), ("Khadija", 5)]);
         // Bilal's level is missing (it can't be, but): just left out.
-        let levels = totals(&[("Ahmed", 7), ("Khadija", 9)]);
+        let levels = BTreeMap::from([(1, 7), (2, 9)]);
         let board = GroupBoard {
             week: week(),
             totals: week_totals,
@@ -792,7 +806,7 @@ mod tests {
             week: week(),
             totals: Vec::new(),
             today: Vec::new(),
-            levels: Vec::new(),
+            levels: BTreeMap::new(),
             last_week: Vec::new(),
         };
         let text = group_text(&board);

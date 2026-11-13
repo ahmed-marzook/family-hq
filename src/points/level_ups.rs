@@ -189,4 +189,134 @@ mod tests {
             3
         );
     }
+
+    /// Migration 0012 seeds `levels_reached` with SQL that copies the level
+    /// rules as they were then. Run that SQL again over known XP, just
+    /// below and on level boundaries, and it must agree with `Stats`.
+    #[tokio::test]
+    async fn the_0012_seed_agrees_with_the_level_rules() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let now = chrono::Utc::now();
+        let chat = chats::find_or_create(&mut conn, "120363000000000001@g.us", None, now)
+            .await
+            .unwrap();
+        // (todo XP, prayer XP, skips): todos reach Lv 2 at 15, Lv 3 at 45;
+        // prayers Lv 2 at 35, Lv 3 at 105. A skip mustn't lower XP.
+        let people = [
+            (14, 0, 0),
+            (15, 34, 1),
+            (44, 35, 2),
+            (45, 104, 0),
+            (0, 105, 3),
+        ];
+        let mut todo_id = 0;
+        let mut ids = Vec::new();
+        for (i, (todos, prayers, skips)) in people.into_iter().enumerate() {
+            let user = register(
+                &mut conn,
+                &format!("P{i}"),
+                &format!("4477009001{i:02}"),
+                now,
+            )
+            .await;
+            ids.push(user.id);
+            let give = |left: &mut i64, max: i64| {
+                let points = (*left).min(max);
+                *left -= points;
+                points
+            };
+            let mut left = todos;
+            while left > 0 {
+                todo_id += 1;
+                let points = give(&mut left, 10);
+                let award = Award {
+                    points,
+                    reason: Reason::Done,
+                };
+                stored_points::award(
+                    &mut conn,
+                    user.id,
+                    chat,
+                    Source::Todo,
+                    todo_id,
+                    award,
+                    date("2026-11-02"),
+                    now,
+                )
+                .await
+                .unwrap();
+            }
+            for _ in 0..skips {
+                todo_id += 1;
+                let award = Award {
+                    points: -1,
+                    reason: Reason::Skipped,
+                };
+                stored_points::award(
+                    &mut conn,
+                    user.id,
+                    chat,
+                    Source::Todo,
+                    todo_id,
+                    award,
+                    date("2026-11-02"),
+                    now,
+                )
+                .await
+                .unwrap();
+            }
+            // Prayers: up to 5 a day, 2 points each (1 for an odd one out).
+            let mut left = prayers;
+            let mut n = 0;
+            while left > 0 {
+                let points = give(&mut left, 2);
+                let award = Award {
+                    points,
+                    reason: if points == 2 {
+                        Reason::Prayed
+                    } else {
+                        Reason::MadeUp
+                    },
+                };
+                let day = date("2026-01-01") + chrono::Duration::days(n / 5);
+                stored_points::award(
+                    &mut conn,
+                    user.id,
+                    chat,
+                    Source::Prayer,
+                    n % 5 + 1,
+                    award,
+                    day,
+                    now,
+                )
+                .await
+                .unwrap();
+                n += 1;
+            }
+        }
+
+        let migration = include_str!("../../migrations/0012_levels_reached.sql");
+        let seed = &migration[migration.find("WITH RECURSIVE").expect("0012 has a seed")..];
+        sqlx::query("DELETE FROM levels_reached")
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+        sqlx::raw_sql(sqlx::AssertSqlSafe(seed))
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+
+        for id in ids {
+            let stats = stats(&mut conn, id).await.unwrap();
+            let seeded = reached::reached(&mut conn, id).await.unwrap();
+            for track in Track::all() {
+                assert_eq!(
+                    seeded.get(&track).copied(),
+                    Some(stats.level_on(track)),
+                    "user {id}, {track:?}: {stats:?}"
+                );
+            }
+        }
+    }
 }

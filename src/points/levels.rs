@@ -201,18 +201,18 @@ impl Stats {
     }
 }
 
-/// Each person's Overall level from `(name, source, xp)` rows, as
-/// `repo::points::xp_of_earners` reads them, sorted by name. Someone with
-/// XP in no category still gets every category's Lv 1.
-pub fn overall_by_person(
-    rows: impl IntoIterator<Item = (String, Source, i64)>,
-) -> Vec<(String, i64)> {
-    let mut xp: BTreeMap<String, Vec<(Source, i64)>> = BTreeMap::new();
-    for (name, source, points) in rows {
-        xp.entry(name).or_default().push((source, points));
+/// Each person's Overall level by user id, from `(user_id, source, xp)`
+/// rows as `repo::points::xp_of_earners` reads them. Keyed by id, as the
+/// ledger is: a name is only how someone is shown, so matching on it
+/// could pool two people's XP if names ever stopped being unique.
+/// Someone with XP in no category still gets every category's Lv 1.
+pub fn overall_by_person(rows: impl IntoIterator<Item = (i64, Source, i64)>) -> BTreeMap<i64, i64> {
+    let mut xp: BTreeMap<i64, Vec<(Source, i64)>> = BTreeMap::new();
+    for (user_id, source, points) in rows {
+        xp.entry(user_id).or_default().push((source, points));
     }
     xp.into_iter()
-        .map(|(name, xp)| (name, Stats::from_sources(xp).overall()))
+        .map(|(user_id, xp)| (user_id, Stats::from_sources(xp).overall()))
         .collect()
 }
 
@@ -360,15 +360,13 @@ mod tests {
 
     #[test]
     fn overall_by_person_adds_up_each_persons_categories() {
+        // Sara is 1, Bilal 2.
         let rows = vec![
-            ("Sara".to_string(), Source::Prayer, 650),
-            ("Bilal".to_string(), Source::Todo, 15),
-            ("Sara".to_string(), Source::Todo, 120),
+            (1, Source::Prayer, 650),
+            (2, Source::Todo, 15),
+            (1, Source::Todo, 120),
         ];
-        assert_eq!(
-            overall_by_person(rows),
-            vec![("Bilal".to_string(), 3), ("Sara".to_string(), 10)]
-        );
+        assert_eq!(overall_by_person(rows), BTreeMap::from([(1, 10), (2, 3)]));
     }
 
     #[test]
