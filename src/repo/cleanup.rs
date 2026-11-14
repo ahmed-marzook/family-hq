@@ -162,8 +162,9 @@ pub async fn clear(
 }
 
 /// Deletes a chat (a DM, or a group the bot left) and everything in it:
-/// its lists, settings, reminders sent there and list numbers, and, by
-/// `ON DELETE CASCADE`, its members, todo reminders and usage log. Run it in
+/// its lists, settings, prayer reminders sent there and list numbers, and,
+/// by `ON DELETE CASCADE`, its members, todo reminders, the shared
+/// `reminders` rows and usage log. Run it in
 /// a transaction.
 pub async fn delete_chat(conn: &mut SqliteConnection, chat_id: i64) -> Result<(), sqlx::Error> {
     // Contents first: the tables that point at a chat without `ON DELETE

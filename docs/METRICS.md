@@ -20,7 +20,7 @@ shows it. The queries below are for anything it doesn't show.
 |---|---|---|
 | `at` | `2026-10-28T18:02:11…+00:00` | When, in UTC |
 | `chat_id`, `user_id` | `3`, `1` | Where and who (join `chats`, `users`) |
-| `kind` | `command` | `command`, `list_reply` (`done 2` on a list), `reaction` (on a prayer reminder), `unknown` (a `+word`/`/word` the bot didn't understand) |
+| `kind` | `command` | `command`, `list_reply` (`done 2` on a list), `reaction` (on a reminder), `unknown` (a `+word`/`/word` the bot didn't understand) |
 | `name` | `todo.list` | Which command. For `unknown`, the word typed (`+remind`) |
 | `detail` | `by_person` | A fixed word about it: `week`, `numbers`, `someone`, `fajr,asr`... |
 | `typed` | `/t` | The first word as typed, to see if short forms get used |
@@ -30,7 +30,8 @@ shows it. The queries below are for anything it doesn't show.
 
 Command names: `shop.add`, `shop.list`, `shop.got`, `shop.clear`,
 `todo.add`, `todo.list`, `todo.done`, `todo.clear`, `todo.reminders`, `prayers.list`,
-`prayers.reminders`, `prayers.summary`, `prayers.reports`, `prayers.prayed`, `prayers.react`, `settings`,
+`prayers.reminders`, `prayers.summary`, `prayers.reports`, `prayers.prayed`, `prayers.react`,
+`todo.react` (✅ on a reminder for one todo), `settings`,
 `settings.location`, `weather`, `moon`, `push` (detail `on`, `off`, `status`
 or `test`), `help`, and list replies like `todo.reply_done` or
 `shop.reply_tick`. Buttons tapped on a push are logged with `kind`

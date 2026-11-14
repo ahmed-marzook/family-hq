@@ -31,9 +31,9 @@ family for at least two weeks**. The admin dashboard is outside this rule.
 
 - **Reminders & Prayer Coach (Phase 2)**: prayer reminders, missed
   tracking and reports done early; ntfy push built, deploy check to do
-  (2.1); `+remind`, the shared reminder engine and ticking off by reaction
-  (2.2), AlAdhan fallback (2.3), the `PrayerStage` state machine (2.4) to
-  do →
+  (2.1); the shared reminder engine built (2.2); `+remind` and ticking off
+  by reaction (2.2), AlAdhan fallback (2.3), the `PrayerStage` state
+  machine (2.4) to do →
   [roadmap/reminders-prayer.md](roadmap/reminders-prayer.md)
 
 ## Later

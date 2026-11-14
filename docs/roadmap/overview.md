@@ -72,6 +72,7 @@ new file. In short:
 | `levels_reached`     | Each person's highest level announced per category and Overall, so a level-up is announced once (`0012`) |
 | `bests_announced`    | Each personal best week or month announced, so it is announced once (`0014`) |
 | `prayer_reminders`   | Each prayer reminder sent, per chat, day, prayer, kind (start/ending) and place (`0002`)                               |
+| `reminders`          | Every reminder message, whatever it's for: `source` (prayer, todo, custom) + `source_id`, `due_at`, `claimed_at`, `wa_message_id`, so the one sending loop catches up after downtime and reactions reach the owning feature (`0016`) |
 | `prayer_log`         | Who prayed what, per person per day                                                                                    |
 | `processed_messages` | WhatsApp message IDs already handled, so webhook retries can't add things twice                                        |
 | `wa_message_context` | "Item 2 in the list the bot sent in message X, in chat Y" → the real row                                               |

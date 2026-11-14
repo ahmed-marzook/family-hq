@@ -1,8 +1,8 @@
 # Reminders & Prayer Coach (Phase 2)
 
 > **Goal:** `+remind`, ntfy pushes, prayer windows, escalation, reflections.
-> **Status:** Prayer reminders and check-ins done early; missed tracking and prayer reports done early (2.4); ntfy push built, first deploy to do (2.1); still to do: `+remind`, the shared reminder engine and ticking off by reaction (2.2), the AlAdhan fallback and BST/GMT test (2.3), the `PrayerStage` state machine (2.4).
-> **Last updated:** 2026-11-05
+> **Status:** Prayer reminders and check-ins done early; missed tracking and prayer reports done early (2.4); ntfy push built, first deploy to do (2.1); the shared reminder engine built (2.2); still to do: `+remind` and ticking off "Added …" by reaction (2.2), the AlAdhan fallback and BST/GMT test (2.3), the `PrayerStage` state machine (2.4).
+> **Last updated:** 2026-11-14
 
 ## Phase 2: Reminders & Prayer Coach
 
@@ -78,12 +78,17 @@ Build:
   person's own timezone and stored in UTC.
 - **Todos with due dates** (Stage 1.7) get a reminder on the morning they're
   due, unless they're done.
-- **One reminder engine**, extracted from the prayer one: a `reminders`
-  table (chat, due time, source: prayer / todo / custom, source id, text,
-  the WhatsApp message id once sent), **one sending loop** that claims
-  before sending (so nothing goes twice) and catches up after downtime, and
-  reactions routed back to the feature that owns the reminder (✅ on a todo
-  reminder completes the todo).
+- **One reminder engine** ✅ (issue #10), extracted from the prayer one: a
+  `reminders` table (migration `0016`: chat, due time, source: prayer /
+  todo / custom, source id, text, the WhatsApp message id once sent), **one
+  sending loop** that claims before sending (so nothing goes twice) and
+  catches up after downtime (`engine::send_scheduled`, every tick and on
+  start-up), and reactions routed back to the feature that owns the
+  reminder (`routes::webhook::route_reaction`: any emoji on a prayer's
+  ticks it, ✅ on a reminder for one todo completes the todo). Prayer and
+  todo reminders are recorded there as they're sent, unchanged otherwise;
+  nothing writes reminders ahead of time yet (`reminders::schedule` waits
+  for `+remind` and habits' H3).
 - Reacting ✅ to a reminder marks it done; 😴 snoozes it an hour.
 - **Ticking off by reaction** (moved from Stage 1.5): the "Added …" reply
   to `+shop` / `+todo` stores its message ID too, and ✅ or 👍 on it ticks
@@ -100,7 +105,7 @@ Done when:
       sent on start-up
 - [ ] `/remind` lists them, and `remove` / `snooze` work
 - [ ] A due todo gets a morning reminder, and none once it's done
-- [ ] Prayer reminders run on the shared engine with no change in behaviour
+- [x] Prayer reminders run on the shared engine with no change in behaviour
 - [ ] Reacting ✅ to an "Added …" message ticks that item off
 
 ### Stage 2.3: Prayer windows (mostly done early)

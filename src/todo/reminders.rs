@@ -12,8 +12,9 @@ use tracing::warn;
 use crate::AppState;
 use crate::error::AppError;
 use crate::points;
-use crate::reminders::engine::{self, Claim, OnSent, Outgoing, Planned};
+use crate::reminders::engine::{self, Claim, OnSent, Outgoing, Planned, ReminderOf};
 use crate::repo::messages::ListKind;
+use crate::repo::reminders::Source;
 use crate::repo::settings as stored;
 use crate::repo::todo_reminders::{self, Subscriber};
 use crate::repo::todos::{self, ListedTodo};
@@ -214,6 +215,13 @@ pub fn plan(
             text,
             mentions,
             quote: None,
+            // No one todo: it lists several, so a reaction can't say which
+            // was done. Replies by number (below) do that.
+            reminder: Some(ReminderOf {
+                chat_id,
+                source: Source::Todo,
+                source_id: None,
+            }),
             // Saved like a `/todo` list, so `done 3` as a reply and `+done 3`
             // both work. Every todo is saved, to keep `/todo`'s numbers.
             on_sent: OnSent::SaveList {
@@ -528,6 +536,14 @@ mod tests {
                 item_ids: vec![10, 11, 12, 13, 14],
             }
         );
+        assert_eq!(
+            message.reminder,
+            Some(ReminderOf {
+                chat_id: 5,
+                source: Source::Todo,
+                source_id: None,
+            })
+        );
         assert!(message.push.is_empty(), "todo reminders don't push yet");
     }
 
@@ -619,9 +635,21 @@ mod tests {
         check(&state, utc("2026-11-02T08:06:00Z")).await.unwrap();
         assert_eq!(gowa.sent.lock().unwrap().len(), 1);
 
+        // It's a todo reminder in the shared table, for no one todo.
+        let mut conn = state.db.acquire().await.unwrap();
+        let found = crate::repo::reminders::find(&mut conn, "FAKE1", &family.bilal.wa_jid)
+            .await
+            .unwrap();
+        assert_eq!(
+            found,
+            Some(crate::repo::reminders::Found {
+                source: Source::Todo,
+                source_id: None,
+            })
+        );
+
         // The list was saved against the sent message's ID ("FAKE1"), so a
         // reply `done 2` to it finds the right todo.
-        let mut conn = state.db.acquire().await.unwrap();
         let list = messages::list_items(&mut conn, "FAKE1", family.dm)
             .await
             .unwrap()

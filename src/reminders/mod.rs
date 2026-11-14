@@ -24,10 +24,11 @@ use crate::prayer::tracking;
 use crate::prayer::{self, ReminderKind, Window};
 use crate::push::Feature;
 use crate::repo::prayers::{self, ReminderChat};
+use crate::repo::reminders::Source;
 use crate::repo::settings::{self as stored, MemberSettings};
 use crate::settings::{self, Overrides, Settings};
 use crate::todo::reminders as todo_reminders;
-use engine::{Claim, OnSent, Outgoing, Planned, Push};
+use engine::{Claim, OnSent, Outgoing, Planned, Push, ReminderOf};
 
 /// How often to check. Reminders go out at most this late.
 const CHECK_EVERY: StdDuration = StdDuration::from_secs(60);
@@ -57,7 +58,10 @@ pub async fn run(state: Arc<AppState>) {
     loop {
         // The first tick completes immediately, so a check runs at startup.
         ticks.tick().await;
+        // Reminders written ahead of time whose moment has come; on the
+        // first tick, also the ones that fell due while the bot was down.
         // The clock is read here, at the edge, and passed down.
+        engine::send_scheduled(&state.gowa, &state.db, Utc::now()).await;
         if let Err(err) = check(&state, Utc::now()).await {
             error!("check failed: {err}");
         }
@@ -302,7 +306,8 @@ async fn plan_due(
 
 /// One reminder as the engine sends it: claimed per chat, day, prayer,
 /// kind and place (`place_key`); the message, @mentioning `recipients` in
-/// a group; its ID kept so reactions find the prayer; and the same as a
+/// a group; a prayer reminder in the shared table, so reactions find the
+/// prayer; and the same as a
 /// push to each recipient. `place_name` is said in the text when a group
 /// has members in more than one place.
 ///
@@ -360,7 +365,13 @@ pub fn reminder_plan(
             text,
             mentions,
             quote: None,
-            on_sent: OnSent::KeepReminderMessage,
+            reminder: Some(ReminderOf {
+                chat_id: chat.id,
+                source: Source::Prayer,
+                // The claim's row, filled in by the engine.
+                source_id: None,
+            }),
+            on_sent: OnSent::Nothing,
             push,
             what: format!("{} {kind:?} ({})", window.prayer, settings.city),
         }],
@@ -587,11 +598,16 @@ mod tests {
         // Its message ID was kept, so a reaction to it finds the prayer.
         {
             let mut conn = pool.acquire().await.unwrap();
-            let found = prayers::find_reminder(&mut conn, "FAKE1", GROUP)
+            let found = crate::repo::reminders::find(&mut conn, "FAKE1", GROUP)
+                .await
+                .unwrap()
+                .expect("in the shared reminders table");
+            assert_eq!(found.source, Source::Prayer);
+            let prayer = prayers::reminder(&mut conn, found.source_id.unwrap())
                 .await
                 .unwrap();
             let june_15 = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
-            assert_eq!(found, Some((june_15, Prayer::Asr)));
+            assert_eq!(prayer, Some((june_15, Prayer::Asr)));
         }
 
         // Bilal prays; 20 minutes before Asr ends, only Aisha is reminded.
@@ -809,7 +825,15 @@ mod tests {
         let message = only_message(&planned[0]);
         assert_eq!(message.to, GROUP);
         assert_eq!(message.mentions, ["447700900001", "447700900002"]);
-        assert_eq!(message.on_sent, OnSent::KeepReminderMessage);
+        assert_eq!(
+            message.reminder,
+            Some(ReminderOf {
+                chat_id: chat.id,
+                source: Source::Prayer,
+                source_id: None,
+            })
+        );
+        assert_eq!(message.on_sent, OnSent::Nothing);
         let pushed: Vec<(i64, &str)> = message
             .push
             .iter()
