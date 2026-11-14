@@ -2,7 +2,7 @@
 
 > **Goal:** `+remind`, ntfy pushes, prayer windows, escalation, reflections.
 > **Status:** Prayer reminders and check-ins done early; missed tracking and prayer reports done early (2.4); ntfy push built, first deploy to do (2.1); still to do: `+remind`, the shared reminder engine and ticking off by reaction (2.2), the AlAdhan fallback and BST/GMT test (2.3), the `PrayerStage` state machine (2.4).
-> **Last updated:** 2026-11-05
+> **Last updated:** 2026-11-14
 
 ## Phase 2: Reminders & Prayer Coach
 
@@ -44,8 +44,10 @@ Cloudflare tunnel, push *as well as* WhatsApp, opt-in by anyone):
   an `Authorization` header (not the URL, so it isn't in proxy logs).
 - Prayer reminders are the first user: a push with a Prayed button
   (`prayer::reminder_notice`), counted as `prayers.push`.
+- Each person's page on the admin dashboard shows whether push is on and
+  how many pushes they've been sent (never their topic or token). ✅
 - Still to do: Slipped / Snooze buttons, once habits (H3) and `+remind`
-  (2.2) need them; a push count per person on the admin dashboard.
+  (2.2) need them.
 
 Done when:
 

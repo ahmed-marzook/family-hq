@@ -87,6 +87,15 @@ function Detail({ data }: { data: UserDetail }) {
         </div>
       </Section>
 
+      <Section title="Push notifications">
+        <p className="text-sm text-stone-600 dark:text-stone-400">
+          {data.push.on ? "On" : "Off"} · {count(data.push.sent, "push", "pushes")} sent
+        </p>
+        <p className="mt-1 text-xs text-stone-500">
+          They turn push on or off themselves with /push in WhatsApp.
+        </p>
+      </Section>
+
       <Section title="Data">
         <PersonData user={user} cleanup={data.cleanup} />
       </Section>

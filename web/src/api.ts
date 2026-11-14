@@ -173,6 +173,9 @@ export type UserDetail = {
   reports: Reports;
   /** Their prayers this week and this month, so far. */
   prayers: { week: PrayerSpan; month: PrayerSpan };
+  /** Their push notifications: whether they're on, and how many were sent
+   * (from every feature, including while push was on before). */
+  push: { on: boolean; sent: number };
   chats: Chat[];
 };
 
