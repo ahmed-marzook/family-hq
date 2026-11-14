@@ -2,6 +2,11 @@
 # required checks on main pass. Done here rather than by Claude itself, so it
 # doesn't depend on the model remembering to and costs no Claude usage.
 #
+# Auto-merge is enabled with the owner's PROJECT_TOKEN, so the merge counts
+# as the owner's. With GITHUB_TOKEN the merge is github-actions', and GitHub
+# then neither closes the issue the PR says it closes nor runs CI on main
+# (#42 left #7 open that way). GITHUB_TOKEN is only the fallback.
+#
 # Needs "Allow auto-merge" in Settings → General, and branch protection on
 # main requiring `checks`; without a required check, auto-merge would merge
 # at once.
@@ -19,7 +24,7 @@ permissions:
 jobs:
   enable:
     # Claude's PRs: opened by the Claude GitHub App, or from one of its
-    # `claude/` branches when the PR was opened from its "Create PR" link.
+    # `claude/` branches (the "Create PR" link, or scripts/claude-local.sh).
     # Same-repo only, so a fork can't name its branch `claude/...` to get in.
     if: |
       github.event.pull_request.draft == false &&
@@ -29,8 +34,15 @@ jobs:
       )
     runs-on: ubuntu-latest
     steps:
-      - run: gh pr merge --auto --squash "$PR"
+      # A GraphQL call rather than `gh pr merge --auto`, which can insist on
+      # token scopes (read:org) the PAT doesn't need for this.
+      - run: |
+          gh api graphql -f pr="$PR_ID" -f query='
+            mutation($pr: ID!) {
+              enablePullRequestAutoMerge(input: { pullRequestId: $pr, mergeMethod: SQUASH }) {
+                pullRequest { number }
+              }
+            }'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-          PR: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ secrets.PROJECT_TOKEN || secrets.GITHUB_TOKEN }}
+          PR_ID: ${{ github.event.pull_request.node_id }}
