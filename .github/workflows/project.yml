@@ -1,18 +1,25 @@
 # Keeps the "Family HQ" project board (users/ahmed-marzook/projects/3) and
 # the issues in step:
 #   * an open issue moved to Ready gets the `claude-ready` label, which starts
-#     Claude (claude.yml), and moves on to In progress;
+#     Claude (claude.yml);
+#   * an issue that gets `claude-ready` (from Ready, or labelled by hand)
+#     moves to In progress;
 #   * when a PR that closes an issue is opened, that issue moves to In review.
 # Done is left to the project's built-in "Item closed" workflow.
 #
 # Actions has no trigger for a card moving on a user-owned project, so Ready
-# is picked up by polling every few minutes.
+# is picked up by polling. GitHub runs that schedule late (hours, at busy
+# times); labelling the issue directly, or running this workflow by hand,
+# is instant.
 #
 # Needs a PROJECT_TOKEN secret: a classic personal access token of the repo
 # owner with the `project` and `public_repo` scopes. GITHUB_TOKEN can't see
 # user projects. Because the label is added with the owner's token, the
 # owner-only check in claude.yml lets it through; a label added by a bot or
 # GITHUB_TOKEN wouldn't start Claude at all.
+#
+# Statuses are set with a GraphQL mutation, not `gh project item-edit`:
+# that command insists on the `read:org` scope even for a user's project.
 
 name: Project board
 
@@ -20,16 +27,18 @@ on:
   schedule:
     - cron: "*/5 * * * *"
   workflow_dispatch:
+  issues:
+    types: [labeled]
   pull_request:
     types: [opened, reopened, ready_for_review]
 
 permissions:
   contents: read
 
-# Per PR, so two PRs opening together don't drop one's run (a group keeps
+# Per issue or PR, so two events together don't drop one's run (a group keeps
 # only one pending run).
 concurrency:
-  group: project-${{ github.event_name }}-${{ github.event.pull_request.number || 'poll' }}
+  group: project-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.issue.number || 'poll' }}
   cancel-in-progress: false
 
 env:
@@ -41,10 +50,30 @@ env:
   IN_REVIEW: 223d2b43
   GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
   GH_REPO: ${{ github.repository }}
+  SET_STATUS: |
+    set_status() {
+      gh api graphql -f project="$PROJECT_ID" -f item="$1" -f field="$STATUS_FIELD" -f option="$2" -f query='
+        mutation($project: ID!, $item: ID!, $field: ID!, $option: String!) {
+          updateProjectV2ItemFieldValue(input: {
+            projectId: $project, itemId: $item, fieldId: $field,
+            value: { singleSelectOptionId: $option }
+          }) { projectV2Item { id } }
+        }' >/dev/null
+    }
+  # The board items of one issue, as "item-id" lines.
+  ISSUE_ITEMS: |
+    issue_items() {
+      gh api graphql -F owner="${GH_REPO%/*}" -F name="${GH_REPO#*/}" -F n="$1" -f query='
+        query($owner: String!, $name: String!, $n: Int!) {
+          repository(owner: $owner, name: $name) { issue(number: $n) {
+            projectItems(first: 10) { nodes { id project { id } } }
+          } }
+        }' --jq ".data.repository.issue.projectItems.nodes[] | select(.project.id == \"$PROJECT_ID\") | .id"
+    }
 
 jobs:
   ready-to-claude:
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: Label issues moved to Ready
@@ -78,12 +107,29 @@ jobs:
               | select(.content.state == \"OPEN\")
               | select(.content.repository.nameWithOwner == \"$GH_REPO\")
               | select([.content.labels.nodes[].name] | index(\"claude-ready\") | not)
-              | \"\(.id) \(.content.number)\"" |
-          while read -r item issue; do
+              | .content.number" |
+          while read -r issue; do
+            # The label event then moves the card (label-to-progress below).
             echo "Issue #$issue is Ready: labelling it claude-ready"
-            gh issue edit "$issue" --add-label claude-ready
-            gh project item-edit --id "$item" --project-id "$PROJECT_ID" \
-              --field-id "$STATUS_FIELD" --single-select-option-id "$IN_PROGRESS"
+            gh api "repos/$GH_REPO/issues/$issue/labels" -f 'labels[]=claude-ready' >/dev/null
+          done
+
+  label-to-progress:
+    if: github.event_name == 'issues' && github.event.label.name == 'claude-ready'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Move the labelled issue to In progress
+        env:
+          ISSUE: ${{ github.event.issue.number }}
+        run: |
+          [ -n "$GH_TOKEN" ] || { echo "::notice::PROJECT_TOKEN not set"; exit 0; }
+          set -o pipefail
+          eval "$SET_STATUS"
+          eval "$ISSUE_ITEMS"
+
+          issue_items "$ISSUE" | while read -r item; do
+            echo "Issue #$ISSUE has claude-ready: moving it to In progress"
+            set_status "$item" "$IN_PROGRESS"
           done
 
   pr-to-review:
@@ -99,25 +145,19 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
         run: |
           [ -n "$GH_TOKEN" ] || { echo "::notice::PROJECT_TOKEN not set"; exit 0; }
-          # Without it a failed query (expired token) would leave the job green.
           set -o pipefail
+          eval "$SET_STATUS"
+          eval "$ISSUE_ITEMS"
 
           gh api graphql -F owner="${GH_REPO%/*}" -F name="${GH_REPO#*/}" -F pr="$PR" -f query='
             query($owner: String!, $name: String!, $pr: Int!) {
               repository(owner: $owner, name: $name) { pullRequest(number: $pr) {
-                closingIssuesReferences(first: 10) { nodes {
-                  number
-                  projectItems(first: 10) { nodes { id project { id } } }
-                } }
+                closingIssuesReferences(first: 10) { nodes { number } }
               } }
-            }' --jq "
-              .data.repository.pullRequest.closingIssuesReferences.nodes[]
-              | .number as \$n
-              | .projectItems.nodes[]
-              | select(.project.id == \"$PROJECT_ID\")
-              | \"\(.id) \(\$n)\"" |
-          while read -r item issue; do
-            echo "PR #$PR closes issue #$issue: moving it to In review"
-            gh project item-edit --id "$item" --project-id "$PROJECT_ID" \
-              --field-id "$STATUS_FIELD" --single-select-option-id "$IN_REVIEW"
+            }' --jq '.data.repository.pullRequest.closingIssuesReferences.nodes[].number' |
+          while read -r issue; do
+            issue_items "$issue" | while read -r item; do
+              echo "PR #$PR closes issue #$issue: moving it to In review"
+              set_status "$item" "$IN_REVIEW"
+            done
           done
