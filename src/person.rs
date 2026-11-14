@@ -1,7 +1,11 @@
 //! The people a command can be about.
 //!
-//! For now a `Person` is built from the webhook. Once the `users` table
-//! exists (Stage 1.2), it becomes a row from there, with an id.
+//! A `Person` is only what the webhook tells us about a sender: it has no
+//! database id and may not be registered yet. `repo::users::find_or_register`
+//! turns one into a `users` row (`repo::users::User`), which is what the rest
+//! of the code uses once it needs an id. Keeping the two apart lets the parser
+//! stay free of the database, and lets us hold a sender whose phone-number ID
+//! we don't know yet (only a LID), who can't be registered.
 
 /// Someone the bot can identify on WhatsApp.
 #[derive(Debug, Clone, PartialEq)]
