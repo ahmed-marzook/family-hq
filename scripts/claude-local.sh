@@ -19,7 +19,8 @@
 # the Claude CLI (or the VS Code extension's copy), cargo and sqlx-cli.
 #
 # Settings (environment): CLAUDE_BIN, CLAUDE_LOCAL_DIR (default
-# ../family-hq-agent next to the repo), MAX_TURNS (default 80).
+# ../family-hq-agent next to the repo), MAX_TURNS (default 80), and
+# CLAUDE_LOCAL_DOCKER=1 to let Claude use `docker compose` (see below).
 
 set -euo pipefail
 
@@ -65,12 +66,36 @@ set_status() {
 # for that issue's branch only: the owner is exempt from main's branch
 # protection, so a bare `git push` could land on main.
 TOOLS="Edit,Write,Read,Glob,Grep"
-for cmd in "cargo fmt" "cargo clippy" "cargo test" "cargo build" "cargo check" \
-  "cargo sqlx" "npm ci" "npm run build" "docker" \
-  "git status" "git diff" "git log" "git add" "git commit" \
-  "gh issue view" "gh issue comment" "gh pr create" "gh pr view" "gh pr diff"; do
+CMDS=("cargo fmt" "cargo clippy" "cargo test" "cargo build" "cargo check"
+  "cargo sqlx" "npm ci" "npm run build"
+  "git status" "git diff" "git log" "git add" "git commit"
+  "gh issue view" "gh issue comment" "gh pr create" "gh pr view" "gh pr diff")
+
+# Docker is opt-in, and only as `docker compose` subcommands: bare `docker`
+# would allow `docker run --privileged -v /:/host`, i.e. root on this PC, for
+# an agent that reads issue text anyone can write. Compose files can mount
+# host paths too, so Claude may not edit them (or add an override file) in
+# these runs.
+DENY="Edit(compose*.y*ml),Write(compose*.y*ml),Edit(docker-compose*),Write(docker-compose*),Edit(deploy/**),Write(deploy/**)"
+DOCKER_NOTE="Docker is not available in this run; if the issue really needs the full stack, say so in the PR or on the issue."
+if [ "${CLAUDE_LOCAL_DOCKER:-}" = 1 ]; then
+  CMDS+=("docker compose build" "docker compose up" "docker compose down"
+    "docker compose logs" "docker compose ps")
+  DOCKER_NOTE="docker compose (build, up, down, logs, ps) is available if the issue needs the full stack; use up -d and run down when finished. You may not edit compose files."
+fi
+for cmd in "${CMDS[@]}"; do
   TOOLS+=",Bash($cmd:*)"
 done
+
+# Puts a claimed card back in Backlog (not the column, or the next pass would
+# retry it forever) and says why on the issue.
+give_back() {
+  local item=$1 n=$2 why=$3
+  log "#$n: $why; moved back to Backlog"
+  set_status "$item" "$BACKLOG" || log "#$n: couldn't move the card back"
+  gh issue comment "$n" --repo "$REPO" --body \
+    "The local Claude run stopped: $why. This is back in Backlog." >/dev/null || true
+}
 
 work_on() {
   local item=$1 n=$2
@@ -82,14 +107,20 @@ work_on() {
   # Claimed first, so a second poller (or the next pass) won't take it too.
   set_status "$item" "$IN_PROGRESS"
 
-  branch="claude/issue-$n-$(date +%Y%m%d-%H%M)"
+  # Seconds in the name, so a retry straight after a failure gets a new branch.
+  branch="claude/issue-$n-$(date +%Y%m%d-%H%M%S)"
   wt="$WORK/issue-$n"
   logf="$WORK/logs/issue-$n-$(date +%Y%m%d-%H%M%S).log"
   log "#$n: starting on $branch (log: $logf)"
 
-  git -C "$ROOT" fetch -q origin main
+  # Everything after the claim is checked by hand rather than left to set -e,
+  # which would abandon the card in In progress and end the whole pass.
   git -C "$ROOT" worktree remove --force "$wt" 2>/dev/null || true
-  git -C "$ROOT" worktree add -q -b "$branch" "$wt" origin/main
+  if ! { git -C "$ROOT" fetch -q origin main &&
+    git -C "$ROOT" worktree add -q -b "$branch" "$wt" origin/main; } >>"$logf" 2>&1; then
+    give_back "$item" "$n" "the git worktree couldn't be set up (log: \`$logf\` on the owner's PC)"
+    return 0
+  fi
 
   local ok=0
   (
@@ -104,21 +135,19 @@ work_on() {
     "$CLAUDE" -p "Work on GitHub issue #$n in $REPO. Read it first with \`gh issue view $n\`." \
       --max-turns "$MAX_TURNS" \
       --allowedTools "$TOOLS,Bash(git push -u origin $branch),Bash(git push origin $branch)" \
-      --append-system-prompt "You are running unattended on the repo owner's PC, picked up from the project board's '$COLUMN' column, which counts as the owner asking for this issue. You are in a fresh git worktree on branch $branch, made from origin/main; DATABASE_URL points at a migrated scratch database. Follow CLAUDE.md, especially its Agent workflow section. Check docs/ROADMAP.md for the current stage; if the issue asks for a later-phase feature, say so with gh issue comment and stop without a PR. Keep the change small and focused on this one issue. Docker and docker compose are available if the issue needs the full stack; stop any containers you start. Before pushing, run cargo fmt --check, cargo clippy --all-targets -- -D warnings and cargo test; run npm ci and npm run build in web/ if anything under web/ changed; if any SQL query changed, run cargo sqlx prepare -- --all-targets and commit .sqlx/. Never commit agent.db or any other .db file. When done, push with git push -u origin $branch and open the PR with gh pr create --base main --head $branch, with a body that starts with 'Closes #$n' and says what changed and how it was tested."
-  ) >"$logf" 2>&1 || ok=$?
+      --disallowedTools "$DENY" \
+      --append-system-prompt "You are running unattended on the repo owner's PC, picked up from the project board's '$COLUMN' column, which counts as the owner asking for this issue. You are in a fresh git worktree on branch $branch, made from origin/main; DATABASE_URL points at a migrated scratch database. Follow CLAUDE.md, especially its Agent workflow section. Check docs/ROADMAP.md for the current stage; if the issue asks for a later-phase feature, say so with gh issue comment and stop without a PR. Keep the change small and focused on this one issue. $DOCKER_NOTE Before pushing, run cargo fmt --check, cargo clippy --all-targets -- -D warnings and cargo test; run npm ci and npm run build in web/ if anything under web/ changed; if any SQL query changed, run cargo sqlx prepare -- --all-targets and commit .sqlx/. Never commit agent.db or any other .db file. When done, push with git push -u origin $branch and open the PR with gh pr create --base main --head $branch, with a body that starts with 'Closes #$n' and says what changed and how it was tested."
+  ) >>"$logf" 2>&1 || ok=$?
 
-  if [ -n "$(gh pr list --repo "$REPO" --head "$branch" --json number --jq '.[].number')" ]; then
-    log "#$n: PR opened"
-    set_status "$item" "$IN_REVIEW"
-    git -C "$ROOT" worktree remove --force "$wt"
+  local pr
+  pr=$(gh pr list --repo "$REPO" --head "$branch" --json number --jq '.[].number' || true)
+  if [ -n "$pr" ]; then
+    log "#$n: PR #$pr opened"
+    set_status "$item" "$IN_REVIEW" || log "#$n: couldn't move the card to In review"
+    git -C "$ROOT" worktree remove --force "$wt" || true
   else
-    # Back to Backlog, not to the column, or the next pass would retry it
-    # forever. The worktree and log stay for a look.
-    log "#$n: no PR (exit $ok); moved back to Backlog, worktree kept at $wt"
-    set_status "$item" "$BACKLOG"
-    gh issue comment "$n" --repo "$REPO" --body \
-      "The local Claude run finished without opening a PR (exit code $ok), so this is back in Backlog. The log is on the owner's PC: \`$logf\`." \
-      >/dev/null || true
+    # The worktree and log stay for a look.
+    give_back "$item" "$n" "Claude finished without opening a PR (exit code $ok; log \`$logf\` and worktree \`$wt\` on the owner's PC)"
   fi
 }
 
@@ -132,7 +161,8 @@ one_pass() {
     | select(.status == \"$COLUMN\" and .content.type == \"Issue\" and .content.repository == \"$REPO\")
     | \"\(.id) \(.content.number)\"" |
   while read -r item n; do
-    work_on "$item" "$n" </dev/null
+    # A failure on one card mustn't stop the rest of the pass.
+    work_on "$item" "$n" </dev/null || log "#$n: unexpected error"
   done
 }
 
