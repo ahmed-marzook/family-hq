@@ -46,8 +46,10 @@ family-facing dashboard in Phase 3, which is still later.
 Claude agents work on this repo unattended: issues are picked up by the
 Claude GitHub Action, reviewed by Claude, gated by CI, and auto-merged.
 
-- **What to work on:** only issues labelled `claude-ready`, or work
-  explicitly requested with `@claude`. Don't start anything else.
+- **What to work on:** only issues labelled `claude-ready`, issues in the
+  project board's "Ready (local)" column (run on the owner's PC by
+  `scripts/claude-local.sh`), or work explicitly requested with `@claude`.
+  Don't start anything else.
 - **Respect the roadmap:** check `docs/ROADMAP.md` for the current stage
   and don't pull in later-phase features (see Project above). If an issue
   asks for one, say so on the issue instead of building it.
