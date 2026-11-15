@@ -24,7 +24,7 @@ use crate::cleanup;
 use crate::error::AppError;
 use crate::prayer;
 use crate::repo::settings::{self as stored, ChatSettings};
-use crate::repo::{admin, chats, shop, todos};
+use crate::repo::{admin, chats, push, shop, todos};
 use crate::routes::admin_prayers::{PrayerView, prayer_view, today_for};
 use crate::routes::admin_reports::{ReportsView, reports_view};
 use crate::routes::admin_settings::existing_dm;
@@ -127,7 +127,19 @@ pub struct UserDetail {
     reports: ReportsView,
     /// Their prayers this week and this month (counts, never times).
     prayers: PrayerView,
+    push: PushView,
     chats: Vec<ChatView>,
+}
+
+/// Their push notifications (`/push on`). Never their ntfy topic or token:
+/// knowing either would let someone read their pushes or press their
+/// buttons.
+#[derive(Debug, Serialize)]
+struct PushView {
+    on: bool,
+    /// Pushes ever sent to them, from every feature. Still counted after
+    /// push is turned off.
+    sent: i64,
 }
 
 /// One setting: the value in use, and whether it's the person's own choice
@@ -303,6 +315,7 @@ pub(crate) async fn detail(
     let prayers = prayer_view(conn, id, today).await?;
     let dm = existing_dm(conn, id).await?;
     let reports = reports_view(conn, dm).await?;
+    let push = push::stats(conn, id).await?;
 
     Ok(UserDetail {
         recent_days: RECENT_DAYS,
@@ -311,6 +324,10 @@ pub(crate) async fn detail(
         settings: settings_view(personal, defaults),
         reports,
         prayers,
+        push: PushView {
+            on: push.on,
+            sent: push.sent,
+        },
         chats: chats
             .into_iter()
             .map(|c| chat_view(c, state, now))
@@ -641,6 +658,8 @@ mod tests {
         assert_eq!(detail["user"]["has_dm"], true);
         assert_eq!(detail["settings"]["place"]["value"], "Crawley, GB");
         assert_eq!(detail["settings"]["place"]["own"], true);
+        assert_eq!(detail["push"]["on"], false);
+        assert_eq!(detail["push"]["sent"], 0);
         let chats = detail["chats"].as_array().unwrap();
         assert_eq!(chats.len(), 2);
         assert_eq!(chats[0]["id"], dm);
@@ -745,6 +764,14 @@ mod tests {
             )
             .await
             .unwrap();
+            // Bilal's push topic and token are secrets too.
+            let sub = push::Subscription {
+                topic: "secrettopic".repeat(3),
+                token: "secrettoken".repeat(3),
+            };
+            push::subscribe(&mut conn, bilal, &sub, Utc::now())
+                .await
+                .unwrap();
         }
         let server = start_server_with(pool).await;
 
@@ -781,6 +808,39 @@ mod tests {
                 assert!(!text.contains(exact), "{path} has {exact}: {body}");
             }
         }
+    }
+
+    #[tokio::test]
+    async fn push_count_without_topic_or_token() {
+        let pool = test_pool().await;
+        let (bilal, _, _) = seed(&pool).await;
+        let topic = "TOPIC".repeat(5);
+        let token = "TOKEN".repeat(7);
+        {
+            let mut conn = pool.acquire().await.unwrap();
+            let now = Utc::now();
+            let sub = push::Subscription {
+                topic: topic.clone(),
+                token: token.clone(),
+            };
+            push::subscribe(&mut conn, bilal, &sub, now).await.unwrap();
+            for key in ["2026-11-05 asr start", "2026-11-05 asr ending"] {
+                push::claim(&mut conn, bilal, crate::push::Feature::Prayers, key, now)
+                    .await
+                    .unwrap();
+            }
+        }
+        let server = start_server_with(pool).await;
+
+        let (status, body) = admin_get_text(&server, &format!("/api/users/{bilal}")).await;
+        assert_eq!(status, StatusCode::OK);
+        let detail: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(detail["push"]["on"], true);
+        assert_eq!(detail["push"]["sent"], 2);
+        assert!(!body.contains(&topic), "{body}");
+        assert!(!body.contains(&token), "{body}");
+        assert!(!body.contains("topic"), "{body}");
+        assert!(!body.contains("token"), "{body}");
     }
 
     #[tokio::test]
