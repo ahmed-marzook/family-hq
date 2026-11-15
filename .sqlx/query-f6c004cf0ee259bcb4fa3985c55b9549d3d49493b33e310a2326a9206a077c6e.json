@@ -1,0 +1,28 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT\n             EXISTS (SELECT 1 FROM push_subscriptions WHERE user_id = ?1) AS \"on!: bool\",\n             (SELECT COUNT(*) FROM pushes_sent WHERE user_id = ?1) AS \"sent!: i64\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "on!: bool",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "sent!: i64",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "f6c004cf0ee259bcb4fa3985c55b9549d3d49493b33e310a2326a9206a077c6e"
+}

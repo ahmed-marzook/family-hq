@@ -100,6 +100,28 @@ pub async fn claim(
     Ok(result.rows_affected() > 0)
 }
 
+/// Whether push is on for someone, and how many pushes they've been sent,
+/// for the admin dashboard.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PushStats {
+    pub on: bool,
+    pub sent: i64,
+}
+
+/// `user_id`'s [`PushStats`]. Reads only whether a subscription exists, never
+/// its topic or token: those are secrets the dashboard must not get.
+pub async fn stats(conn: &mut SqliteConnection, user_id: i64) -> Result<PushStats, sqlx::Error> {
+    sqlx::query_as!(
+        PushStats,
+        r#"SELECT
+             EXISTS (SELECT 1 FROM push_subscriptions WHERE user_id = ?1) AS "on!: bool",
+             (SELECT COUNT(*) FROM pushes_sent WHERE user_id = ?1) AS "sent!: i64""#,
+        user_id
+    )
+    .fetch_one(conn)
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,6 +197,41 @@ mod tests {
             claim(&mut conn, id, p, "2026-11-05 asr ending", now)
                 .await
                 .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn stats_count_pushes_and_whether_push_is_on() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let id = someone(&mut conn).await;
+        let now = Utc::now();
+        let none = PushStats { on: false, sent: 0 };
+        assert_eq!(stats(&mut conn, id).await.unwrap(), none);
+
+        subscribe(&mut conn, id, &sub("a", "b"), now).await.unwrap();
+        claim(&mut conn, id, Feature::Prayers, "2026-11-05 asr start", now)
+            .await
+            .unwrap();
+        claim(
+            &mut conn,
+            id,
+            Feature::Prayers,
+            "2026-11-05 asr ending",
+            now,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            stats(&mut conn, id).await.unwrap(),
+            PushStats { on: true, sent: 2 }
+        );
+
+        // Off again: the pushes already sent still count.
+        unsubscribe(&mut conn, id).await.unwrap();
+        assert_eq!(
+            stats(&mut conn, id).await.unwrap(),
+            PushStats { on: false, sent: 2 }
         );
     }
 }
