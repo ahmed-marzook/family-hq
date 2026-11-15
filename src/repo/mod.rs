@@ -21,6 +21,7 @@ pub mod metrics;
 pub mod points;
 pub mod prayers;
 pub mod push;
+pub mod reminders;
 pub mod reports;
 pub mod settings;
 pub mod shop;

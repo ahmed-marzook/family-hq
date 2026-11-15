@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT r.prayer_date AS \"prayer_date: NaiveDate\", r.prayer\n           FROM prayer_reminders r\n           JOIN chats c ON c.id = r.chat_id\n           WHERE r.wa_message_id = ? AND c.wa_chat_id = ?",
+  "query": "SELECT prayer_date AS \"prayer_date: NaiveDate\", prayer\n           FROM prayer_reminders\n           WHERE id = ?",
   "describe": {
     "columns": [
       {
@@ -27,12 +27,12 @@
       }
     ],
     "parameters": {
-      "Right": 2
+      "Right": 1
     },
     "nullable": [
       false,
       false
     ]
   },
-  "hash": "7b1c28eae57fe5fda4f35e26c5e248da9c5a2a952b2bf811d53fd028df156d94"
+  "hash": "13b4d9d9eb8b7497b8df42dfbf71ba7d8b0da6dbd4c0e923f79de78f2e7b45d8"
 }

@@ -22,8 +22,18 @@
 //! not code: a new job adds a variant, and `deliver` stays the one place
 //! that does the claiming and the sending.
 //!
-//! Stage 2.2 (`+remind`) is meant to plug in here: its plans, with a claim
-//! of their own and the message ID kept so reactions can find them.
+//! Every *reminder* (as opposed to a report) is also a row in the shared
+//! `reminders` table (`repo::reminders`), with the feature that owns it,
+//! and its WhatsApp ID once sent, so a reaction to it is routed back to
+//! that feature (`routes::webhook`). There are two ways in:
+//!
+//! * Worked out when due, as prayer and todo reminders are: `deliver`
+//!   records the row, already claimed, just before sending
+//!   (`Outgoing::reminder`).
+//! * Written ahead of time (`reminders::schedule`, for `+remind`):
+//!   [`send_scheduled`] sends each one whose time has come, claiming it
+//!   first. Rows that fell due while the bot was down are still unclaimed,
+//!   so the first tick after start-up sends them.
 
 use std::future::Future;
 
@@ -36,6 +46,7 @@ use crate::prayer::{Prayer, ReminderKind};
 use crate::push::{self, Notice, Ntfy};
 use crate::repo::messages::{self, ListKind};
 use crate::repo::prayers::{self, NewReminder};
+use crate::repo::reminders::{self as stored_reminders, Source};
 use crate::repo::reports as stored_reports;
 use crate::repo::todo_reminders;
 use crate::reports::{Feature, ReportKind};
@@ -64,8 +75,8 @@ pub trait Messenger {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Claim {
     /// One prayer reminder for one place in a chat
-    /// (`prayers::claim_reminder`). Its row ID is kept, for
-    /// `OnSent::KeepReminderMessage`.
+    /// (`prayers::claim_reminder`). Its row ID is kept, as the shared
+    /// reminder's `source_id`.
     PrayerReminder {
         chat_id: i64,
         /// The day it's for, in the place's timezone.
@@ -100,7 +111,7 @@ pub enum Claim {
 /// What a successful claim gives back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Claimed {
-    /// A prayer reminder's row, to save its message ID on.
+    /// A prayer reminder's row, which its shared reminder points at.
     Reminder(i64),
     /// Claimed, with nothing to remember.
     Done,
@@ -111,9 +122,6 @@ enum Claimed {
 #[derive(Debug, Clone, PartialEq)]
 pub enum OnSent {
     Nothing,
-    /// Saves the ID on the claimed prayer reminder, so a reaction to the
-    /// message finds which prayer it was (`prayers::set_reminder_message`).
-    KeepReminderMessage,
     /// Saves the numbered list it shows, as `/todo` does, so a reply
     /// `done 3` or a `+done 3` finds the right item (`messages::save_list`).
     SaveList {
@@ -144,12 +152,27 @@ pub struct Outgoing {
     pub mentions: Vec<String>,
     /// A message to quote, as a reply. None of the loop's jobs quote yet.
     pub quote: Option<String>,
+    /// Set if this message is a reminder: recorded in the shared
+    /// `reminders` table, so a reaction to it reaches its feature.
+    pub reminder: Option<ReminderOf>,
     pub on_sent: OnSent,
     /// Pushes that go with it. They're sent even if the WhatsApp message
     /// couldn't be: the push is the second way to reach the person.
     pub push: Vec<Push>,
     /// What it is, for the log: "Asr Start (Milton Keynes)".
     pub what: String,
+}
+
+/// Whose reminder a message is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReminderOf {
+    /// The chat it's sent in (the claim's).
+    pub chat_id: i64,
+    pub source: Source,
+    /// The feature's own row, if it has one. A prayer reminder's is the
+    /// row its claim made, which isn't known until then: the engine fills
+    /// it in.
+    pub source_id: Option<i64>,
 }
 
 /// One claim and the messages it covers: a reminder is one message, a
@@ -261,34 +284,49 @@ async fn send_one<M: Messenger>(
         text,
         mentions,
         quote,
+        reminder,
         on_sent,
         push,
         what,
     } = message;
+    // The shared row first, already claimed, so the scheduled sweep never
+    // picks it up. If it can't be written, nothing is sent: a reminder whose
+    // reactions couldn't be routed would look broken to the family.
+    let reminder_id = match reminder {
+        Some(of) => {
+            let source_id = match claimed {
+                Claimed::Reminder(id) => Some(id),
+                Claimed::Done => of.source_id,
+            };
+            let row = stored_reminders::NewReminder {
+                chat_id: of.chat_id,
+                due_at: now,
+                source: of.source,
+                source_id,
+                text: &text,
+                mentions: &mentions,
+            };
+            let mut conn = db.acquire().await?;
+            Some(stored_reminders::record_sending(&mut conn, &row, now).await?)
+        }
+        None => None,
+    };
     match messenger
         .send_text(&to, &text, quote.as_deref(), &mentions)
         .await
     {
         Ok(message_id) => {
             let mut conn = db.acquire().await?;
-            match (on_sent, claimed) {
-                (OnSent::Nothing, _) => {}
-                (OnSent::KeepReminderMessage, Claimed::Reminder(reminder_id)) => {
-                    prayers::set_reminder_message(&mut conn, reminder_id, &message_id).await?;
-                }
-                // A plan that asks to keep a reminder's message without
-                // claiming a reminder: a mistake in that job's plan.
-                (OnSent::KeepReminderMessage, Claimed::Done) => {
-                    warn!("{what}: no reminder to keep the message ID on");
-                }
-                (
-                    OnSent::SaveList {
-                        chat_id,
-                        kind,
-                        item_ids,
-                    },
-                    _,
-                ) => {
+            if let Some(id) = reminder_id {
+                stored_reminders::set_message(&mut conn, id, &message_id).await?;
+            }
+            match on_sent {
+                OnSent::Nothing => {}
+                OnSent::SaveList {
+                    chat_id,
+                    kind,
+                    item_ids,
+                } => {
                     messages::save_list(&mut conn, &message_id, chat_id, kind, &item_ids, now)
                         .await?;
                 }
@@ -308,6 +346,68 @@ async fn send_one<M: Messenger>(
             )
             .await?;
         }
+    }
+    Ok(())
+}
+
+/// Sends every reminder written ahead of time (`reminders::schedule`)
+/// whose time has come by `now`, including any that fell due while the bot
+/// was down. Each is claimed before it's sent, so it goes at most once; a
+/// failed send is logged and not retried, as in `deliver`. Never fails as
+/// a whole.
+pub async fn send_scheduled<M: Messenger>(messenger: &M, db: &SqlitePool, now: DateTime<Utc>) {
+    let due = {
+        match db.acquire().await {
+            Ok(mut conn) => stored_reminders::due(&mut conn, now).await,
+            Err(err) => Err(err),
+        }
+    };
+    let due = match due {
+        Ok(due) => due,
+        Err(err) => {
+            warn!("couldn't read scheduled reminders: {err}");
+            return;
+        }
+    };
+    for reminder in due {
+        let id = reminder.id;
+        if let Err(err) = send_scheduled_one(messenger, db, reminder, now).await {
+            warn!("scheduled reminder {id}: {err}");
+        }
+    }
+}
+
+async fn send_scheduled_one<M: Messenger>(
+    messenger: &M,
+    db: &SqlitePool,
+    reminder: stored_reminders::Due,
+    now: DateTime<Utc>,
+) -> Result<(), AppError> {
+    // A block, so the connection goes back before waiting on WhatsApp.
+    let claimed = {
+        let mut conn = db.acquire().await?;
+        stored_reminders::claim(&mut conn, reminder.id, now).await?
+    };
+    if !claimed {
+        return Ok(());
+    }
+    let stored_reminders::Due {
+        id,
+        wa_chat_id,
+        source,
+        text,
+        mentions,
+    } = reminder;
+    match messenger
+        .send_text(&wa_chat_id, &text, None, &mentions)
+        .await
+    {
+        Ok(message_id) => {
+            let mut conn = db.acquire().await?;
+            stored_reminders::set_message(&mut conn, id, &message_id).await?;
+            info!("sent {source} reminder {id} to {wa_chat_id}");
+        }
+        Err(err) => warn!("couldn't send {source} reminder {id} to {wa_chat_id}: {err}"),
     }
     Ok(())
 }
@@ -394,6 +494,7 @@ mod tests {
             text: text.to_string(),
             mentions: Vec::new(),
             quote: None,
+            reminder: None,
             on_sent,
             push: Vec::new(),
             what: text.to_string(),
@@ -508,9 +609,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_prayer_reminder_keeps_its_message_id() {
+    async fn a_prayer_reminder_is_found_by_its_message_id() {
         let pool = pool_with_a_chat().await;
         let recorder = Recorder::new(&pool, None);
+        let mut reminder = message("day 3", OnSent::Nothing);
+        reminder.reminder = Some(ReminderOf {
+            chat_id: 1,
+            source: Source::Prayer,
+            source_id: None,
+        });
         let plan = Planned {
             claim: Claim::PrayerReminder {
                 chat_id: 1,
@@ -520,17 +627,83 @@ mod tests {
                 place: String::new(),
                 prayer_time: utc("2026-11-03T14:00:00Z"),
             },
-            messages: vec![message("day 3", OnSent::KeepReminderMessage)],
+            messages: vec![reminder],
         };
 
         deliver_soon(&recorder, &pool, vec![plan.clone()]).await;
         deliver_soon(&recorder, &pool, vec![plan]).await;
         assert_eq!(recorder.sent(), ["day 3"], "once");
 
+        // The shared row points at the prayer reminder's own, which says
+        // which prayer it was.
         let mut conn = pool.acquire().await.unwrap();
-        let found = prayers::find_reminder(&mut conn, "ID-day 3", crate::testkit::GROUP)
+        let found = stored_reminders::find(&mut conn, "ID-day 3", crate::testkit::GROUP)
+            .await
+            .unwrap()
+            .expect("recorded in reminders");
+        assert_eq!(found.source, Source::Prayer);
+        let prayer = prayers::reminder(&mut conn, found.source_id.unwrap())
             .await
             .unwrap();
-        assert_eq!(found, Some((date("2026-11-03"), Prayer::Asr)));
+        assert_eq!(prayer, Some((date("2026-11-03"), Prayer::Asr)));
+        // And the sweep doesn't send it again.
+        drop(conn);
+        send_scheduled(&recorder, &pool, utc("2026-11-08T21:00:00Z")).await;
+        assert_eq!(recorder.sent(), ["day 3"]);
+    }
+
+    /// A custom reminder for chat 1 at `due_at`, written ahead of time.
+    async fn schedule(pool: &SqlitePool, text: &str, due_at: &str) -> i64 {
+        let mut conn = pool.acquire().await.unwrap();
+        let row = stored_reminders::NewReminder {
+            chat_id: 1,
+            due_at: utc(due_at),
+            source: Source::Custom,
+            source_id: None,
+            text,
+            mentions: &[],
+        };
+        stored_reminders::schedule(&mut conn, &row).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn scheduled_reminders_go_once_when_due_and_catch_up_after_downtime() {
+        let pool = pool_with_a_chat().await;
+        let recorder = Recorder::new(&pool, None);
+        schedule(&pool, "day 6", "2026-11-06T09:00:00Z").await;
+        schedule(&pool, "day 7", "2026-11-07T09:00:00Z").await;
+        schedule(&pool, "day 9", "2026-11-09T09:00:00Z").await;
+
+        // The bot was down on the 6th and 7th; its first tick on the 8th
+        // (start-up) sends both, oldest first, but not the 9th's.
+        send_scheduled(&recorder, &pool, utc("2026-11-08T20:00:00Z")).await;
+        assert_eq!(recorder.sent(), ["day 6", "day 7"]);
+        // The next tick: already claimed.
+        send_scheduled(&recorder, &pool, utc("2026-11-08T20:01:00Z")).await;
+        assert_eq!(recorder.sent(), ["day 6", "day 7"]);
+
+        // Its message ID was kept, so a reaction finds it.
+        let mut conn = pool.acquire().await.unwrap();
+        let found = stored_reminders::find(&mut conn, "ID-day 6", crate::testkit::GROUP)
+            .await
+            .unwrap();
+        assert_eq!(
+            found,
+            Some(stored_reminders::Found {
+                source: Source::Custom,
+                source_id: None,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_scheduled_reminder_is_not_retried() {
+        let pool = pool_with_a_chat().await;
+        let recorder = Recorder::new(&pool, Some("day 6"));
+        schedule(&pool, "day 6", "2026-11-06T09:00:00Z").await;
+
+        send_scheduled(&recorder, &pool, utc("2026-11-08T20:00:00Z")).await;
+        send_scheduled(&recorder, &pool, utc("2026-11-08T20:01:00Z")).await;
+        assert_eq!(recorder.sent(), ["day 6"]);
     }
 }

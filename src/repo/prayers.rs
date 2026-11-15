@@ -107,36 +107,18 @@ pub async fn claim_reminder(
     .await
 }
 
-/// Records the WhatsApp ID of a sent reminder, so reactions can find it.
-pub async fn set_reminder_message(
+/// Which prayer and day the claimed reminder `reminder_id` was for. The
+/// message itself is in the shared `reminders` table (`repo::reminders`),
+/// whose `source_id` is this id; a reaction finds it there first.
+pub async fn reminder(
     conn: &mut SqliteConnection,
     reminder_id: i64,
-    wa_message_id: &str,
-) -> Result<(), sqlx::Error> {
-    sqlx::query!(
-        "UPDATE prayer_reminders SET wa_message_id = ? WHERE id = ?",
-        wa_message_id,
-        reminder_id
-    )
-    .execute(conn)
-    .await?;
-    Ok(())
-}
-
-/// Which prayer and day a reminder message was for, if `wa_message_id` is
-/// one of our reminders in this chat.
-pub async fn find_reminder(
-    conn: &mut SqliteConnection,
-    wa_message_id: &str,
-    wa_chat_id: &str,
 ) -> Result<Option<(NaiveDate, Prayer)>, sqlx::Error> {
     let row = sqlx::query!(
-        r#"SELECT r.prayer_date AS "prayer_date: NaiveDate", r.prayer
-           FROM prayer_reminders r
-           JOIN chats c ON c.id = r.chat_id
-           WHERE r.wa_message_id = ? AND c.wa_chat_id = ?"#,
-        wa_message_id,
-        wa_chat_id
+        r#"SELECT prayer_date AS "prayer_date: NaiveDate", prayer
+           FROM prayer_reminders
+           WHERE id = ?"#,
+        reminder_id
     )
     .fetch_optional(conn)
     .await?;
@@ -149,7 +131,7 @@ pub async fn find_reminder(
         let prayer = r
             .prayer
             .parse()
-            .inspect_err(|err| warn!("reminder {wa_message_id} dropped: {err}"))
+            .inspect_err(|err| warn!("prayer reminder {reminder_id} dropped: {err}"))
             .ok()?;
         Some((r.prayer_date, prayer))
     }))
@@ -283,7 +265,7 @@ pub async fn log_between(
     )
     .fetch_all(conn)
     .await?;
-    // As in `find_reminder`: a row the code can't read is dropped, with a
+    // As in `reminder`: a row the code can't read is dropped, with a
     // warning.
     Ok(rows
         .into_iter()
@@ -392,7 +374,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_reminder_is_claimed_once_and_found_by_message_id() {
+    async fn a_reminder_is_claimed_once_and_read_back_by_id() {
         let pool = test_pool().await;
         let mut conn = pool.acquire().await.unwrap();
         let now = Utc::now();
@@ -465,13 +447,11 @@ mod tests {
             "another place in the same group is separate"
         );
 
-        set_reminder_message(&mut conn, id, "3EB0AA").await.unwrap();
         assert_eq!(
-            find_reminder(&mut conn, "3EB0AA", group).await.unwrap(),
+            reminder(&mut conn, id).await.unwrap(),
             Some((date(), Prayer::Asr))
         );
-        let elsewhere = find_reminder(&mut conn, "3EB0AA", "120363000000000009@g.us").await;
-        assert_eq!(elsewhere.unwrap(), None, "same message ID, other chat");
+        assert_eq!(reminder(&mut conn, id + 100).await.unwrap(), None);
     }
 
     async fn bilal(conn: &mut SqliteConnection) -> i64 {

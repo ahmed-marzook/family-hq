@@ -16,15 +16,17 @@ use sha2::Sha256;
 use tracing::{Span, debug, info, warn};
 
 use crate::AppState;
+use crate::bot::emoji::DONE;
 use crate::bot::{self, Context, Offline, Outcome, Prepared, Ran};
 use crate::error::AppError;
 use crate::metrics::{self, Event, ReactionChange};
 use crate::parser::{self, BotCommand, ReplyCommand};
 use crate::person::{Assignee, Person};
+use crate::points::Finish;
 use crate::prayer::{self, checkin};
 use crate::repo::messages::{self, SentList};
 use crate::repo::metrics::Logged;
-use crate::repo::{self, chats, prayers, users};
+use crate::repo::{self, chats, prayers, reminders, users};
 use crate::whatsapp;
 
 /// HMAC using SHA-256 as its hash.
@@ -467,9 +469,38 @@ async fn log_failure(state: &AppState, row: &Logged<'_>) {
     }
 }
 
-/// Handles a reaction. The only reactions that mean anything are on prayer
-/// reminders: any emoji marks that prayer as prayed for whoever reacted,
-/// and removing it (an empty `reaction`) unmarks it.
+/// What a reaction on a reminder does, decided by the feature that owns
+/// the reminder (`reminders.source`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reacted {
+    /// Any emoji marks the prayer as prayed for whoever reacted; taking it
+    /// off (an empty `reaction`) unmarks it.
+    Prayer(chrono::NaiveDate, prayer::Prayer),
+    /// ✅ ticks off the todo.
+    Todo(i64),
+}
+
+/// Routes a reaction on reminder `found` to its feature. `None` if it
+/// means nothing there: a reminder listing several todos (those are
+/// answered by number), anything but ✅ on a todo's (taking ✅ off doesn't
+/// reopen it, as `done 2` can't be undone by a reply either), or a custom
+/// one (its ✅ and 😴 come with `+remind`).
+async fn route_reaction(
+    conn: &mut sqlx::SqliteConnection,
+    found: reminders::Found,
+    emoji: &str,
+) -> Result<Option<Reacted>, AppError> {
+    Ok(match (found.source, found.source_id) {
+        (reminders::Source::Prayer, Some(id)) => prayers::reminder(conn, id)
+            .await?
+            .map(|(date, prayer)| Reacted::Prayer(date, prayer)),
+        (reminders::Source::Todo, Some(id)) if emoji == DONE => Some(Reacted::Todo(id)),
+        _ => None,
+    })
+}
+
+/// Handles a reaction. Only reactions on the bot's reminders mean
+/// anything; which feature it goes to is the reminder's (`route_reaction`).
 #[tracing::instrument(
     name = "reaction",
     skip_all,
@@ -487,10 +518,15 @@ async fn handle_reaction(
 
     // Immediate, as in `handle_message`: this may write later.
     let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
-    let Some((date, prayer)) =
-        prayers::find_reminder(&mut tx, &r.reacted_message_id, &r.chat_id).await?
-    else {
+    let Some(found) = reminders::find(&mut tx, &r.reacted_message_id, &r.chat_id).await? else {
         debug!("{} reacted {:?}, not to a reminder", r.from, r.reaction);
+        return Ok(());
+    };
+    let Some(reacted) = route_reaction(&mut tx, found, &r.reaction).await? else {
+        debug!(
+            "{} reacted {:?} to a {} reminder: nothing to do",
+            r.from, r.reaction, found.source
+        );
         return Ok(());
     };
 
@@ -507,10 +543,6 @@ async fn handle_reaction(
     // Reacting to a reminder is using the bot.
     users::touch(&mut tx, user.id, now).await?;
 
-    // Adding the same reaction twice, or removing one that's already
-    // gone, is harmless: both repo calls are safe to repeat, and say
-    // whether anything changed. So retried webhooks need no dedupe here,
-    // and only a real change gets a reply.
     // An empty emoji means the reaction was taken off.
     let change = if r.reaction.is_empty() {
         ReactionChange::Removed
@@ -525,7 +557,10 @@ async fn handle_reaction(
     if is_group {
         chats::touch(&mut tx, chat_id, now).await?;
     }
-    let event: Event = metrics::reaction(change);
+    let event: Event = match reacted {
+        Reacted::Prayer(..) => metrics::reaction(change),
+        Reacted::Todo(_) => metrics::todo_reaction(),
+    };
     let row = Logged {
         event: &event,
         chat_id,
@@ -537,35 +572,6 @@ async fn handle_reaction(
     };
     repo::metrics::record(&mut tx, &row).await?;
 
-    // `None` if nothing changed.
-    let tick = match change {
-        ReactionChange::Removed => checkin::untick(&mut tx, user.id, date, prayer, now).await?,
-        ReactionChange::Added => {
-            // Its points count in the chat the reminder was in.
-            checkin::tick(&mut tx, user.id, date, prayer, Some(chat_id), now).await?
-        }
-    };
-    let prayed = prayers::prayed_on(&mut tx, user.id, date).await?.len();
-    // Only when something changed: a swapped emoji has no reply to add to,
-    // and the level-up then waits for the next one.
-    let level_ups = match tick {
-        Some(_) => {
-            // Their own today, for a personal best: not the prayer's date,
-            // which can be yesterday's Isha.
-            let defaults = &state.apis.prayer_times.defaults;
-            let settings =
-                repo::settings::effective(&mut tx, defaults, chat_id, Some(user.id)).await?;
-            let today = settings.today(now);
-            crate::points::level_ups::lines(&mut tx, &user, is_group, today, now).await?
-        }
-        None => Vec::new(),
-    };
-    tx.commit().await?;
-
-    // Swapping 👍 for ❤️ changes nothing, so it gets no second reply.
-    let Some(tick) = tick else {
-        return Ok(());
-    };
     // In a group, @mention them by their phone number (from `users`, as the
     // reminders do: a group reaction's `from` may be a LID, not a number).
     let phone = user
@@ -573,11 +579,32 @@ async fn handle_reaction(
         .split_once('@')
         .map_or(user.wa_jid.as_str(), |(number, _)| number);
     let mention = is_group.then_some(phone);
-    let mut text = prayer::reaction_reply(prayer, tick, prayed, mention);
-    for line in level_ups {
-        text.push('\n');
-        text.push_str(&line);
-    }
+    // Their own today: for a personal best, and whether a todo was done
+    // by its due date. Not a prayer's date, which can be yesterday's Isha.
+    let defaults = &state.apis.prayer_times.defaults;
+    let today = repo::settings::effective(&mut tx, defaults, chat_id, Some(user.id))
+        .await?
+        .today(now);
+    let ctx = ReactionContext {
+        user: &user,
+        chat_id,
+        is_group,
+        mention,
+        today,
+        now,
+    };
+    // `None` if nothing changed, so there's nothing to say.
+    let text = match reacted {
+        Reacted::Prayer(date, prayer) => {
+            prayer_reaction(&mut tx, &ctx, date, prayer, change).await?
+        }
+        Reacted::Todo(id) => todo_reaction(&mut tx, &ctx, id).await?,
+    };
+    tx.commit().await?;
+
+    let Some(text) = text else {
+        return Ok(());
+    };
     let mentions: Vec<String> = mention.map(str::to_string).into_iter().collect();
     // Saved already, so a failure here is logged, not returned: a 500
     // would only make GOWA retry, and the retry changes nothing.
@@ -586,9 +613,89 @@ async fn handle_reaction(
         .send_text(&r.chat_id, &text, Some(&r.reacted_message_id), &mentions)
         .await
     {
-        warn!("couldn't confirm {prayer}: {err}");
+        warn!("couldn't confirm {reacted:?}: {err}");
     }
     Ok(())
+}
+
+/// Who reacted, where, and when, for the feature the reaction goes to.
+struct ReactionContext<'a> {
+    user: &'a users::User,
+    chat_id: i64,
+    is_group: bool,
+    /// Their phone number, to @mention in a group's reply.
+    mention: Option<&'a str>,
+    /// Their own today.
+    today: chrono::NaiveDate,
+    now: DateTime<Utc>,
+}
+
+/// A reaction on a prayer reminder: ticks the prayer off, or (taken off)
+/// unticks it. The reply, if anything changed.
+async fn prayer_reaction(
+    conn: &mut sqlx::SqliteConnection,
+    ctx: &ReactionContext<'_>,
+    date: chrono::NaiveDate,
+    prayer: prayer::Prayer,
+    change: ReactionChange,
+) -> Result<Option<String>, AppError> {
+    let (user, now) = (ctx.user, ctx.now);
+    // Adding the same reaction twice, or removing one that's already
+    // gone, is harmless: both repo calls are safe to repeat, and say
+    // whether anything changed. So retried webhooks need no dedupe here,
+    // and only a real change gets a reply.
+    let tick = match change {
+        ReactionChange::Removed => checkin::untick(conn, user.id, date, prayer, now).await?,
+        ReactionChange::Added => {
+            // Its points count in the chat the reminder was in.
+            checkin::tick(conn, user.id, date, prayer, Some(ctx.chat_id), now).await?
+        }
+    };
+    // Swapping 👍 for ❤️ changes nothing, so it gets no second reply, and
+    // a level-up then waits for the next one.
+    let Some(tick) = tick else {
+        return Ok(None);
+    };
+    let prayed = prayers::prayed_on(conn, user.id, date).await?.len();
+    let level_ups =
+        crate::points::level_ups::lines(conn, user, ctx.is_group, ctx.today, now).await?;
+    let mut text = prayer::reaction_reply(prayer, tick, prayed, ctx.mention);
+    for line in level_ups {
+        text.push('\n');
+        text.push_str(&line);
+    }
+    Ok(Some(text))
+}
+
+/// ✅ on a reminder for one todo: ticks it off, as `done 2` would, with
+/// its points. Nothing if it was already closed (or removed).
+async fn todo_reaction(
+    conn: &mut sqlx::SqliteConnection,
+    ctx: &ReactionContext<'_>,
+    todo_id: i64,
+) -> Result<Option<String>, AppError> {
+    let bot_ctx = Context {
+        chat_id: ctx.chat_id,
+        is_group: ctx.is_group,
+        sender: ctx.user.clone(),
+        now: ctx.now,
+    };
+    let closed = crate::todo::close_todo(conn, &bot_ctx, todo_id, Finish::Done, ctx.today).await?;
+    let Some((title, earned)) = closed else {
+        return Ok(None);
+    };
+    let who = ctx
+        .mention
+        .map_or(String::new(), |phone| format!("@{phone} "));
+    let mut text = format!(
+        "{who}{DONE} Done: *{title}*{}",
+        crate::points::earned_text(Some(earned))
+    );
+    for line in crate::points::level_ups::for_sender(conn, &bot_ctx, ctx.today).await? {
+        text.push('\n');
+        text.push_str(&line);
+    }
+    Ok(Some(text))
 }
 
 /// Works out what the message asks for, if anything.
@@ -1069,6 +1176,86 @@ mod tests {
             .status()
     }
 
+    /// Records a reminder as sent in `chat_id` with WhatsApp ID
+    /// `message_id`, owned by `source`, as the reminder engine does.
+    async fn sent_reminder(
+        conn: &mut sqlx::SqliteConnection,
+        chat_id: i64,
+        source: reminders::Source,
+        source_id: Option<i64>,
+        message_id: &str,
+    ) {
+        let now = crate::testkit::utc("2026-10-27T08:00:00Z");
+        let row = reminders::NewReminder {
+            chat_id,
+            due_at: now,
+            source,
+            source_id,
+            text: "",
+            mentions: &[],
+        };
+        let id = reminders::record_sending(conn, &row, now).await.unwrap();
+        reminders::set_message(conn, id, message_id).await.unwrap();
+    }
+
+    /// A reaction reaches the feature that owns the reminder: ✅ on a
+    /// reminder for one todo ticks that todo off (with its points), once;
+    /// any other emoji, or a reaction on the four-a-day list of todos,
+    /// does nothing.
+    #[tokio::test]
+    async fn a_reaction_on_a_todo_reminder_ticks_the_todo_off() {
+        use crate::repo::todos::{self, Details};
+        use crate::testkit::{fake_gowa, seed_family, serve_state, test_state, utc};
+
+        let pool = crate::db::test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let now = utc("2026-10-27T08:00:00Z");
+        let family = seed_family(&mut conn, now).await;
+        let (bilal, khadija) = (family.bilal.id, family.khadija.id);
+        let hoover = todos::add(
+            &mut conn,
+            family.group,
+            "hoover",
+            khadija,
+            Some(bilal),
+            Details::default(),
+            now,
+        )
+        .await
+        .unwrap();
+        let todo = reminders::Source::Todo;
+        sent_reminder(&mut conn, family.group, todo, Some(hoover), "R-ONE").await;
+        sent_reminder(&mut conn, family.group, todo, None, "R-LIST").await;
+        drop(conn);
+
+        let gowa = fake_gowa().await;
+        let server = serve_state(test_state(pool.clone(), &gowa.url)).await;
+        let open = async || -> i64 {
+            count(&pool, "SELECT COUNT(*) FROM todos WHERE status = 'pending'").await
+        };
+
+        // 👍 and a reaction on the list: nothing happens.
+        let status = post_reaction(&server, "X1", "447700900001", "R-ONE", "👍").await;
+        assert_eq!(status, reqwest::StatusCode::OK);
+        post_reaction(&server, "X2", "447700900001", "R-LIST", "✅").await;
+        assert_eq!(open().await, 1);
+        assert!(gowa.sent.lock().unwrap().is_empty());
+
+        // ✅ on the todo's own reminder ticks it off, and says so.
+        post_reaction(&server, "X3", "447700900001", "R-ONE", "✅").await;
+        assert_eq!(open().await, 0);
+        // Again (a retried webhook, or ✅ put back): already done, no reply.
+        post_reaction(&server, "X4", "447700900001", "R-ONE", "✅").await;
+        let sent = gowa.sent.lock().unwrap().clone();
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert_eq!(sent[0].0, crate::testkit::GROUP);
+        assert!(
+            sent[0].1.starts_with("@447700900001 ✅ Done: *hoover*"),
+            "{}",
+            sent[0].1
+        );
+    }
+
     /// The three ways to tick a prayer off (a reaction on its reminder, the
     /// button on its push, `+prayed`) all go through `prayer::checkin`, so
     /// from the same start they leave the same log: Fajr not yet logged
@@ -1130,9 +1317,14 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap();
-            prayers::set_reminder_message(&mut conn, id, message_id)
-                .await
-                .unwrap();
+            sent_reminder(
+                &mut conn,
+                group,
+                reminders::Source::Prayer,
+                Some(id),
+                message_id,
+            )
+            .await;
         }
         let sub = Subscription {
             topic: "fhq-".to_string() + &"k".repeat(32),

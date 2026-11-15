@@ -289,6 +289,7 @@ mod tests {
                 "processed_messages",
                 "push_subscriptions",
                 "pushes_sent",
+                "reminders",
                 "report_settings",
                 "reports_sent",
                 "shopping_items",

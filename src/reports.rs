@@ -301,6 +301,8 @@ pub async fn plan(
             text: draft.text,
             mentions: draft.mentions,
             quote: None,
+            // A report, not a reminder: reactions to it mean nothing.
+            reminder: None,
             on_sent: OnSent::Nothing,
             push: Vec::new(),
             what: what.clone(),

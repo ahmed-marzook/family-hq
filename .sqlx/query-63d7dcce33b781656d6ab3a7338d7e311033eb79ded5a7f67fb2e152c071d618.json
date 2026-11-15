@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE reminders SET wa_message_id = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "63d7dcce33b781656d6ab3a7338d7e311033eb79ded5a7f67fb2e152c071d618"
+}

@@ -274,6 +274,11 @@ pub fn reaction(change: ReactionChange) -> Event {
     Event::new(Kind::Reaction, "prayers.react", Some(detail))
 }
 
+/// ✅ on a reminder for one todo, which ticks it off.
+pub fn todo_reaction() -> Event {
+    Event::new(Kind::Reaction, "todo.react", Some("done"))
+}
+
 /// A button tapped on a push (`crate::push`): the same kind of thing as a
 /// reaction, only from the ntfy app. `name` is the action's, e.g.
 /// "prayers.push" or "push.test".
