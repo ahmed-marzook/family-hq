@@ -134,6 +134,14 @@ work_on() {
   if [ -d "$wt" ] && branch=$(git -C "$wt" symbolic-ref --short HEAD 2>/dev/null) &&
     [[ $branch == claude/issue-$n-* ]]; then
     session=$(cat "$wt.session" 2>/dev/null || true)
+    # The ID is saved before Claude starts, so a stop during the database
+    # setup (or before Claude's first message) leaves an ID with no
+    # conversation behind it, and `--resume` would fail on every later pass.
+    # Only trust it if Claude kept a transcript for it.
+    if [ -n "$session" ] &&
+      ! compgen -G "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/*/$session.jsonl" >/dev/null; then
+      session=""
+    fi
     resume=1
   else
     # Seconds in the name, so a retry straight after a failure gets a new branch.
