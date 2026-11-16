@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO jot_summaries (user_id, day, claimed_at) VALUES (?, ?, ?)\n         ON CONFLICT (user_id, day) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "f23534184633b4b269c085c64f0aa09d1d9685615a762db118855e1c78cb91e5"
+}

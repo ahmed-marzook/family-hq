@@ -252,6 +252,67 @@ pub async fn add_entry(
     Ok(())
 }
 
+/// One saved entry.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Entry {
+    pub logged_at: DateTime<Utc>,
+    pub slot_at: Option<DateTime<Utc>>,
+    pub text: String,
+}
+
+/// Everything someone jotted on the local days `from..=to`, oldest first.
+pub async fn entries_between(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    from: NaiveDate,
+    to: NaiveDate,
+) -> Result<Vec<(NaiveDate, Entry)>, sqlx::Error> {
+    let rows = sqlx::query!(
+        r#"SELECT day AS "day: NaiveDate", logged_at AS "logged_at: DateTime<Utc>",
+                  slot_at AS "slot_at: DateTime<Utc>", text
+           FROM jot_entries
+           WHERE user_id = ? AND day >= ? AND day <= ?
+           ORDER BY datetime(logged_at), id"#,
+        user_id,
+        from,
+        to
+    )
+    .fetch_all(conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            (
+                r.day,
+                Entry {
+                    logged_at: r.logged_at,
+                    slot_at: r.slot_at,
+                    text: r.text,
+                },
+            )
+        })
+        .collect())
+}
+
+/// Claims the end-of-day summary for `day`. `true` the first time only.
+pub async fn claim_summary(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    day: NaiveDate,
+    now: DateTime<Utc>,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        "INSERT INTO jot_summaries (user_id, day, claimed_at) VALUES (?, ?, ?)
+         ON CONFLICT (user_id, day) DO NOTHING",
+        user_id,
+        day,
+        now
+    )
+    .execute(conn)
+    .await?;
+    Ok(result.rows_affected() == 1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

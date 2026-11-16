@@ -101,6 +101,12 @@ pub enum Claim {
         user_id: i64,
         slot_at: DateTime<Utc>,
     },
+    /// One person's end-of-day Jot summary (`repo::jot::claim_summary`).
+    JotSummary {
+        user_id: i64,
+        /// The local day it sums up.
+        day: NaiveDate,
+    },
     /// One report for one chat (`repo::reports::claim`). Claimed even when
     /// it has no messages, so the job doesn't work it out again every
     /// minute.
@@ -275,6 +281,9 @@ async fn claim(
             user_id,
             slot_at,
         } => stored_jot::claim_prompt(conn, *user_id, *chat_id, *slot_at, now)
+            .await?
+            .then_some(Claimed::Done),
+        Claim::JotSummary { user_id, day } => stored_jot::claim_summary(conn, *user_id, *day, now)
             .await?
             .then_some(Claimed::Done),
         Claim::Report {

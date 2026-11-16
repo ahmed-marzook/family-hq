@@ -217,6 +217,9 @@ An opt-in log of what you've done, so you can see where your time went. Only in 
 `/jot on 90m 08:30-17:00`: your own interval (`1h`, `90m`, `2h`, `3h`: anything from 30m to 4h) and active hours.
 `/jot`: is it on, the interval, the hours and the next prompt.
 `/jot off`: stops the prompts.
+`/jot today`: today as a timeline, with `—` where nothing was logged and `+jot` lines marked (extra). Also `/jot yesterday`, or a day like `/jot mon`.
+`/jot week`: one line per day of the last 7 (`Mon 4/5 · Tue 5/5`).
+After the last prompt of the day I send today's timeline once, in this DM.
 
 *Jotting*
 Reply to a prompt, or just send your answer within 30 minutes of one, and I save it for that slot. Commands still work as normal while a prompt is open.

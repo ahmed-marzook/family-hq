@@ -113,6 +113,10 @@ pub enum JotCommand {
     },
     /// `/jot off`
     Off,
+    /// `/jot today`, `/jot yesterday`, `/jot mon`: that day as a timeline
+    Day(JotDay),
+    /// `/jot week`: one line per day of the last 7
+    Week,
     /// `+jot text` or `+j text`: an entry with no prompt
     Log(String),
     /// Not typed: the webhook builds this from a reply to a prompt (or the
@@ -124,6 +128,16 @@ pub enum JotCommand {
     /// `/jot on 5h`, `/jot on 18:00-09:00`: clearly meant, but wrong, so the
     /// bot says what's wrong.
     Invalid(JotError),
+}
+
+/// Which day `/jot` shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JotDay {
+    Today,
+    Yesterday,
+    /// The latest such weekday within the last 7 days (what `/jot week`
+    /// lists), so a reply of `mon` after the week view means that Monday.
+    Weekday(chrono::Weekday),
 }
 
 /// What's wrong with a `/jot on` the sender typed.
@@ -436,6 +450,15 @@ fn parse_jot(rest: &str) -> Option<JotCommand> {
         None | Some("status") => Some(JotCommand::Status),
         Some("off") if words.next().is_none() => Some(JotCommand::Off),
         Some("on") => Some(parse_jot_on(words)),
+        Some(word) if words.next().is_none() => match word {
+            "today" => Some(JotCommand::Day(JotDay::Today)),
+            "yesterday" => Some(JotCommand::Day(JotDay::Yesterday)),
+            "week" => Some(JotCommand::Week),
+            other => other
+                .parse::<chrono::Weekday>()
+                .ok()
+                .map(|day| JotCommand::Day(JotDay::Weekday(day))),
+        },
         _ => None,
     }
 }
@@ -1852,6 +1875,22 @@ mod tests {
             jot("/jot on 09:00-18:00 2h"),
             on(Some(120), Some((time(9, 0), time(18, 0))))
         );
+    }
+
+    #[test]
+    fn jot_today_week_and_days() {
+        assert_eq!(jot("/jot today"), Some(JotCommand::Day(JotDay::Today)));
+        assert_eq!(jot("/j today"), Some(JotCommand::Day(JotDay::Today)));
+        assert_eq!(
+            jot("/jot yesterday"),
+            Some(JotCommand::Day(JotDay::Yesterday))
+        );
+        assert_eq!(jot("/jot WEEK"), Some(JotCommand::Week));
+        assert_eq!(
+            jot("/jot mon"),
+            Some(JotCommand::Day(JotDay::Weekday(chrono::Weekday::Mon)))
+        );
+        assert_eq!(jot("/jot today please"), None);
     }
 
     #[test]

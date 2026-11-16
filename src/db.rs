@@ -285,6 +285,7 @@ mod tests {
                 "jot_entries",
                 "jot_prompts",
                 "jot_settings",
+                "jot_summaries",
                 "levels_reached",
                 "points",
                 "prayer_log",

@@ -128,6 +128,9 @@ pub async fn clear(
     sqlx::query!("DELETE FROM jot_prompts WHERE user_id = ?", user_id)
         .execute(&mut *conn)
         .await?;
+    sqlx::query!("DELETE FROM jot_summaries WHERE user_id = ?", user_id)
+        .execute(&mut *conn)
+        .await?;
     sqlx::query!("DELETE FROM jot_settings WHERE user_id = ?", user_id)
         .execute(&mut *conn)
         .await?;

@@ -234,6 +234,8 @@ pub fn command(command: &BotCommand) -> Event {
                 JotCommand::Status => "status",
                 JotCommand::On { .. } => "on",
                 JotCommand::Off => "off",
+                JotCommand::Day(_) => "day",
+                JotCommand::Week => "week",
                 JotCommand::Log(_) => "log",
                 JotCommand::Reply { .. } => "reply",
                 JotCommand::Invalid(_) => "bad",

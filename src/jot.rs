@@ -8,7 +8,7 @@
 //! person's own clock, so a prompt keeps its local time across the BST/GMT
 //! change.
 
-use chrono::{DateTime, Duration, NaiveDate, NaiveTime, TimeZone, Timelike, Utc};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveTime, TimeZone, Timelike, Utc};
 use chrono_tz::Tz;
 use sqlx::SqliteConnection;
 use tracing::warn;
@@ -17,9 +17,9 @@ use crate::AppState;
 use crate::bot::emoji::{DONE, PROBLEM};
 use crate::bot::{Context, my_settings};
 use crate::error::AppError;
-use crate::parser::JotCommand;
+use crate::parser::{JotCommand, JotDay};
 use crate::reminders::engine::{self, Claim, OnSent, Outgoing, Planned};
-use crate::repo::jot::{self, JotSettings, Subscriber};
+use crate::repo::jot::{self, Entry, JotSettings, Subscriber};
 use crate::repo::settings as stored;
 use crate::settings::Settings;
 
@@ -153,6 +153,33 @@ pub fn plan(subscriber: &Subscriber, slot: &DueSlot, settings: &Settings) -> Pla
     }
 }
 
+/// The end-of-day summary: today's timeline, once, in the person's DM.
+/// Claimed per day like a prompt. Pure.
+pub fn summary_plan(
+    subscriber: &Subscriber,
+    day: NaiveDate,
+    entries: &[Entry],
+    slots: &[DateTime<Utc>],
+    settings: &Settings,
+) -> Planned {
+    Planned {
+        claim: Claim::JotSummary {
+            user_id: subscriber.user_id,
+            day,
+        },
+        messages: vec![Outgoing {
+            to: subscriber.wa_chat_id.clone(),
+            text: timeline("Today", entries, slots, settings),
+            mentions: Vec::new(),
+            quote: None,
+            reminder: None,
+            on_sent: OnSent::Nothing,
+            push: Vec::new(),
+            what: format!("{}'s jot summary", subscriber.display_name),
+        }],
+    }
+}
+
 /// Sends every Jot prompt due at `now`. One person's problem is logged and
 /// doesn't stop the others'.
 pub async fn check(state: &AppState, now: DateTime<Utc>) -> Result<(), AppError> {
@@ -194,6 +221,17 @@ async fn plan_subscriber(
         )
         .await?
     };
+    if let Some(day) = summary_due(now, settings.timezone, &subscriber.settings) {
+        let entries = {
+            let mut conn = state.db.acquire().await?;
+            jot::entries_between(&mut conn, subscriber.user_id, day, day).await?
+        };
+        let entries: Vec<Entry> = entries.into_iter().map(|(_, e)| e).collect();
+        let slots = slots_for(day, settings.timezone, Some(&subscriber.settings));
+        return Ok(Some(summary_plan(
+            subscriber, day, &entries, &slots, &settings,
+        )));
+    }
     let Some(slot) = due_slot(now, settings.timezone, &subscriber.settings) else {
         return Ok(None);
     };
@@ -202,6 +240,118 @@ async fn plan_subscriber(
         return Ok(None);
     }
     Ok(Some(plan(subscriber, &slot, &settings)))
+}
+
+/// What a day with nothing logged says: short and kind, never an empty
+/// timeline.
+fn nothing_logged(label: &str) -> String {
+    format!(
+        "{PROMPT} {label}: nothing logged. That's okay, some days go like that. `+jot <text>` adds a line any time."
+    )
+}
+
+/// How many of `slots` have at least one entry answering them.
+pub fn logged_count(entries: &[Entry], slots: &[DateTime<Utc>]) -> usize {
+    slots
+        .iter()
+        .filter(|slot| entries.iter().any(|e| e.slot_at == Some(**slot)))
+        .count()
+}
+
+/// One day as a timeline: every slot in order, `—` where nothing was
+/// logged, then the `+jot` entries as extras, and how many slots were
+/// logged. Pure: entries, slots and the clock settings in, text out.
+pub fn timeline(
+    label: &str,
+    entries: &[Entry],
+    slots: &[DateTime<Utc>],
+    mine: &Settings,
+) -> String {
+    if entries.is_empty() {
+        return nothing_logged(label);
+    }
+    let mut lines = vec![format!("{PROMPT} {label}")];
+    for slot in slots {
+        let texts: Vec<&str> = entries
+            .iter()
+            .filter(|e| e.slot_at == Some(*slot))
+            .map(|e| e.text.as_str())
+            .collect();
+        let text = if texts.is_empty() {
+            "—".to_string()
+        } else {
+            texts.join(", ")
+        };
+        lines.push(format!("{} {text}", mine.clock(*slot)));
+    }
+    // An entry for a prompt that isn't in today's slots any more (the hours
+    // were changed since) is shown as an extra rather than dropped.
+    for entry in entries
+        .iter()
+        .filter(|e| e.slot_at.is_none_or(|s| !slots.contains(&s)))
+    {
+        lines.push(format!(
+            "{} (extra) {}",
+            mine.clock(entry.logged_at),
+            entry.text
+        ));
+    }
+    if !slots.is_empty() {
+        lines.push(format!(
+            "{} of {} logged",
+            logged_count(entries, slots),
+            slots.len()
+        ));
+    }
+    lines.join("\n")
+}
+
+/// `Mon 4/5 · Tue 5/5 · ...` for days of `(date, logged, total)`.
+pub fn week_line(days: &[(NaiveDate, usize, usize)]) -> String {
+    days.iter()
+        .map(|(date, logged, total)| format!("{} {logged}/{total}", date.format("%a")))
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+/// The local date `day` means on `today`. A weekday is its latest
+/// occurrence in the last 7 days, the days `/jot week` lists.
+pub fn resolve_day(day: JotDay, today: NaiveDate) -> NaiveDate {
+    match day {
+        JotDay::Today => today,
+        JotDay::Yesterday => today - Duration::days(1),
+        JotDay::Weekday(weekday) => (0..7)
+            .map(|back| today - Duration::days(back))
+            .find(|date| date.weekday() == weekday)
+            .unwrap_or(today),
+    }
+}
+
+fn label_of(date: NaiveDate, today: NaiveDate) -> String {
+    if date == today {
+        "Today".to_string()
+    } else if date == today - Duration::days(1) {
+        "Yesterday".to_string()
+    } else {
+        date.format("%a %-d %b").to_string()
+    }
+}
+
+/// The slots of `date` under someone's current settings; none if they've
+/// never turned Jot on.
+fn slots_for(date: NaiveDate, timezone: Tz, settings: Option<&JotSettings>) -> Vec<DateTime<Utc>> {
+    settings.map_or_else(Vec::new, |s| {
+        slots_on(date, timezone, s.interval_minutes, s.start, s.end)
+    })
+}
+
+/// When the end-of-day summary goes out: once the last slot's prompt has
+/// had its `LATE_BY_AT_MOST` to be answered.
+pub fn summary_due(now: DateTime<Utc>, timezone: Tz, settings: &JotSettings) -> Option<NaiveDate> {
+    let day = now.with_timezone(&timezone).date_naive();
+    let last = *slots_for(day, timezone, Some(settings)).last()?;
+    // Not for a day it was turned on part-way through after the last slot.
+    (now >= last + Duration::minutes(LATE_BY_AT_MOST) && last >= settings.updated_at).then_some(day)
 }
 
 fn interval_label(minutes: u32) -> String {
@@ -236,6 +386,16 @@ fn next_line(settings: &JotSettings, now: DateTime<Utc>, mine: &Settings) -> Str
         }
         None => "No prompt fits those hours.".to_string(),
     }
+}
+
+async fn entries_of(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    from: NaiveDate,
+    to: NaiveDate,
+) -> Result<Vec<Entry>, AppError> {
+    let rows = jot::entries_between(conn, user_id, from, to).await?;
+    Ok(rows.into_iter().map(|(_, e)| e).collect())
 }
 
 /// `/jot`, `/jot on`, `/jot off`, `+jot` and a reply to a prompt: the
@@ -297,6 +457,38 @@ pub async fn command(
                 "{PROMPT} Jot is off. `/jot on 2h 09:00-18:00` turns it on: I'll ask what you've done every 2 hours, 09:00–18:00."
             ),
         },
+        JotCommand::Day(day) => {
+            let today = mine.today(ctx.now);
+            let date = resolve_day(day, today);
+            let entries = entries_of(conn, user_id, date, date).await?;
+            let slots = slots_for(date, mine.timezone, current.as_ref());
+            timeline(&label_of(date, today), &entries, &slots, &mine)
+        }
+        JotCommand::Week => {
+            let today = mine.today(ctx.now);
+            let from = today - Duration::days(6);
+            let all = jot::entries_between(conn, user_id, from, today).await?;
+            let days: Vec<_> = (0..7)
+                .map(|n| {
+                    let date = from + Duration::days(n);
+                    let entries: Vec<Entry> = all
+                        .iter()
+                        .filter(|(d, _)| *d == date)
+                        .map(|(_, e)| e.clone())
+                        .collect();
+                    let slots = slots_for(date, mine.timezone, current.as_ref());
+                    (date, logged_count(&entries, &slots), slots.len())
+                })
+                .collect();
+            if all.is_empty() {
+                nothing_logged("This week")
+            } else {
+                format!(
+                    "{PROMPT} This week\n{}\nSend `/jot mon` (or any day) to see that day.",
+                    week_line(&days)
+                )
+            }
+        }
         JotCommand::Log(text) => {
             jot::add_entry(conn, user_id, ctx.now, mine.today(ctx.now), None, &text).await?;
             format!("{DONE} Jotted.")
@@ -440,6 +632,95 @@ mod tests {
         assert_eq!(
             next("2026-11-02T06:00:00Z"),
             Some(utc("2026-11-02T09:00:00Z"))
+        );
+    }
+
+    fn entry(slot: Option<&str>, logged: &str, text: &str) -> Entry {
+        Entry {
+            logged_at: utc(logged),
+            slot_at: slot.map(utc),
+            text: text.to_string(),
+        }
+    }
+
+    #[test]
+    fn the_timeline_marks_missed_slots_and_extras() {
+        let slots = slots("2026-11-02");
+        let entries = [
+            entry(
+                Some("2026-11-02T09:00:00Z"),
+                "2026-11-02T09:05:00Z",
+                "Emails and planning",
+            ),
+            entry(
+                Some("2026-11-02T11:00:00Z"),
+                "2026-11-02T11:02:00Z",
+                "Finished the report",
+            ),
+            entry(
+                Some("2026-11-02T15:00:00Z"),
+                "2026-11-02T15:01:00Z",
+                "School run",
+            ),
+            entry(
+                Some("2026-11-02T15:00:00Z"),
+                "2026-11-02T15:02:00Z",
+                "groceries",
+            ),
+            entry(
+                Some("2026-11-02T17:00:00Z"),
+                "2026-11-02T17:01:00Z",
+                "Cooked",
+            ),
+            entry(None, "2026-11-02T14:20:00Z", "Called the garage"),
+        ];
+        assert_eq!(
+            timeline("Today", &entries, &slots, &defaults()),
+            "✏️ Today\n09:00 Emails and planning\n11:00 Finished the report\n13:00 —\n15:00 School run, groceries\n17:00 Cooked\n14:20 (extra) Called the garage\n4 of 5 logged"
+        );
+    }
+
+    #[test]
+    fn a_day_with_nothing_logged_is_a_kind_line() {
+        let text = timeline("Today", &[], &slots("2026-11-02"), &defaults());
+        assert!(text.contains("nothing logged"), "{text}");
+        assert!(!text.contains("13:00"), "{text}");
+    }
+
+    #[test]
+    fn the_week_line_and_day_names() {
+        assert_eq!(
+            week_line(&[(date("2026-11-02"), 4, 5), (date("2026-11-03"), 5, 5)]),
+            "Mon 4/5 · Tue 5/5"
+        );
+        let today = date("2026-11-04"); // Wednesday
+        assert_eq!(resolve_day(JotDay::Today, today), today);
+        assert_eq!(resolve_day(JotDay::Yesterday, today), date("2026-11-03"));
+        assert_eq!(
+            resolve_day(JotDay::Weekday(chrono::Weekday::Wed), today),
+            today
+        );
+        assert_eq!(
+            resolve_day(JotDay::Weekday(chrono::Weekday::Thu), today),
+            date("2026-10-29")
+        );
+    }
+
+    #[test]
+    fn the_summary_is_due_after_the_last_slot_has_had_its_time() {
+        let due = |s: &str| summary_due(utc(s), LONDON, &two_hourly());
+        assert_eq!(due("2026-11-02T17:29:00Z"), None);
+        assert_eq!(due("2026-11-02T17:30:00Z"), Some(date("2026-11-02")));
+        assert_eq!(due("2026-11-02T23:00:00Z"), Some(date("2026-11-02")));
+        assert_eq!(due("2026-11-02T12:00:00Z"), None);
+        // Turned on after the last slot: no summary for that day.
+        let late = JotSettings {
+            updated_at: utc("2026-11-02T17:10:00Z"),
+            ..two_hourly()
+        };
+        assert_eq!(
+            summary_due(utc("2026-11-02T18:00:00Z"), LONDON, &late),
+            None
         );
     }
 
