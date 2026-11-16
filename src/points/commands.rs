@@ -131,6 +131,8 @@ pub async fn show(
         this_week_by_category: levels::by_category(
             stored_points::by_source(conn, user, week).await?,
         ),
+        // Only here, in their own DM: a group's `/points` returned above.
+        jot: crate::jot::stats(conn, user, week, today).await?,
     };
     Ok(points::mine_text(&mine))
 }

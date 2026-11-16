@@ -124,12 +124,15 @@ Each prayer you tick off earns points too, in the chat you ticked it in (a push 
 • Prayed on time: 2 · made up: 1 · missed: 0
 Untick it and its points go; `+prayed asr on time` or `late` changes them.
 
+*Jot*
+With Jot on (`/help jot`), answering a prompt earns 1, for up to 3 prompts a day, and a day with every prompt answered earns 2 more (skipped ones don't count either way). Extra `+jot` lines earn nothing. Jot counts towards 📝 Todos.
+
 *Levels*
 Everything you earn is also XP, which never resets: 🕌 Prayers and 📝 Todos each have their own level, and your Overall level is the two added up. A skip doesn't cost XP. Each new level is announced once, in the reply that earned it.
 
 *See them*
 `/points` in a group: this week's leaderboard (Monday to Sunday) 🥇🥈🥉 with each person's Overall level, and who has earned what today. Only points earned in that group count; everyone starts from 0 each Monday.
-`/points` with me directly: your levels, then your own points from every chat: today, this week, last week, and each of the last 7 days.
+`/points` with me directly: your levels, then your own points from every chat: today, this week, last week, and each of the last 7 days. With Jot on, how many prompts you answered this week and your run of full days (never what you wrote).
 
 *Your history* (only with me directly, it's private)
 `/points weeks`: your last 12 weeks as bars, this week against your average, and your best week ever.
@@ -227,7 +230,10 @@ I skip a prompt if you logged something in the last 30 minutes, and a prompt tha
 *Jotting*
 Reply to a prompt, or just send your answer within 30 minutes of one, and I save it for that slot. Commands still work as normal while a prompt is open.
 Reply `skip` (or 😴) to a prompt you don't want to answer: it shows as skipped, not missed.
-`+jot wrote the report` (or `+j ...`) saves a line any time; while a prompt is open it answers that prompt.";
+`+jot wrote the report` (or `+j ...`) saves a line any time; while a prompt is open it answers that prompt.
+
+*Points*
+Each prompt you answer earns 1 ⭐ (up to 3 a day), and a day with every prompt answered earns 2 more, with the day's summary. Skipped prompts count neither way; extra `+jot` lines earn nothing. `/points` shows your Jot week and your run of full days. What you write stays here: it's never shown in a group or to anyone else.";
 
 const PUSH: &str = "🔔 *Help: push notifications*
 Get prayer reminders as phone notifications too, through the free *ntfy* app, with a Prayed button that ticks the prayer off without opening WhatsApp. WhatsApp reminders carry on as before.

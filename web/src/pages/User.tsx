@@ -96,6 +96,17 @@ function Detail({ data }: { data: UserDetail }) {
         </p>
       </Section>
 
+      <Section title="Jot">
+        <p className="text-sm text-stone-600 dark:text-stone-400">
+          {data.jot.on ? "On" : "Off"} · {count(data.jot.entries_this_week, "entry", "entries")} this
+          week · {count(data.jot.entries_last_week, "entry", "entries")} last week
+        </p>
+        <p className="mt-1 text-xs text-stone-500">
+          What they jot down is private to their chat with the bot, so only counts are shown. They
+          turn Jot on or off themselves with /jot in WhatsApp.
+        </p>
+      </Section>
+
       <Section title="Data">
         <PersonData user={user} cleanup={data.cleanup} />
       </Section>

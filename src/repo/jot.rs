@@ -4,6 +4,7 @@ use chrono::{DateTime, Duration, NaiveDate, NaiveTime, Utc};
 use sqlx::SqliteConnection;
 
 use crate::parser::JotDays;
+use crate::reports::Period;
 
 /// The text form of a clock time in the database ("09:00"): zero-padded, so
 /// the schema can compare two of them as text.
@@ -379,20 +380,21 @@ pub async fn recent_entry(
     }))
 }
 
-/// Makes a `+jot` entry the answer to `slot_at`.
+/// Makes a `+jot` entry the answer to `slot_at`. Returns whether it did:
+/// an entry that already answers another slot is left there.
 pub async fn fill_slot(
     conn: &mut SqliteConnection,
     entry_id: i64,
     slot_at: DateTime<Utc>,
-) -> Result<(), sqlx::Error> {
-    sqlx::query!(
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
         "UPDATE jot_entries SET slot_at = ? WHERE id = ? AND slot_at IS NULL",
         slot_at,
         entry_id
     )
     .execute(conn)
     .await?;
-    Ok(())
+    Ok(result.rows_affected() == 1)
 }
 
 /// Saves what someone jotted down. `slot_at` is the prompt it answers, or
@@ -496,6 +498,77 @@ pub async fn summary_claimed(
     .fetch_optional(conn)
     .await?;
     Ok(found.is_some())
+}
+
+/// How many slots someone answered on the local days `from..=to`: a slot
+/// with several entries counts once, and `+jot` extras not at all.
+pub async fn logged_slots_between(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    from: NaiveDate,
+    to: NaiveDate,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar!(
+        r#"SELECT COUNT(DISTINCT slot_at) AS "logged!: i64" FROM jot_entries
+           WHERE user_id = ? AND slot_at IS NOT NULL AND day >= ? AND day <= ?"#,
+        user_id,
+        from,
+        to
+    )
+    .fetch_one(conn)
+    .await
+}
+
+/// The days someone was sent (or at least due) an end-of-day summary, on or
+/// after `since`, newest first: the days a full-day streak is counted over.
+pub async fn summary_days_since(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    since: NaiveDate,
+) -> Result<Vec<NaiveDate>, sqlx::Error> {
+    sqlx::query_scalar!(
+        r#"SELECT day AS "day: NaiveDate" FROM jot_summaries
+           WHERE user_id = ? AND day >= ?
+           ORDER BY day DESC"#,
+        user_id,
+        since
+    )
+    .fetch_all(conn)
+    .await
+}
+
+/// What the admin dashboard may know about someone's Jot: counts only,
+/// never what they wrote.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JotCounts {
+    pub on: bool,
+    pub entries_this_week: i64,
+    pub entries_last_week: i64,
+}
+
+/// `JotCounts` for `user_id`, the weeks being their local days.
+pub async fn counts(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    this_week: Period,
+    last_week: Period,
+) -> Result<JotCounts, sqlx::Error> {
+    sqlx::query_as!(
+        JotCounts,
+        r#"SELECT
+             EXISTS (SELECT 1 FROM jot_settings WHERE user_id = ?1 AND enabled = 1) AS "on!: bool",
+             (SELECT COUNT(*) FROM jot_entries
+              WHERE user_id = ?1 AND day >= ?2 AND day <= ?3) AS "entries_this_week!: i64",
+             (SELECT COUNT(*) FROM jot_entries
+              WHERE user_id = ?1 AND day >= ?4 AND day <= ?5) AS "entries_last_week!: i64""#,
+        user_id,
+        this_week.first,
+        this_week.last,
+        last_week.first,
+        last_week.last
+    )
+    .fetch_one(conn)
+    .await
 }
 
 /// The prompts actually sent to someone in `from..to` (UTC), oldest first.

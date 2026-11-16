@@ -23,12 +23,16 @@ use crate::bot::emoji::{DONE, PROBLEM};
 use crate::bot::{Context, my_settings};
 use crate::error::AppError;
 use crate::parser::{JotCommand, JotDay, JotDays, JotPause};
+use crate::points::{self, Award, JotStats, STAR, level_ups};
 use crate::reminders::engine::{self, Claim, OnSent, Outgoing, Planned};
 use crate::repo::jot::{self, Entry, JotSettings, Subscriber};
+use crate::repo::points as stored_points;
 use crate::repo::settings as stored;
+use crate::reports::Period;
 use crate::settings::Settings;
 
 const PROMPT: &str = "✏️";
+const FULL_DAY: &str = "🌟";
 /// What a reply of `skip` can also be.
 pub const SKIP: &str = "😴";
 
@@ -216,7 +220,7 @@ pub fn summary_plan(
         },
         messages: vec![Outgoing {
             to: subscriber.wa_chat_id.clone(),
-            text: timeline(label, entries, slots, skipped, settings),
+            text: summary_text(label, entries, slots, skipped, settings),
             mentions: Vec::new(),
             quote: None,
             reminder: None,
@@ -225,6 +229,36 @@ pub fn summary_plan(
             what: format!("{}'s jot summary", subscriber.display_name),
         }],
     }
+}
+
+/// The end-of-day summary: the timeline, and the full-day bonus if every
+/// scored slot was logged (`plan_subscriber` pays it).
+fn summary_text(
+    label: &str,
+    entries: &[Entry],
+    slots: &[DateTime<Utc>],
+    skipped: &[DateTime<Utc>],
+    settings: &Settings,
+) -> String {
+    let text = timeline(label, entries, slots, skipped, settings);
+    match full_day(entries, slots, skipped) {
+        Some(bonus) => format!(
+            "{text}\n{FULL_DAY} Every slot logged: {} {STAR}",
+            points::signed(bonus.points)
+        ),
+        None => text,
+    }
+}
+
+/// The full-day bonus a day has earned, if any: every slot that counts
+/// (skipped ones don't, either way) was logged.
+pub fn full_day(
+    entries: &[Entry],
+    slots: &[DateTime<Utc>],
+    skipped: &[DateTime<Utc>],
+) -> Option<Award> {
+    let scored = scored_slots(slots, entries, skipped);
+    points::for_jot_day(scored.len(), logged_count(entries, &scored))
 }
 
 /// Sends every Jot prompt due at `now`. One person's problem is logged and
@@ -277,6 +311,21 @@ async fn plan_subscriber(
         }
         let (entries, slots, skipped) =
             day_view(&mut conn, subscriber.user_id, day, settings.timezone).await?;
+        // Paid with the summary, the day's cut-off: before it, a slot still
+        // to come could leave the day short. Paid before the summary is
+        // claimed, but only once (see `award_jot_day`), so a summary built
+        // again after a failed send can't pay twice.
+        if let Some(bonus) = full_day(&entries, &slots, &skipped) {
+            stored_points::award_jot_day(
+                &mut conn,
+                subscriber.user_id,
+                subscriber.chat_id,
+                bonus,
+                day,
+                now,
+            )
+            .await?;
+        }
         let label = label_of(day, settings.today(now));
         return Ok(Some(summary_plan(
             subscriber, day, &label, &entries, &slots, &skipped, &settings,
@@ -302,8 +351,20 @@ async fn plan_subscriber(
         let since = slot.send_at - Duration::minutes(LATE_BY_AT_MOST);
         if let Some(recent) = jot::recent_entry(&mut conn, subscriber.user_id, since, now).await? {
             // They've just said what they're doing, so no prompt; a `+jot`
-            // becomes this slot's answer so the timeline shows it there.
-            jot::fill_slot(&mut conn, recent.id, slot.at).await?;
+            // becomes this slot's answer so the timeline shows it there,
+            // and is paid as one.
+            if jot::fill_slot(&mut conn, recent.id, slot.at).await? {
+                let day = settings.today(slot.at);
+                stored_points::award_jot_slot(
+                    &mut conn,
+                    subscriber.user_id,
+                    subscriber.chat_id,
+                    slot.at,
+                    day,
+                    now,
+                )
+                .await?;
+            }
             return Ok(None);
         }
     }
@@ -771,7 +832,8 @@ pub async fn command(
             let open = jot::open_prompt(conn, ctx.chat_id, ctx.now).await?;
             jot::add_entry(conn, user_id, ctx.now, mine.today(ctx.now), open, &text).await?;
             match open {
-                Some(slot_at) => format!("{DONE} Jotted for {}.", mine.clock(slot_at)),
+                Some(slot_at) => jotted_for(conn, ctx, &mine, slot_at).await?,
+                // An extra earns nothing, so entries can't be farmed.
                 None => format!("{DONE} Jotted."),
             }
         }
@@ -797,9 +859,75 @@ pub async fn command(
                 &text,
             )
             .await?;
-            format!("{DONE} Jotted for {}.", mine.clock(slot_at))
+            jotted_for(conn, ctx, &mine, slot_at).await?
         }
     })
+}
+
+/// Pays the sender for answering `slot_at` (once per slot, see
+/// `award_jot_slot`) and says so: `✅ Jotted for 11:00 · +1 ⭐`, with any
+/// level-up it brought. Just `✅ Jotted for 11:00.` when it paid nothing:
+/// the slot had paid already, or the day's paid slots are used up.
+async fn jotted_for(
+    conn: &mut SqliteConnection,
+    ctx: &Context,
+    mine: &Settings,
+    slot_at: DateTime<Utc>,
+) -> Result<String, AppError> {
+    let clock = mine.clock(slot_at);
+    let paid = stored_points::award_jot_slot(
+        conn,
+        ctx.sender.id,
+        ctx.chat_id,
+        slot_at,
+        mine.today(slot_at),
+        ctx.now,
+    )
+    .await?;
+    if !paid {
+        return Ok(format!("{DONE} Jotted for {clock}."));
+    }
+    let mut lines = vec![format!(
+        "{DONE} Jotted for {clock}{}",
+        points::earned_text(Some(points::JOT_SLOT_POINTS))
+    )];
+    lines.extend(level_ups::for_sender(conn, ctx, mine.today(ctx.now)).await?);
+    Ok(lines.join("\n"))
+}
+
+/// How far back a full-day streak is looked for: a year. Longer streaks
+/// show as a year's worth, which is plenty to be proud of.
+const STREAK_LOOKS_BACK: Duration = Duration::days(366);
+
+/// Someone's Jot line for their own `/points`, or `None` if they've never
+/// turned Jot on. Counts only: never what they wrote.
+pub async fn stats(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    week: Period,
+    today: NaiveDate,
+) -> Result<Option<JotStats>, sqlx::Error> {
+    if jot::get(conn, user_id).await?.is_none() {
+        return Ok(None);
+    }
+    let since = today - STREAK_LOOKS_BACK;
+    let summaries = jot::summary_days_since(conn, user_id, since).await?;
+    let full = stored_points::jot_full_days(conn, user_id, since).await?;
+    Ok(Some(JotStats {
+        logged_this_week: jot::logged_slots_between(conn, user_id, week.first, week.last).await?,
+        full_day_streak: full_day_streak(&summaries, &full),
+    }))
+}
+
+/// How many fully logged days in a row someone has, counting back from
+/// their latest summarised day. Only days with a summary (or a bonus)
+/// count, so a day off (`-days`, `/jot off`) neither breaks nor adds to
+/// it, and today doesn't break it before its summary has gone. Pure.
+pub fn full_day_streak(summaries: &[NaiveDate], full: &[NaiveDate]) -> usize {
+    let mut days: Vec<NaiveDate> = summaries.iter().chain(full).copied().collect();
+    days.sort_unstable_by(|a, b| b.cmp(a));
+    days.dedup();
+    days.iter().take_while(|day| full.contains(day)).count()
 }
 
 #[cfg(test)]
@@ -1538,6 +1666,11 @@ mod tests {
             .await
             .unwrap();
         assert!(today.contains("11:00 called the garage"), "{today}");
+        // Filling the slot pays it, once, however often the loop looks.
+        assert_eq!(
+            jot_points(&mut conn, user).await,
+            vec![("jot_slot".to_string(), 1)]
+        );
         drop(conn);
 
         // The 13:00 slot has nothing recent (12:20 is 40 minutes before).
@@ -1564,7 +1697,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(said, format!("{DONE} Jotted for 11:00."));
+        assert_eq!(said, format!("{DONE} Jotted for 11:00 · +1 ⭐"));
         // The slot is answered now, so the next one is an extra.
         let said = command(&mut conn, &ctx, &defaults(), command_of("+j and emails"))
             .await
@@ -1758,5 +1891,313 @@ mod tests {
                 .unwrap()
         };
         assert!(off.contains("nothing to pause"), "{off}");
+    }
+
+    // ---- J4: points and stats ----
+
+    /// `user`'s Jot rows in the ledger, as `(reason, points)`, in order.
+    async fn jot_points(conn: &mut SqliteConnection, user: i64) -> Vec<(String, i64)> {
+        sqlx::query_as(
+            "SELECT reason, points FROM points WHERE source = 'jot' AND user_id = ? ORDER BY id",
+        )
+        .bind(user)
+        .fetch_all(conn)
+        .await
+        .unwrap()
+    }
+
+    fn reply(text: &str, slot: &str) -> JotCommand {
+        JotCommand::Reply {
+            text: text.to_string(),
+            slot_at: utc(slot),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_slot_pays_once_extras_pay_nothing_and_a_day_pays_three_at_most() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let family = seed_family(&mut conn, utc("2026-11-02T08:00:00Z")).await;
+        let (user, dm) = (family.bilal.id, family.dm);
+        for slot in ["09", "11", "13", "15"] {
+            sent_prompt(&mut conn, user, dm, &format!("2026-11-02T{slot}:00:00Z")).await;
+        }
+        let at = |now: &str| ctx(dm, false, &family.bilal, now);
+        let nine = at("2026-11-02T09:05:00Z");
+
+        let said = command(
+            &mut conn,
+            &nine,
+            &defaults(),
+            reply("emails", "2026-11-02T09:00:00Z"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(said, format!("{DONE} Jotted for 09:00 · +1 ⭐"));
+        // The same reply again (edited, or sent twice): saved, not paid.
+        let said = command(
+            &mut conn,
+            &nine,
+            &defaults(),
+            reply("emails!", "2026-11-02T09:00:00Z"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(said, format!("{DONE} Jotted for 09:00."));
+        // A `+jot` with no prompt open is an extra: nothing.
+        let said = command(
+            &mut conn,
+            &at("2026-11-02T10:00:00Z"),
+            &defaults(),
+            command_of("+j tea"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(said, format!("{DONE} Jotted."));
+        // A `+jot` answering the open 11:00 prompt pays like a reply.
+        let said = command(
+            &mut conn,
+            &at("2026-11-02T11:10:00Z"),
+            &defaults(),
+            command_of("+j the report"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(said, format!("{DONE} Jotted for 11:00 · +1 ⭐"));
+        let thirteen = at("2026-11-02T13:05:00Z");
+        command(
+            &mut conn,
+            &thirteen,
+            &defaults(),
+            reply("calls", "2026-11-02T13:00:00Z"),
+        )
+        .await
+        .unwrap();
+        // Three slots have paid today: the fourth is saved, not paid.
+        let said = command(
+            &mut conn,
+            &at("2026-11-02T15:05:00Z"),
+            &defaults(),
+            reply("review", "2026-11-02T15:00:00Z"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(said, format!("{DONE} Jotted for 15:00."));
+
+        assert_eq!(
+            jot_points(&mut conn, user).await,
+            vec![("jot_slot".to_string(), 1); 3]
+        );
+        assert_eq!(count(&mut conn, "jot_entries").await, 6);
+    }
+
+    #[test]
+    fn a_full_day_is_every_scored_slot_logged() {
+        let entry = |slot: &str| Entry {
+            logged_at: utc(slot),
+            slot_at: Some(utc(slot)),
+            text: "x".to_string(),
+        };
+        let (nine, eleven) = ("2026-11-02T09:00:00Z", "2026-11-02T11:00:00Z");
+        let slots = [utc(nine), utc(eleven)];
+        assert_eq!(
+            full_day(&[entry(nine), entry(eleven)], &slots, &[]).map(|a| a.points),
+            Some(2)
+        );
+        assert_eq!(full_day(&[entry(nine)], &slots, &[]), None, "11:00 missed");
+        // A skipped slot counts neither way.
+        assert!(full_day(&[entry(nine)], &slots, &[utc(eleven)]).is_some());
+        assert_eq!(
+            full_day(&[], &slots, &[utc(nine), utc(eleven)]),
+            None,
+            "all skipped"
+        );
+        assert_eq!(full_day(&[], &[], &[]), None);
+    }
+
+    #[test]
+    fn the_streak_counts_back_over_summarised_days() {
+        let days = |list: &[&str]| -> Vec<NaiveDate> { list.iter().map(|d| date(d)).collect() };
+        // Summaries on the 2nd to the 5th; the 3rd wasn't full.
+        let summaries = days(&["2026-11-05", "2026-11-04", "2026-11-03", "2026-11-02"]);
+        let full = days(&["2026-11-05", "2026-11-04", "2026-11-02"]);
+        assert_eq!(full_day_streak(&summaries, &full), 2);
+        // A day without a summary (Jot off, or a day left out) doesn't break it.
+        let summaries = days(&["2026-11-06", "2026-11-04"]);
+        let full = days(&["2026-11-06", "2026-11-04"]);
+        assert_eq!(full_day_streak(&summaries, &full), 2);
+        // The latest summarised day wasn't full: no streak.
+        assert_eq!(full_day_streak(&days(&["2026-11-06"]), &[]), 0);
+        assert_eq!(full_day_streak(&[], &[]), 0);
+    }
+
+    #[tokio::test]
+    async fn a_full_day_pays_its_bonus_once_with_the_summary() {
+        let pool = test_pool().await;
+        let state = crate::testkit::test_state(pool.clone(), "http://127.0.0.1:9");
+        let mut conn = pool.acquire().await.unwrap();
+        let family = seed_family(&mut conn, utc("2026-11-01T08:00:00Z")).await;
+        let (user, dm) = (family.bilal.id, family.dm);
+        jot::turn_on(
+            &mut conn,
+            user,
+            30,
+            at(22, 0),
+            at(23, 59),
+            utc("2026-11-01T08:00:00Z"),
+        )
+        .await
+        .unwrap();
+        sent_prompt(&mut conn, user, dm, "2026-11-02T23:00:00Z").await;
+        sent_prompt(&mut conn, user, dm, "2026-11-02T23:30:00Z").await;
+        let ctx = ctx(dm, false, &family.bilal, "2026-11-02T23:05:00Z");
+        command(
+            &mut conn,
+            &ctx,
+            &defaults(),
+            reply("dishes", "2026-11-02T23:00:00Z"),
+        )
+        .await
+        .unwrap();
+        // 23:30 is skipped, which doesn't stop the day being full.
+        command(
+            &mut conn,
+            &ctx,
+            &defaults(),
+            JotCommand::Skip {
+                slot_at: utc("2026-11-02T23:30:00Z"),
+            },
+        )
+        .await
+        .unwrap();
+        let subscriber = jot::subscribers(&mut conn).await.unwrap().remove(0);
+        drop(conn);
+
+        // Built twice (say the first send failed before it was claimed).
+        for now in ["2026-11-03T00:05:00Z", "2026-11-03T00:06:00Z"] {
+            let planned = plan_subscriber(&state, &subscriber, utc(now))
+                .await
+                .unwrap()
+                .expect("yesterday's summary");
+            let text = &planned.messages[0].text;
+            assert!(
+                text.ends_with("1 of 1 logged\n🌟 Every slot logged: +2 ⭐"),
+                "{text}"
+            );
+        }
+        let mut conn = pool.acquire().await.unwrap();
+        assert_eq!(
+            jot_points(&mut conn, user).await,
+            vec![("jot_slot".to_string(), 1), ("jot_full_day".to_string(), 2)]
+        );
+        let day: String =
+            sqlx::query_scalar("SELECT day FROM points WHERE reason = 'jot_full_day'")
+                .fetch_one(&mut *conn)
+                .await
+                .unwrap();
+        assert_eq!(day, "2026-11-02");
+    }
+
+    #[tokio::test]
+    async fn a_day_with_a_missed_slot_gets_no_bonus() {
+        let pool = test_pool().await;
+        let state = crate::testkit::test_state(pool.clone(), "http://127.0.0.1:9");
+        let mut conn = pool.acquire().await.unwrap();
+        let family = seed_family(&mut conn, utc("2026-11-01T08:00:00Z")).await;
+        let (user, dm) = (family.bilal.id, family.dm);
+        jot::turn_on(
+            &mut conn,
+            user,
+            30,
+            at(22, 0),
+            at(23, 59),
+            utc("2026-11-01T08:00:00Z"),
+        )
+        .await
+        .unwrap();
+        sent_prompt(&mut conn, user, dm, "2026-11-02T23:00:00Z").await;
+        sent_prompt(&mut conn, user, dm, "2026-11-02T23:30:00Z").await;
+        let ctx = ctx(dm, false, &family.bilal, "2026-11-02T23:05:00Z");
+        command(
+            &mut conn,
+            &ctx,
+            &defaults(),
+            reply("dishes", "2026-11-02T23:00:00Z"),
+        )
+        .await
+        .unwrap();
+        let subscriber = jot::subscribers(&mut conn).await.unwrap().remove(0);
+        drop(conn);
+
+        let planned = plan_subscriber(&state, &subscriber, utc("2026-11-03T00:05:00Z"))
+            .await
+            .unwrap()
+            .expect("yesterday's summary");
+        assert!(!planned.messages[0].text.contains("🌟"));
+        let mut conn = pool.acquire().await.unwrap();
+        assert_eq!(
+            jot_points(&mut conn, user).await,
+            vec![("jot_slot".to_string(), 1)]
+        );
+    }
+
+    #[tokio::test]
+    async fn points_in_a_dm_has_a_jot_line_with_counts_only() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let family = seed_family(&mut conn, utc("2026-11-01T08:00:00Z")).await;
+        let (user, dm) = (family.bilal.id, family.dm);
+        let now = "2026-11-03T10:00:00Z";
+        let points_in = |chat: i64, is_group: bool| ctx(chat, is_group, &family.bilal, now);
+
+        let before = crate::bot::tests::typed(&mut conn, &points_in(dm, false), "/points")
+            .await
+            .into_text();
+        assert!(!before.contains("✏️ Jot:"), "never turned on: {before}");
+
+        jot::turn_on(
+            &mut conn,
+            user,
+            120,
+            at(9, 0),
+            at(18, 0),
+            utc("2026-11-01T08:00:00Z"),
+        )
+        .await
+        .unwrap();
+        // Monday: both slots logged and the bonus paid with the summary.
+        for slot in ["2026-11-02T09:00:00Z", "2026-11-02T11:00:00Z"] {
+            sent_prompt(&mut conn, user, dm, slot).await;
+            let c = ctx(dm, false, &family.bilal, slot);
+            command(&mut conn, &c, &defaults(), reply("SECRET plans", slot))
+                .await
+                .unwrap();
+        }
+        jot::claim_summary(&mut conn, user, date("2026-11-02"), utc(now))
+            .await
+            .unwrap();
+        stored_points::award_jot_day(
+            &mut conn,
+            user,
+            dm,
+            points::for_jot_day(2, 2).unwrap(),
+            date("2026-11-02"),
+            utc(now),
+        )
+        .await
+        .unwrap();
+
+        let mine = crate::bot::tests::typed(&mut conn, &points_in(dm, false), "/points")
+            .await
+            .into_text();
+        assert!(
+            mine.contains("✏️ Jot: 2 slots logged this week · 1 full day"),
+            "{mine}"
+        );
+        assert!(!mine.contains("SECRET"), "{mine}");
+        let group = crate::bot::tests::typed(&mut conn, &points_in(family.group, true), "/points")
+            .await
+            .into_text();
+        assert!(!group.contains("✏️ Jot:"), "{group}");
     }
 }

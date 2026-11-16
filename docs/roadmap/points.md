@@ -2,7 +2,7 @@
 
 > **Goal:** finishing todos and praying earns points, so each person can see how their day and week went, with a leaderboard in each group. Habits will earn points the same way later.
 > **Status:** Brought forward at the owner's request (2026-11-06). P1 (ledger, points for todos, `/points`), P2 (Sunday weekly summary) and P3 (points for prayers) built; waiting on a week of family use. P4 (stats and levels, the weekly game, your history and personal bests, the monthly and yearly DM reviews) done and archived.
-> **Last updated:** 2026-11-13
+> **Last updated:** 2026-11-16 (Jot J4: points for Jot)
 
 ## Rules
 
@@ -179,6 +179,62 @@ Done when:
 - [x] A retried reaction doesn't pay twice
 - [x] Existing todo points survive the migration
 - [ ] Used by the family for a week, and the numbers feel fair
+
+## Jot points (J4, built)
+
+At the owner's request (issue #50): Jot (the opt-in log prompted in a DM,
+issues #47 onward) earns points too, kept small next to prayers and todos.
+
+| Jot                                          | Points               |
+| -------------------------------------------- | -------------------- |
+| A prompt (slot) answered                     | 1, for up to 3 a day |
+| A full day: every scored slot answered       | +2                   |
+| A skipped slot (`skip`)                      | counts neither way   |
+| A missed slot                                | 0 (never a penalty)  |
+| An extra `+jot` with no prompt to answer     | 0                    |
+
+- `points::for_jot_slot` / `for_jot_day`, with `JOT_SLOT_POINTS`,
+  `JOT_SLOTS_A_DAY` and `JOT_FULL_DAY_POINTS`. At most 5 a day (35 a
+  week), against up to 10 a day for prayers. The cap of 3 paid slots a
+  day keeps a 30-minute interval (up to 18 prompts) from out-earning the
+  default 2-hourly one.
+- **A slot pays** when it's answered: a reply (quoted or within 30
+  minutes), a `+jot` while a prompt is open, or a recent `+jot` that the
+  loop makes a slot's answer instead of prompting. Extras earn nothing,
+  so entries can't be spammed for points.
+- **The full-day bonus is paid with the end-of-day summary**, which is
+  the day's cut-off: before it, a slot still to come could leave the day
+  short. The summary says so (`🌟 Every slot logged: +2 ⭐`). A slot
+  answered after the summary still pays its 1, but doesn't bring the
+  bonus back.
+- **Once only, by the ledger.** Migration `0020_jot_points.sql` rebuilds
+  `points` with source `jot`, reasons `jot_slot` / `jot_full_day`, and a
+  partial unique index `(user_id, reason, source_id) WHERE source = 'jot'`:
+  `source_id` is the slot's moment in Unix seconds, or the day as
+  YYYYMMDD. A reply edited or sent twice, or two entries on one slot,
+  hit the index and change nothing (`ON CONFLICT DO NOTHING`); the bonus
+  is paid before the summary is claimed, so a summary built again after a
+  failed send can't pay twice. The cap is checked in the same `INSERT`.
+- **Earned in the person's DM**, on the slot's local day. So a group's
+  leaderboard and Sunday summary never include Jot; the DM `/points`, the
+  history and the reviews do.
+- **XP counts towards 📝 Todos** (`Category::of`). A category of its own
+  would add a level to everyone's Overall overnight, since Overall is the
+  sum of the category levels.
+- **Stats:** the DM `/points` has `✏️ Jot: 7 slots logged this week · 3
+  full days in a row`, for anyone who has ever turned Jot on. Counts only.
+  The streak counts back over days that had a summary (or a bonus), so a
+  day left out with `-days` or with Jot off doesn't break it.
+- **Privacy:** entry text is only ever shown in the person's own DM. The
+  admin API sends whether Jot is on and the entries this week and last
+  (`jot` on `GET /api/users/{id}`), never the text (tested on the
+  response body). Cleanup deletes a person's Jot settings, prompts,
+  entries, summaries and points (tested).
+
+Known gaps, accepted for now:
+
+- Skipping every prompt but one and answering it makes a full day (1 + 2).
+  Skipping takes a reply per prompt, so it's not worth gaming.
 
 ## Stage P4: stats, levels, a weekly game and a history (done)
 

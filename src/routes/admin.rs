@@ -5,6 +5,7 @@
 //! - A DM's lists are counted, never listed: `/api/chats/{id}/...` answers
 //!   404 for a DM.
 //! - Exact coordinates are never sent, only the town's name.
+//! - Jot entries are counted, never sent.
 //!
 //! The JSON shapes are their own structs (`UserRow`, `TodoView`, ...)
 //! rather than the database rows, so a new column can't end up in the API
@@ -24,7 +25,8 @@ use crate::cleanup;
 use crate::error::AppError;
 use crate::prayer;
 use crate::repo::settings::{self as stored, ChatSettings};
-use crate::repo::{admin, chats, push, shop, todos};
+use crate::repo::{admin, chats, jot, push, shop, todos};
+use crate::reports::{Period, Span};
 use crate::routes::admin_prayers::{PrayerView, prayer_view, today_for};
 use crate::routes::admin_reports::{ReportsView, reports_view};
 use crate::routes::admin_settings::existing_dm;
@@ -128,7 +130,18 @@ pub struct UserDetail {
     /// Their prayers this week and this month (counts, never times).
     prayers: PrayerView,
     push: PushView,
+    jot: JotView,
     chats: Vec<ChatView>,
+}
+
+/// Their Jot (`/jot on`): counts only. What they jotted down is private to
+/// their DM, so the text of an entry is never read here, let alone sent.
+#[derive(Debug, Serialize)]
+struct JotView {
+    on: bool,
+    /// Entries this week and last (Monday to Sunday on their own clock).
+    entries_this_week: i64,
+    entries_last_week: i64,
 }
 
 /// Their push notifications (`/push on`). Never their ntfy topic or token:
@@ -316,6 +329,9 @@ pub(crate) async fn detail(
     let dm = existing_dm(conn, id).await?;
     let reports = reports_view(conn, dm).await?;
     let push = push::stats(conn, id).await?;
+    let this_week = Period::of(Span::Week, today);
+    let last_week = Period::of(Span::Week, this_week.first - Duration::days(1));
+    let jot = jot::counts(conn, id, this_week, last_week).await?;
 
     Ok(UserDetail {
         recent_days: RECENT_DAYS,
@@ -327,6 +343,11 @@ pub(crate) async fn detail(
         push: PushView {
             on: push.on,
             sent: push.sent,
+        },
+        jot: JotView {
+            on: jot.on,
+            entries_this_week: jot.entries_this_week,
+            entries_last_week: jot.entries_last_week,
         },
         chats: chats
             .into_iter()
@@ -630,6 +651,19 @@ mod tests {
         stored::set_location(&mut conn, dm, "Crawley", "GB", home, "Europe/London")
             .await
             .unwrap();
+        // What Bilal jotted down is private to his DM too.
+        let nine = chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap();
+        let six = chrono::NaiveTime::from_hms_opt(18, 0, 0).unwrap();
+        jot::turn_on(&mut conn, bilal.id, 120, nine, six, now)
+            .await
+            .unwrap();
+        // On his own clock, as the API counts the weeks.
+        let today = today_for(&mut conn, &defaults(), bilal.id, now)
+            .await
+            .unwrap();
+        jot::add_entry(&mut conn, bilal.id, now, today, None, "SECRET jotted plans")
+            .await
+            .unwrap();
         (bilal.id, group, dm)
     }
 
@@ -841,6 +875,38 @@ mod tests {
         assert!(!body.contains(&token), "{body}");
         assert!(!body.contains("topic"), "{body}");
         assert!(!body.contains("token"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn jot_counts_without_entry_text() {
+        let pool = test_pool().await;
+        let (bilal, _, _) = seed(&pool).await;
+        let text = "went to the bank about the loan";
+        {
+            let mut conn = pool.acquire().await.unwrap();
+            let now = Utc::now();
+            let today = today_for(&mut conn, &defaults(), bilal, now).await.unwrap();
+            // 7 days before today is always in last week.
+            let week_ago = today - Duration::days(7);
+            jot::add_entry(&mut conn, bilal, now, week_ago, None, text)
+                .await
+                .unwrap();
+            jot::add_entry(&mut conn, bilal, now, today, None, text)
+                .await
+                .unwrap();
+        }
+        let server = start_server_with(pool).await;
+
+        let (status, body) = admin_get_text(&server, &format!("/api/users/{bilal}")).await;
+        assert_eq!(status, StatusCode::OK);
+        let detail: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(detail["jot"]["on"], true);
+        // The seed's entry and this one, both today; the old one last week.
+        assert_eq!(detail["jot"]["entries_this_week"], 2);
+        assert_eq!(detail["jot"]["entries_last_week"], 1);
+        assert!(!body.contains(text), "{body}");
+        assert!(!body.contains("jotted plans"), "{body}");
+        assert!(!body.contains("bank"), "{body}");
     }
 
     #[tokio::test]

@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT day AS \"day: NaiveDate\" FROM jot_summaries\n           WHERE user_id = ? AND day >= ?\n           ORDER BY day DESC",
+  "describe": {
+    "columns": [
+      {
+        "name": "day: NaiveDate",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "jot_summaries",
+            "name": "day"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "550e625cff334fb764c668e9a6957b2b86c1bd73ded4f5e83b1f03b2edaefa4c"
+}

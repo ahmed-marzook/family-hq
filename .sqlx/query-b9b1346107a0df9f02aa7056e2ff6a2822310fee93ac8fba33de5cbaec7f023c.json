@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO points (user_id, chat_id, source, source_id, reason, points, day, at)\n         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8\n         WHERE (SELECT COUNT(*) FROM points\n                WHERE source = ?3 AND reason = ?5 AND user_id = ?1 AND day = ?7) < ?9\n         ON CONFLICT (user_id, reason, source_id) WHERE source = 'jot' DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 9
+    },
+    "nullable": []
+  },
+  "hash": "b9b1346107a0df9f02aa7056e2ff6a2822310fee93ac8fba33de5cbaec7f023c"
+}

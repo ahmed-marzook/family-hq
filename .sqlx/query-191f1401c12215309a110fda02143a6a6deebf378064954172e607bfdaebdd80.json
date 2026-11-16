@@ -1,0 +1,35 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT\n             EXISTS (SELECT 1 FROM jot_settings WHERE user_id = ?1 AND enabled = 1) AS \"on!: bool\",\n             (SELECT COUNT(*) FROM jot_entries\n              WHERE user_id = ?1 AND day >= ?2 AND day <= ?3) AS \"entries_this_week!: i64\",\n             (SELECT COUNT(*) FROM jot_entries\n              WHERE user_id = ?1 AND day >= ?4 AND day <= ?5) AS \"entries_last_week!: i64\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "on!: bool",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "entries_this_week!: i64",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "entries_last_week!: i64",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "191f1401c12215309a110fda02143a6a6deebf378064954172e607bfdaebdd80"
+}

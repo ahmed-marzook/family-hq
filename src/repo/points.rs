@@ -1,9 +1,9 @@
 //! The points ledger: one row per award (see `points` for the rules).
 
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, Datelike, NaiveDate, Utc};
 use sqlx::SqliteConnection;
 
-use crate::points::{Award, DayPoints, Source};
+use crate::points::{self, Award, DayPoints, Source};
 use crate::prayer::Prayer;
 use crate::reports::Period;
 
@@ -25,7 +25,7 @@ pub async fn award(
     sqlx::query!(
         "INSERT INTO points (user_id, chat_id, source, source_id, reason, points, day, at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT (source, source_id) WHERE source NOT IN ('prayer', 'overdue') DO NOTHING",
+         ON CONFLICT (source, source_id) WHERE source NOT IN ('prayer', 'overdue', 'jot') DO NOTHING",
         user_id,
         chat_id,
         source,
@@ -71,6 +71,99 @@ pub async fn charge_overdue(
     .execute(conn)
     .await?;
     Ok(result.rows_affected() == 1)
+}
+
+/// Pays `user_id` for answering their Jot slot at `slot_at`, whose local
+/// day is `day`, in their DM `chat_id`. Once per slot: a second entry for
+/// it (an edited or repeated reply) changes nothing. Nothing either once
+/// `JOT_SLOTS_A_DAY` slots of that day have paid. Returns whether it paid
+/// just now.
+pub async fn award_jot_slot(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    chat_id: i64,
+    slot_at: DateTime<Utc>,
+    day: NaiveDate,
+    now: DateTime<Utc>,
+) -> Result<bool, sqlx::Error> {
+    let award = points::for_jot_slot();
+    let (source, reason) = (Source::Jot.as_db_str(), award.reason.as_db_str());
+    let slot = slot_at.timestamp();
+    let cap = points::JOT_SLOTS_A_DAY;
+    // The cap is checked in the same statement as the insert, so it holds
+    // however the slots of a day come in.
+    let result = sqlx::query!(
+        "INSERT INTO points (user_id, chat_id, source, source_id, reason, points, day, at)
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8
+         WHERE (SELECT COUNT(*) FROM points
+                WHERE source = ?3 AND reason = ?5 AND user_id = ?1 AND day = ?7) < ?9
+         ON CONFLICT (user_id, reason, source_id) WHERE source = 'jot' DO NOTHING",
+        user_id,
+        chat_id,
+        source,
+        slot,
+        reason,
+        award.points,
+        day,
+        now,
+        cap
+    )
+    .execute(conn)
+    .await?;
+    Ok(result.rows_affected() == 1)
+}
+
+/// Pays `user_id` the bonus for a fully logged Jot `day`, in their DM
+/// `chat_id`. Once per day. Returns whether it paid just now.
+pub async fn award_jot_day(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    chat_id: i64,
+    award: Award,
+    day: NaiveDate,
+    now: DateTime<Utc>,
+) -> Result<bool, sqlx::Error> {
+    let (source, reason) = (Source::Jot.as_db_str(), award.reason.as_db_str());
+    let day_number = jot_day_number(day);
+    let result = sqlx::query!(
+        "INSERT INTO points (user_id, chat_id, source, source_id, reason, points, day, at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (user_id, reason, source_id) WHERE source = 'jot' DO NOTHING",
+        user_id,
+        chat_id,
+        source,
+        day_number,
+        reason,
+        award.points,
+        day,
+        now
+    )
+    .execute(conn)
+    .await?;
+    Ok(result.rows_affected() == 1)
+}
+
+/// A full day's `source_id`: 2026-11-16 is 20261116, readable in the table.
+fn jot_day_number(day: NaiveDate) -> i64 {
+    i64::from(day.year()) * 10_000 + i64::from(day.month()) * 100 + i64::from(day.day())
+}
+
+/// The days `user_id` was paid a full Jot day, on or after `since`, newest
+/// first.
+pub async fn jot_full_days(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    since: NaiveDate,
+) -> Result<Vec<NaiveDate>, sqlx::Error> {
+    sqlx::query_scalar!(
+        r#"SELECT day AS "day: NaiveDate" FROM points
+           WHERE source = 'jot' AND reason = 'jot_full_day' AND user_id = ? AND day >= ?
+           ORDER BY day DESC"#,
+        user_id,
+        since
+    )
+    .fetch_all(conn)
+    .await
 }
 
 /// Sets what `user_id`'s `prayer` on `day` is worth, to match the prayer
