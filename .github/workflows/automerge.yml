@@ -10,6 +10,12 @@
 # Needs "Allow auto-merge" in Settings → General, and branch protection on
 # main requiring `checks`; without a required check, auto-merge would merge
 # at once.
+#
+# Off unless the repo variable AUTOMERGE is `true` (Settings → Secrets and
+# variables → Actions → Variables). Turned off because only `checks` is
+# required: #52 merged a minute after opening, with the Claude review's
+# findings still open and nothing set up to fix them. The owner merges by
+# hand until the review gates the merge.
 
 name: Auto-merge
 
@@ -27,6 +33,7 @@ jobs:
     # `claude/` branches (the "Create PR" link, or scripts/claude-local.sh).
     # Same-repo only, so a fork can't name its branch `claude/...` to get in.
     if: |
+      vars.AUTOMERGE == 'true' &&
       github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo.full_name == github.repository && (
         github.event.pull_request.user.login == 'claude[bot]' ||
