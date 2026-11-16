@@ -11,8 +11,9 @@
 # For each issue it moves the card to In progress, makes a fresh worktree on
 # a `claude/issue-N-...` branch from origin/main, and runs Claude headless
 # there. Claude pushes the branch and opens the PR itself; from then on the
-# usual CI, Claude review and auto-merge apply (automerge.yml matches the
-# `claude/` prefix, since these PRs are opened as the owner, not the App).
+# usual CI and Claude review apply, and auto-merge too when the AUTOMERGE
+# repo variable is `true` (automerge.yml matches the `claude/` prefix, since
+# these PRs are opened as the owner, not the App).
 #
 # Progress is shown live in this terminal and appended to
 # ../family-hq-agent/logs/issue-N-<time>.log (`tail -f` it from elsewhere).

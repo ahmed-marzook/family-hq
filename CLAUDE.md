@@ -44,7 +44,8 @@ family-facing dashboard in Phase 3, which is still later.
 ## Agent workflow
 
 Claude agents work on this repo unattended: issues are picked up by the
-Claude GitHub Action, reviewed by Claude, gated by CI, and auto-merged.
+Claude GitHub Action, reviewed by Claude and gated by CI. Auto-merge is
+off (see `.github/workflows/automerge.yml`): the owner merges by hand.
 
 - **What to work on:** only issues labelled `claude-ready`, issues in the
   project board's "Ready (local)" column (run on the owner's PC by
