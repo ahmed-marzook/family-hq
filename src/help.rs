@@ -36,7 +36,7 @@ I keep shared lists for each group I'm in, and private ones when you message me 
 🌤️ *Weather*: `/weather` · `/weather hourly` · `/weather tomorrow` · `/weather week`
 🌙 *Moon*: `/moon`
 🔔 *Push*: `/push on` in your chat with me, for prayer reminders in the ntfy app
-✏️ *Jot*: `/jot on` in a DM with me, and I'll ask what you've done · `+jot wrote the report`
+✏️ *Jot*: `/jot on` in a DM with me, and I'll ask what you've done · `+jot wrote the report` · share your day in a group with `/jot today` or `/jot week`
 
 Short forms: `+s` shop · `+g` got · `+t` todo · `+d` done · `+p` prayed · `+j` jot · `/s` · `/t` · `/p` · `/w` · `/m` · `/h` · `/j`
 
@@ -214,7 +214,7 @@ const MOON: &str = "🌙 *Help: moon*
 The Islamic date comes from AlAdhan's calculated calendar, so it can be a day off from the moon sighting your mosque follows. A new Islamic month starts once the new crescent is seen, usually a day or two after the new moon.";
 
 const JOT: &str = "✏️ *Help: jot*
-An opt-in log of what you've done, so you can see where your time went. Only in a DM with me.
+An opt-in log of what you've done, so you can see where your time went. Set up and used in a DM with me.
 
 `/jot on`: every 2 hours between 09:00 and 18:00, on your own clock, I'll ask what you've done since the last prompt.
 `/jot on 90m 08:30-17:00`: your own interval (`1h`, `90m`, `2h`, `3h`: anything from 30m to 4h) and active hours.
@@ -227,13 +227,16 @@ An opt-in log of what you've done, so you can see where your time went. Only in 
 After the last prompt of the day I send today's timeline once, in this DM.
 I skip a prompt if you logged something in the last 30 minutes, and a prompt that would land just after a prayer time waits until 15 minutes after it.
 
+*Sharing*
+Send `/jot today` or `/jot week` (also `/jot yesterday` or `/jot mon`) in a group to share your own day or week there, on your own clock. Only you can share yours: nobody can see anyone else's. Prompts, summaries and everything else stay in this DM.
+
 *Jotting*
 Reply to a prompt, or just send your answer within 30 minutes of one, and I save it for that slot. Commands still work as normal while a prompt is open.
 Reply `skip` (or 😴) to a prompt you don't want to answer: it shows as skipped, not missed.
 `+jot wrote the report` (or `+j ...`) saves a line any time; while a prompt is open it answers that prompt.
 
 *Points*
-Each prompt you answer earns 1 ⭐ (up to 3 a day), and a day with every prompt answered earns 2 more, with the day's summary. Skipped prompts count neither way; extra `+jot` lines earn nothing. `/points` shows your Jot week and your run of full days. What you write stays here: it's never shown in a group or to anyone else.";
+Each prompt you answer earns 1 ⭐ (up to 3 a day), and a day with every prompt answered earns 2 more, with the day's summary. Skipped prompts count neither way; extra `+jot` lines earn nothing. `/points` shows your Jot week and your run of full days. What you write stays here: it's only shown in a group when you share it yourself, and never to anyone else otherwise.";
 
 const PUSH: &str = "🔔 *Help: push notifications*
 Get prayer reminders as phone notifications too, through the free *ntfy* app, with a Prayed button that ticks the prayer off without opening WhatsApp. WhatsApp reminders carry on as before.
@@ -327,5 +330,9 @@ mod tests {
         assert!(page(Some("prayers")).contains("+prayed all"));
         assert!(page(Some("settings")).contains("/settings everyone"));
         assert!(page(Some("moon")).contains("`/moon` (or `/m`)"));
+        for page in [page(None), page(Some("jot"))] {
+            assert!(page.contains("`/jot today` or `/jot week`"), "{page}");
+            assert!(page.contains("in a group"), "{page}");
+        }
     }
 }
