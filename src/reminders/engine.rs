@@ -44,6 +44,7 @@ use tracing::{info, warn};
 use crate::error::AppError;
 use crate::prayer::{Prayer, ReminderKind};
 use crate::push::{self, Notice, Ntfy};
+use crate::repo::jot as stored_jot;
 use crate::repo::messages::{self, ListKind};
 use crate::repo::prayers::{self, NewReminder};
 use crate::repo::reminders::{self as stored_reminders, Source};
@@ -94,6 +95,12 @@ pub enum Claim {
         user_id: i64,
         slot_at: DateTime<Utc>,
     },
+    /// One person's Jot prompt (`repo::jot::claim_prompt`).
+    JotPrompt {
+        chat_id: i64,
+        user_id: i64,
+        slot_at: DateTime<Utc>,
+    },
     /// One report for one chat (`repo::reports::claim`). Claimed even when
     /// it has no messages, so the job doesn't work it out again every
     /// minute.
@@ -129,6 +136,12 @@ pub enum OnSent {
         kind: ListKind,
         /// `item_ids[0]` is item 1, and so on.
         item_ids: Vec<i64>,
+    },
+    /// Remembers the Jot prompt's message ID, so a reply quoting it is
+    /// saved against its slot.
+    JotPrompt {
+        user_id: i64,
+        slot_at: DateTime<Utc>,
     },
 }
 
@@ -257,6 +270,13 @@ async fn claim(
         } => todo_reminders::claim(conn, *chat_id, *user_id, *slot_at)
             .await?
             .then_some(Claimed::Done),
+        Claim::JotPrompt {
+            chat_id,
+            user_id,
+            slot_at,
+        } => stored_jot::claim_prompt(conn, *user_id, *chat_id, *slot_at, now)
+            .await?
+            .then_some(Claimed::Done),
         Claim::Report {
             chat_id,
             feature,
@@ -328,6 +348,10 @@ async fn send_one<M: Messenger>(
                     item_ids,
                 } => {
                     messages::save_list(&mut conn, &message_id, chat_id, kind, &item_ids, now)
+                        .await?;
+                }
+                OnSent::JotPrompt { user_id, slot_at } => {
+                    stored_jot::set_prompt_message(&mut conn, user_id, slot_at, &message_id)
                         .await?;
                 }
             }

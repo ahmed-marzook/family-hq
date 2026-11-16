@@ -1,0 +1,74 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT enabled AS \"enabled: bool\", interval_minutes, start_local, end_local,\n                  updated_at AS \"updated_at: DateTime<Utc>\"\n           FROM jot_settings WHERE user_id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "enabled: bool",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "jot_settings",
+            "name": "enabled"
+          }
+        }
+      },
+      {
+        "name": "interval_minutes",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "jot_settings",
+            "name": "interval_minutes"
+          }
+        }
+      },
+      {
+        "name": "start_local",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "jot_settings",
+            "name": "start_local"
+          }
+        }
+      },
+      {
+        "name": "end_local",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "jot_settings",
+            "name": "end_local"
+          }
+        }
+      },
+      {
+        "name": "updated_at: DateTime<Utc>",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "jot_settings",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "4d9b190fb2c5ba1fecf76890124891c6b6c0529b05d0fa8754d6b0d1f7a0c5a9"
+}

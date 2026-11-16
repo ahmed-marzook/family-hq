@@ -1,0 +1,110 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT u.id AS user_id, u.display_name, c.id AS chat_id, c.wa_chat_id,\n                  s.interval_minutes, s.start_local, s.end_local,\n                  s.updated_at AS \"updated_at: DateTime<Utc>\"\n           FROM jot_settings s\n           JOIN users u ON u.id = s.user_id\n           JOIN chats c ON c.dm_user_id = u.id AND c.left_at IS NULL\n           WHERE s.enabled = 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "user_id",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "display_name",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "display_name"
+          }
+        }
+      },
+      {
+        "name": "chat_id",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "chats",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "wa_chat_id",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chats",
+            "name": "wa_chat_id"
+          }
+        }
+      },
+      {
+        "name": "interval_minutes",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "jot_settings",
+            "name": "interval_minutes"
+          }
+        }
+      },
+      {
+        "name": "start_local",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "jot_settings",
+            "name": "start_local"
+          }
+        }
+      },
+      {
+        "name": "end_local",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "jot_settings",
+            "name": "end_local"
+          }
+        }
+      },
+      {
+        "name": "updated_at: DateTime<Utc>",
+        "ordinal": 7,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "jot_settings",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "3c83e2380084cc0cb9259740fbff18bdaae2c7ae4a7cdd7e5e71356b8de76d3e"
+}

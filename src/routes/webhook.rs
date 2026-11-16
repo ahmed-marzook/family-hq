@@ -20,13 +20,13 @@ use crate::bot::emoji::DONE;
 use crate::bot::{self, Context, Offline, Outcome, Prepared, Ran};
 use crate::error::AppError;
 use crate::metrics::{self, Event, ReactionChange};
-use crate::parser::{self, BotCommand, ReplyCommand};
+use crate::parser::{self, BotCommand, JotCommand, ReplyCommand};
 use crate::person::{Assignee, Person};
 use crate::points::Finish;
 use crate::prayer::{self, checkin};
 use crate::repo::messages::{self, SentList};
 use crate::repo::metrics::Logged;
-use crate::repo::{self, chats, prayers, reminders, users};
+use crate::repo::{self, chats, jot, prayers, reminders, users};
 use crate::whatsapp;
 
 /// HMAC using SHA-256 as its hash.
@@ -246,7 +246,18 @@ async fn handle_message(
     chats::add_member(&mut tx, chat_id, user.id, now).await?;
 
     let action = match (msg.body.as_deref(), shared) {
-        (Some(text), _) => action_for(&mut tx, &msg, text, chat_id, sender).await?,
+        (Some(text), _) => {
+            action_for(
+                &mut tx,
+                &msg,
+                text,
+                chat_id,
+                dm_owner.is_some(),
+                now,
+                sender,
+            )
+            .await?
+        }
         // A location shared in a DM sets that person's place. In a group
         // people share locations for other reasons ("I'm here"), so it's
         // left alone there.
@@ -707,6 +718,8 @@ async fn action_for(
     msg: &Message,
     text: &str,
     chat_id: i64,
+    is_dm: bool,
+    now: DateTime<Utc>,
     sender: Person,
 ) -> Result<Option<Action>, AppError> {
     // The list is only looked up once the first two have matched.
@@ -717,7 +730,40 @@ async fn action_for(
         return Ok(Some(Action::ListReply(list, reply)));
     }
 
-    Ok(parser::parse(text).map(|command| Action::Command(assign_to_sender(command, sender))))
+    // A command always wins, so commands work while a Jot prompt is open.
+    if let Some(command) = parser::parse(text) {
+        return Ok(Some(Action::Command(assign_to_sender(command, sender))));
+    }
+    if is_dm {
+        return jot_reply(conn, msg, text, chat_id, now).await;
+    }
+    Ok(None)
+}
+
+/// A reply to a Jot prompt: one that quotes the prompt, or (if it quotes
+/// nothing) the next plain message within 30 minutes of one. Text that looks
+/// like a command (`/foo`, which the parser didn't know) is never an entry.
+async fn jot_reply(
+    conn: &mut sqlx::SqliteConnection,
+    msg: &Message,
+    text: &str,
+    chat_id: i64,
+    now: DateTime<Utc>,
+) -> Result<Option<Action>, AppError> {
+    let text = text.trim();
+    if text.is_empty() || metrics::command_word(text).is_some() {
+        return Ok(None);
+    }
+    let slot_at = match &msg.replied_to_id {
+        Some(quoted) => jot::slot_of_message(conn, quoted, chat_id).await?,
+        None => jot::open_prompt(conn, chat_id, now).await?,
+    };
+    Ok(slot_at.map(|slot_at| {
+        Action::Command(BotCommand::Jot(JotCommand::Reply {
+            text: text.to_string(),
+            slot_at,
+        }))
+    }))
 }
 
 /// Thumbs-up on the message so the sender knows it was seen.

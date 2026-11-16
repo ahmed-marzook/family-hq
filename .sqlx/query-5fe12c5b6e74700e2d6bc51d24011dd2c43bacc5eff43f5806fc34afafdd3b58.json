@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO jot_prompts (user_id, chat_id, slot_at, claimed_at)\n         VALUES (?, ?, ?, ?)\n         ON CONFLICT (user_id, slot_at) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "5fe12c5b6e74700e2d6bc51d24011dd2c43bacc5eff43f5806fc34afafdd3b58"
+}

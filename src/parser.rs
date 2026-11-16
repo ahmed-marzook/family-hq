@@ -7,6 +7,8 @@
 //! Anything else is ordinary chat and parses to `None`, so the bot stays
 //! quiet in the family group unless someone is talking to it.
 
+use chrono::{DateTime, NaiveTime, Utc};
+
 use crate::person::Assignee;
 use crate::prayer::{HANAFI, Prayer, SHAFII};
 use crate::reports::{Delivery, Span};
@@ -92,8 +94,49 @@ pub enum BotCommand {
     /// `/points weeks`, `/points months`, `/points year` or `/points 2025`:
     /// your own history, in a DM only
     PointsHistory(PointsHistory),
+    /// `/jot ...` or `+jot text`: the opt-in log of what you've done
+    Jot(JotCommand),
     /// `/help` (overview) or `/help shop` (one topic's page)
     Help(Option<String>),
+}
+
+/// What `/jot` and `+jot` ask for.
+#[derive(Debug, Clone, PartialEq)]
+pub enum JotCommand {
+    /// `/jot`: is it on, and when is the next prompt?
+    Status,
+    /// `/jot on`, `/jot on 2h`, `/jot on 2h 09:00-18:00`: what isn't said
+    /// stays as it was (or is the default).
+    On {
+        interval_minutes: Option<u32>,
+        hours: Option<(NaiveTime, NaiveTime)>,
+    },
+    /// `/jot off`
+    Off,
+    /// `+jot text` or `+j text`: an entry with no prompt
+    Log(String),
+    /// Not typed: the webhook builds this from a reply to a prompt (or the
+    /// next plain message after one), which answers the prompt at `slot_at`.
+    Reply {
+        text: String,
+        slot_at: DateTime<Utc>,
+    },
+    /// `/jot on 5h`, `/jot on 18:00-09:00`: clearly meant, but wrong, so the
+    /// bot says what's wrong.
+    Invalid(JotError),
+}
+
+/// What's wrong with a `/jot on` the sender typed.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum JotError {
+    #[error(
+        "I can't use `{0}` as an interval. Try `1h`, `90m`, `2h` or `3h`: anything from 30m to 4h."
+    )]
+    BadInterval(String),
+    #[error("I can't read `{0}` as hours. Write them like `09:00-18:00`.")]
+    BadHours(String),
+    #[error("The hours must end after they start: `09:00-18:00`, not `18:00-09:00`.")]
+    EndBeforeStart,
 }
 
 /// Which part of your own points history to show.
@@ -270,6 +313,9 @@ pub fn parse(text: &str) -> Option<BotCommand> {
         "+skip" => parse_got(rest).map(BotCommand::SkipTodo),
         "+todo" => parse_add_todo(rest),
         "+prayed" => parse_prayed(rest).map(BotCommand::Prayed),
+        // Everything after `+jot` is the entry, as typed.
+        "+jot" => (!rest.is_empty()).then(|| BotCommand::Jot(JotCommand::Log(rest.to_string()))),
+        "/jot" => parse_jot(rest).map(BotCommand::Jot),
 
         // `/shop something-else` falls through to `None`.
         "/shop" if rest.is_empty() => Some(BotCommand::ListShop),
@@ -376,8 +422,70 @@ fn expand_shorthand(word: &str) -> &str {
         "/w" => "/weather",
         "/m" => "/moon",
         "/h" => "/help",
+        "+j" => "+jot",
+        "/j" => "/jot",
         other => other,
     }
+}
+
+/// The part after `/jot`.
+fn parse_jot(rest: &str) -> Option<JotCommand> {
+    let lower = rest.to_lowercase();
+    let mut words = lower.split_whitespace();
+    match words.next() {
+        None | Some("status") => Some(JotCommand::Status),
+        Some("off") if words.next().is_none() => Some(JotCommand::Off),
+        Some("on") => Some(parse_jot_on(words)),
+        _ => None,
+    }
+}
+
+/// `2h`, `90m` and `09:00-18:00`, in either order, each optional.
+fn parse_jot_on<'a>(words: impl Iterator<Item = &'a str>) -> JotCommand {
+    let (mut interval_minutes, mut hours) = (None, None);
+    for word in words {
+        if word.contains([':', '-', '–']) {
+            match parse_jot_hours(word) {
+                Ok(found) => hours = Some(found),
+                Err(err) => return JotCommand::Invalid(err),
+            }
+        } else {
+            match parse_jot_interval(word) {
+                Some(found) => interval_minutes = Some(found),
+                None => return JotCommand::Invalid(JotError::BadInterval(word.to_string())),
+            }
+        }
+    }
+    JotCommand::On {
+        interval_minutes,
+        hours,
+    }
+}
+
+/// `2h` or `90m`, from 30 minutes to 4 hours (the schema's `CHECK` too).
+fn parse_jot_interval(word: &str) -> Option<u32> {
+    let (number, minutes_per_unit) = match (word.strip_suffix('h'), word.strip_suffix('m')) {
+        (Some(hours), _) => (hours, 60),
+        (_, Some(minutes)) => (minutes, 1),
+        _ => return None,
+    };
+    if number.is_empty() || !number.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let minutes = number.parse::<u32>().ok()?.checked_mul(minutes_per_unit)?;
+    (30..=240).contains(&minutes).then_some(minutes)
+}
+
+/// `09:00-18:00` (or `9:00-18:00`): a start, then a later end.
+fn parse_jot_hours(word: &str) -> Result<(NaiveTime, NaiveTime), JotError> {
+    let bad = || JotError::BadHours(word.to_string());
+    let (start, end) = word.split_once(['-', '–']).ok_or_else(bad)?;
+    let clock = |text: &str| NaiveTime::parse_from_str(text, "%H:%M").map_err(|_| bad());
+    let (start, end) = (clock(start)?, clock(end)?);
+    if end <= start {
+        return Err(JotError::EndBeforeStart);
+    }
+    Ok((start, end))
 }
 
 /// A year for `/points 2025`: exactly four digits, from 2000 on (nobody
@@ -1695,5 +1803,128 @@ mod tests {
                 "{text:?} should not be a list action"
             );
         }
+    }
+
+    // ---- /jot ----
+
+    fn jot(text: &str) -> Option<JotCommand> {
+        match parse(text) {
+            Some(BotCommand::Jot(command)) => Some(command),
+            _ => None,
+        }
+    }
+
+    fn time(h: u32, m: u32) -> NaiveTime {
+        NaiveTime::from_hms_opt(h, m, 0).unwrap()
+    }
+
+    fn on(minutes: Option<u32>, hours: Option<(NaiveTime, NaiveTime)>) -> Option<JotCommand> {
+        Some(JotCommand::On {
+            interval_minutes: minutes,
+            hours,
+        })
+    }
+
+    #[test]
+    fn jot_status_on_and_off() {
+        assert_eq!(jot("/jot"), Some(JotCommand::Status));
+        assert_eq!(jot("/JOT status"), Some(JotCommand::Status));
+        assert_eq!(jot("/jot off"), Some(JotCommand::Off));
+        assert_eq!(jot("/jot on"), on(None, None));
+        assert_eq!(
+            jot("/jot on 2h 09:00-18:00"),
+            on(Some(120), Some((time(9, 0), time(18, 0))))
+        );
+    }
+
+    #[test]
+    fn jot_intervals_and_hours_can_come_in_either_order_and_alone() {
+        assert_eq!(jot("/jot on 1h"), on(Some(60), None));
+        assert_eq!(jot("/jot on 90m"), on(Some(90), None));
+        assert_eq!(jot("/jot on 3h"), on(Some(180), None));
+        assert_eq!(jot("/jot on 30m"), on(Some(30), None));
+        assert_eq!(jot("/jot on 4h"), on(Some(240), None));
+        assert_eq!(
+            jot("/jot on 8:30-17:00"),
+            on(None, Some((time(8, 30), time(17, 0))))
+        );
+        assert_eq!(
+            jot("/jot on 09:00-18:00 2h"),
+            on(Some(120), Some((time(9, 0), time(18, 0))))
+        );
+    }
+
+    #[test]
+    fn jot_short_forms() {
+        assert_eq!(jot("/j"), Some(JotCommand::Status));
+        assert_eq!(jot("/j on 2h"), on(Some(120), None));
+        assert_eq!(jot("/j off"), Some(JotCommand::Off));
+        assert_eq!(
+            jot("+jot wrote the report"),
+            Some(JotCommand::Log("wrote the report".to_string()))
+        );
+        assert_eq!(
+            jot("+j Called the School, then lunch"),
+            Some(JotCommand::Log("Called the School, then lunch".to_string())),
+            "the entry keeps its case"
+        );
+    }
+
+    #[test]
+    fn jot_with_nothing_to_log_or_an_unknown_word_is_not_a_command() {
+        for text in [
+            "+jot",
+            "+j",
+            "/jot maybe",
+            "/jot off now",
+            "/jota",
+            "jot hello",
+        ] {
+            assert_eq!(parse(text), None, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn jot_rejects_a_bad_interval() {
+        for word in [
+            "5h", "20m", "29m", "241m", "0h", "2", "h", "2.5h", "2hrs", "-2h",
+        ] {
+            let found = jot(&format!("/jot on {word}"));
+            assert!(
+                matches!(found, Some(JotCommand::Invalid(_))),
+                "{word:?} gave {found:?}"
+            );
+        }
+        assert_eq!(
+            jot("/jot on 5h"),
+            Some(JotCommand::Invalid(JotError::BadInterval("5h".to_string())))
+        );
+    }
+
+    #[test]
+    fn jot_rejects_bad_hours_and_an_end_before_the_start() {
+        for word in [
+            "9-18",
+            "25:00-26:00",
+            "09:00-",
+            "-18:00",
+            "09:00:18:00",
+            "09:00-18:61",
+        ] {
+            let found = jot(&format!("/jot on {word}"));
+            assert!(
+                matches!(found, Some(JotCommand::Invalid(JotError::BadHours(_)))),
+                "{word:?} gave {found:?}"
+            );
+        }
+        assert_eq!(
+            jot("/jot on 18:00-09:00"),
+            Some(JotCommand::Invalid(JotError::EndBeforeStart))
+        );
+        assert_eq!(
+            jot("/jot on 09:00-09:00"),
+            Some(JotCommand::Invalid(JotError::EndBeforeStart)),
+            "no hours at all"
+        );
     }
 }

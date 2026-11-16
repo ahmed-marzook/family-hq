@@ -72,6 +72,10 @@ pub async fn run(state: Arc<AppState>) {
         if let Err(err) = todo_reminders::check(&state, Utc::now()).await {
             error!("todo reminders: check failed: {err}");
         }
+        // Jot prompts, in each person's DM, on their own clock.
+        if let Err(err) = crate::jot::check(&state, Utc::now()).await {
+            error!("jot: check failed: {err}");
+        }
         // Sunday evening: each group's week of points.
         if let Err(err) = crate::points::reports::check(&state, Utc::now()).await {
             error!("points summary: check failed: {err}");

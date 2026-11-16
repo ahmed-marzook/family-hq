@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE jot_prompts SET wa_message_id = ? WHERE user_id = ? AND slot_at = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "c5fc74b87e44557aeffbac4348e249baca5d55b96a65d88301594871957ab13c"
+}

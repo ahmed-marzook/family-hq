@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO jot_entries (user_id, logged_at, day, slot_at, text)\n         VALUES (?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "d45db8196e4a52828a32e431f0f257e338fadceeaa83351ef105beccb991e57c"
+}

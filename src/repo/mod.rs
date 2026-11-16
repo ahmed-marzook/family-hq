@@ -15,6 +15,7 @@ pub mod backup;
 pub mod bests;
 pub mod chats;
 pub mod cleanup;
+pub mod jot;
 pub mod levels;
 pub mod messages;
 pub mod metrics;
