@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE jot_settings SET days = ? WHERE user_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "9fe52d75c86221c410e1ad5f2470bfd38e4373a9b8a65f9971d19705bf3bc9c3"
+}

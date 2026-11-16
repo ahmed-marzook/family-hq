@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT p.slot_at AS \"slot_at: DateTime<Utc>\"\n           FROM jot_prompts p\n           WHERE p.user_id = ? AND p.wa_message_id IS NOT NULL AND p.skipped_at IS NOT NULL\n             AND datetime(p.slot_at) >= datetime(?) AND datetime(p.slot_at) < datetime(?)\n           ORDER BY datetime(p.slot_at)",
+  "describe": {
+    "columns": [
+      {
+        "name": "slot_at: DateTime<Utc>",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "jot_prompts",
+            "name": "slot_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "583f1f1ac23f0cf1e39be86c9fe265c11f3403b0d8e42e8f17ca3c6ccbe0e505"
+}

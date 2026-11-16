@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE jot_entries SET slot_at = ? WHERE id = ? AND slot_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "f7e6732eec166ce57363da3b769608c5e0dc0c36bfdec38635462c3fcced4adb"
+}

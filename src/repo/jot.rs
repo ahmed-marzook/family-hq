@@ -3,6 +3,8 @@
 use chrono::{DateTime, Duration, NaiveDate, NaiveTime, Utc};
 use sqlx::SqliteConnection;
 
+use crate::parser::JotDays;
+
 /// The text form of a clock time in the database ("09:00"): zero-padded, so
 /// the schema can compare two of them as text.
 const CLOCK: &str = "%H:%M";
@@ -17,6 +19,22 @@ pub struct JotSettings {
     pub end: NaiveTime,
     /// When it was last turned on or changed.
     pub updated_at: DateTime<Utc>,
+    /// The weekdays it prompts on.
+    pub days: JotDays,
+    /// No prompts before this. Past or `None` means not paused.
+    pub paused_until: Option<DateTime<Utc>>,
+}
+
+impl JotSettings {
+    /// Whether a pause is still on at `now`.
+    pub fn paused_at(&self, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+        self.paused_until.filter(|until| *until > now)
+    }
+}
+
+fn decode_days(bits: i64) -> Result<JotDays, sqlx::Error> {
+    JotDays::from_bits(bits)
+        .ok_or_else(|| sqlx::Error::Decode(format!("bad jot days {bits}").into()))
 }
 
 fn decode_time(text: &str) -> Result<NaiveTime, sqlx::Error> {
@@ -34,7 +52,8 @@ pub async fn get(
 ) -> Result<Option<JotSettings>, sqlx::Error> {
     let row = sqlx::query!(
         r#"SELECT enabled AS "enabled: bool", interval_minutes, start_local, end_local,
-                  updated_at AS "updated_at: DateTime<Utc>"
+                  updated_at AS "updated_at: DateTime<Utc>", days,
+                  paused_until AS "paused_until: DateTime<Utc>"
            FROM jot_settings WHERE user_id = ?"#,
         user_id
     )
@@ -47,6 +66,8 @@ pub async fn get(
             start: decode_time(&r.start_local)?,
             end: decode_time(&r.end_local)?,
             updated_at: r.updated_at,
+            days: decode_days(r.days)?,
+            paused_until: r.paused_until,
         })
     })
     .transpose()
@@ -74,12 +95,46 @@ pub async fn turn_on(
              interval_minutes = excluded.interval_minutes,
              start_local = excluded.start_local,
              end_local = excluded.end_local,
-             updated_at = excluded.updated_at",
+             updated_at = excluded.updated_at,
+             paused_until = NULL",
         user_id,
         interval_minutes,
         start,
         end,
         now
+    )
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
+/// Sets the weekdays prompts go out on.
+pub async fn set_days(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    days: JotDays,
+) -> Result<(), sqlx::Error> {
+    let bits = i64::from(days.bits());
+    sqlx::query!(
+        "UPDATE jot_settings SET days = ? WHERE user_id = ?",
+        bits,
+        user_id
+    )
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
+/// No prompts until `until`; `None` ends a pause.
+pub async fn pause_until(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    until: Option<DateTime<Utc>>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        "UPDATE jot_settings SET paused_until = ? WHERE user_id = ?",
+        until,
+        user_id
     )
     .execute(conn)
     .await?;
@@ -112,7 +167,8 @@ pub async fn subscribers(conn: &mut SqliteConnection) -> Result<Vec<Subscriber>,
     let rows = sqlx::query!(
         r#"SELECT u.id AS user_id, u.display_name, c.id AS chat_id, c.wa_chat_id,
                   s.interval_minutes, s.start_local, s.end_local,
-                  s.updated_at AS "updated_at: DateTime<Utc>"
+                  s.updated_at AS "updated_at: DateTime<Utc>", s.days,
+                  s.paused_until AS "paused_until: DateTime<Utc>"
            FROM jot_settings s
            JOIN users u ON u.id = s.user_id
            JOIN chats c ON c.dm_user_id = u.id AND c.left_at IS NULL
@@ -133,6 +189,8 @@ pub async fn subscribers(conn: &mut SqliteConnection) -> Result<Vec<Subscriber>,
                     start: decode_time(&r.start_local)?,
                     end: decode_time(&r.end_local)?,
                     updated_at: r.updated_at,
+                    days: decode_days(r.days)?,
+                    paused_until: r.paused_until,
                 },
             })
         })
@@ -214,6 +272,7 @@ pub async fn open_prompt(
            FROM jot_prompts p
            WHERE p.chat_id = ?
              AND p.wa_message_id IS NOT NULL
+             AND p.skipped_at IS NULL
              AND datetime(p.claimed_at) > datetime(?)
              AND datetime(p.claimed_at) <= datetime(?)
              AND NOT EXISTS (SELECT 1 FROM jot_entries e
@@ -226,6 +285,114 @@ pub async fn open_prompt(
     )
     .fetch_optional(conn)
     .await
+}
+
+/// Marks the prompt for `slot_at` as skipped, unless it was answered.
+pub async fn skip_prompt(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    slot_at: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        "UPDATE jot_prompts SET skipped_at = ?
+         WHERE user_id = ? AND slot_at = ?
+           AND NOT EXISTS (SELECT 1 FROM jot_entries e
+                           WHERE e.user_id = jot_prompts.user_id AND e.slot_at = jot_prompts.slot_at)",
+        now,
+        user_id,
+        slot_at
+    )
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
+/// The sent prompts in `from..to` (UTC) that were skipped and still have no
+/// entry.
+pub async fn skipped_between(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> Result<Vec<DateTime<Utc>>, sqlx::Error> {
+    sqlx::query_scalar!(
+        r#"SELECT p.slot_at AS "slot_at: DateTime<Utc>"
+           FROM jot_prompts p
+           WHERE p.user_id = ? AND p.wa_message_id IS NOT NULL AND p.skipped_at IS NOT NULL
+             AND datetime(p.slot_at) >= datetime(?) AND datetime(p.slot_at) < datetime(?)
+           ORDER BY datetime(p.slot_at)"#,
+        user_id,
+        from,
+        to
+    )
+    .fetch_all(conn)
+    .await
+}
+
+/// Whether a prompt for `slot_at` was ever claimed, so one that's been sent
+/// is never also filled by an earlier entry.
+pub async fn prompt_claimed(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    slot_at: DateTime<Utc>,
+) -> Result<bool, sqlx::Error> {
+    let found = sqlx::query_scalar!(
+        "SELECT 1 FROM jot_prompts WHERE user_id = ? AND slot_at = ?",
+        user_id,
+        slot_at
+    )
+    .fetch_optional(conn)
+    .await?;
+    Ok(found.is_some())
+}
+
+/// What `recent_entry` found.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RecentEntry {
+    pub id: i64,
+    pub slot_at: Option<DateTime<Utc>>,
+}
+
+/// The newest entry logged after `since` and up to `now`, if any.
+pub async fn recent_entry(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    since: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> Result<Option<RecentEntry>, sqlx::Error> {
+    let row = sqlx::query!(
+        r#"SELECT id, slot_at AS "slot_at: DateTime<Utc>"
+           FROM jot_entries
+           WHERE user_id = ? AND datetime(logged_at) > datetime(?) AND datetime(logged_at) <= datetime(?)
+           ORDER BY datetime(logged_at) DESC, id DESC
+           LIMIT 1"#,
+        user_id,
+        since,
+        now
+    )
+    .fetch_optional(conn)
+    .await?;
+    Ok(row.map(|r| RecentEntry {
+        id: r.id,
+        slot_at: r.slot_at,
+    }))
+}
+
+/// Makes a `+jot` entry the answer to `slot_at`.
+pub async fn fill_slot(
+    conn: &mut SqliteConnection,
+    entry_id: i64,
+    slot_at: DateTime<Utc>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        "UPDATE jot_entries SET slot_at = ? WHERE id = ? AND slot_at IS NULL",
+        slot_at,
+        entry_id
+    )
+    .execute(conn)
+    .await?;
+    Ok(())
 }
 
 /// Saves what someone jotted down. `slot_at` is the prompt it answers, or

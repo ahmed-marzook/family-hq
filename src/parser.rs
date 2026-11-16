@@ -110,9 +110,14 @@ pub enum JotCommand {
     On {
         interval_minutes: Option<u32>,
         hours: Option<(NaiveTime, NaiveTime)>,
+        /// `-days mon-fri`
+        days: Option<JotDays>,
     },
     /// `/jot off`
     Off,
+    /// `/jot pause 3h`, `/jot pause today`: no prompts for a while, without
+    /// turning Jot off
+    Pause(JotPause),
     /// `/jot today`, `/jot yesterday`, `/jot mon`: that day as a timeline
     Day(JotDay),
     /// `/jot week`: one line per day of the last 7
@@ -125,6 +130,9 @@ pub enum JotCommand {
         text: String,
         slot_at: DateTime<Utc>,
     },
+    /// Not typed either: a reply of `skip` (or 😴) to the prompt at
+    /// `slot_at`.
+    Skip { slot_at: DateTime<Utc> },
     /// `/jot on 5h`, `/jot on 18:00-09:00`: clearly meant, but wrong, so the
     /// bot says what's wrong.
     Invalid(JotError),
@@ -140,6 +148,102 @@ pub enum JotDay {
     Weekday(chrono::Weekday),
 }
 
+/// How long `/jot pause` stops the prompts for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JotPause {
+    /// `3h`, `90m`.
+    For { minutes: u32 },
+    /// Until the person's local midnight.
+    Today,
+}
+
+/// The weekdays Jot prompts on: a bit each, Monday = 1 to Sunday = 64.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JotDays(u8);
+
+impl JotDays {
+    pub const EVERY_DAY: JotDays = JotDays(0b111_1111);
+
+    /// `None` for an empty set or a bit that isn't a day (what the schema's
+    /// `CHECK` refuses too).
+    pub fn from_bits(bits: i64) -> Option<JotDays> {
+        u8::try_from(bits)
+            .ok()
+            .filter(|b| (1..=0b111_1111).contains(b))
+            .map(JotDays)
+    }
+
+    pub fn bits(self) -> u8 {
+        self.0
+    }
+
+    pub fn contains(self, day: chrono::Weekday) -> bool {
+        self.0 & (1 << day.num_days_from_monday()) != 0
+    }
+
+    fn of(days: impl IntoIterator<Item = chrono::Weekday>) -> JotDays {
+        JotDays(
+            days.into_iter()
+                .fold(0, |bits, day| bits | (1 << day.num_days_from_monday())),
+        )
+    }
+
+    /// `mon-fri` (which can wrap: `fri-mon`), `mon,wed,fri`, `weekdays`,
+    /// `weekends`, `daily`. `None` if it isn't one of those.
+    pub fn parse(text: &str) -> Option<JotDays> {
+        use chrono::Weekday::{Fri, Mon, Sat, Sun};
+        match text {
+            "daily" | "everyday" | "all" => return Some(Self::EVERY_DAY),
+            "weekdays" => return Some(Self::of(Mon.cycle_to(Fri))),
+            "weekends" => return Some(Self::of([Sat, Sun])),
+            _ => {}
+        }
+        let day = |word: &str| word.parse::<chrono::Weekday>().ok();
+        if let Some((from, to)) = text.split_once(['-', '–']) {
+            return Some(Self::of(day(from)?.cycle_to(day(to)?)));
+        }
+        let days = text.split(',').map(day).collect::<Option<Vec<_>>>()?;
+        Some(Self::of(days))
+    }
+
+    /// `every day`, `Mon-Fri`, `Mon, Wed, Fri`: how it's said back.
+    pub fn label(self) -> String {
+        use chrono::Weekday::{Fri, Mon, Sat, Sun};
+        if self == Self::EVERY_DAY {
+            return "every day".to_string();
+        }
+        if self == Self::of(Mon.cycle_to(Fri)) {
+            return "Mon–Fri".to_string();
+        }
+        if self == Self::of([Sat, Sun]) {
+            return "Sat–Sun".to_string();
+        }
+        (0..7)
+            .map(|n| chrono::Weekday::try_from(n).unwrap_or(Mon))
+            .filter(|d| self.contains(*d))
+            .map(|d| d.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+/// `Weekday::cycle_to`: the days from one to another, wrapping past Sunday.
+trait CycleTo {
+    fn cycle_to(self, to: chrono::Weekday) -> Vec<chrono::Weekday>;
+}
+
+impl CycleTo for chrono::Weekday {
+    fn cycle_to(self, to: chrono::Weekday) -> Vec<chrono::Weekday> {
+        let mut days = vec![self];
+        let mut day = self;
+        while day != to {
+            day = day.succ();
+            days.push(day);
+        }
+        days
+    }
+}
+
 /// What's wrong with a `/jot on` the sender typed.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum JotError {
@@ -151,6 +255,14 @@ pub enum JotError {
     BadHours(String),
     #[error("The hours must end after they start: `09:00-18:00`, not `18:00-09:00`.")]
     EndBeforeStart,
+    #[error(
+        "I can't read `{0}` as days. Try `-days mon-fri`, `-days mon,wed,fri`, `-days weekdays` or `-days weekends`."
+    )]
+    BadDays(String),
+    #[error(
+        "I can't pause for `{0}`. Try `/jot pause 3h`, `/jot pause 90m` or `/jot pause today`."
+    )]
+    BadPause(String),
 }
 
 /// Which part of your own points history to show.
@@ -450,6 +562,7 @@ fn parse_jot(rest: &str) -> Option<JotCommand> {
         None | Some("status") => Some(JotCommand::Status),
         Some("off") if words.next().is_none() => Some(JotCommand::Off),
         Some("on") => Some(parse_jot_on(words)),
+        Some("pause") => Some(parse_jot_pause(words)),
         Some(word) if words.next().is_none() => match word {
             "today" => Some(JotCommand::Day(JotDay::Today)),
             "yesterday" => Some(JotCommand::Day(JotDay::Yesterday)),
@@ -465,9 +578,16 @@ fn parse_jot(rest: &str) -> Option<JotCommand> {
 
 /// `2h`, `90m` and `09:00-18:00`, in either order, each optional.
 fn parse_jot_on<'a>(words: impl Iterator<Item = &'a str>) -> JotCommand {
-    let (mut interval_minutes, mut hours) = (None, None);
-    for word in words {
-        if word.contains([':', '-', '–']) {
+    let (mut interval_minutes, mut hours, mut days) = (None, None, None);
+    let mut words = words;
+    while let Some(word) = words.next() {
+        if matches!(word, "-days" | "--days") {
+            let spec = words.next().unwrap_or_default();
+            match JotDays::parse(spec) {
+                Some(found) => days = Some(found),
+                None => return JotCommand::Invalid(JotError::BadDays(spec.to_string())),
+            }
+        } else if word.contains([':', '-', '–']) {
             match parse_jot_hours(word) {
                 Ok(found) => hours = Some(found),
                 Err(err) => return JotCommand::Invalid(err),
@@ -482,6 +602,34 @@ fn parse_jot_on<'a>(words: impl Iterator<Item = &'a str>) -> JotCommand {
     JotCommand::On {
         interval_minutes,
         hours,
+        days,
+    }
+}
+
+/// `3h`, `90m` or `today`. At most 3 days, so a typo like `300h` is
+/// refused rather than silently switching Jot off for weeks.
+fn parse_jot_pause<'a>(mut words: impl Iterator<Item = &'a str>) -> JotCommand {
+    let word = words.next().unwrap_or_default();
+    if words.next().is_some() {
+        return JotCommand::Invalid(JotError::BadPause(word.to_string()));
+    }
+    if word == "today" {
+        return JotCommand::Pause(JotPause::Today);
+    }
+    let (number, per_unit) = match (word.strip_suffix('h'), word.strip_suffix('m')) {
+        (Some(hours), _) => (hours, 60),
+        (_, Some(minutes)) => (minutes, 1),
+        _ => (word, 0),
+    };
+    let minutes = number
+        .parse::<u32>()
+        .ok()
+        .filter(|_| per_unit > 0 && number.bytes().all(|b| b.is_ascii_digit()))
+        .and_then(|n| n.checked_mul(per_unit))
+        .filter(|m| (1..=3 * 24 * 60).contains(m));
+    match minutes {
+        Some(minutes) => JotCommand::Pause(JotPause::For { minutes }),
+        None => JotCommand::Invalid(JotError::BadPause(word.to_string())),
     }
 }
 
@@ -1845,7 +1993,88 @@ mod tests {
         Some(JotCommand::On {
             interval_minutes: minutes,
             hours,
+            days: None,
         })
+    }
+
+    fn days_of(text: &str) -> Option<Vec<chrono::Weekday>> {
+        let JotCommand::On { days, .. } = jot(&format!("/jot on -days {text}"))? else {
+            return None;
+        };
+        let days = days?;
+        Some(
+            (0..7)
+                .filter_map(|n| chrono::Weekday::try_from(n).ok())
+                .filter(|d| days.contains(*d))
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn jot_days_ranges_lists_and_names() {
+        use chrono::Weekday::{Fri, Mon, Sat, Sun, Thu, Tue, Wed};
+        assert_eq!(days_of("mon-fri"), Some(vec![Mon, Tue, Wed, Thu, Fri]));
+        assert_eq!(days_of("MON-FRI"), Some(vec![Mon, Tue, Wed, Thu, Fri]));
+        assert_eq!(
+            days_of("monday-friday"),
+            Some(vec![Mon, Tue, Wed, Thu, Fri])
+        );
+        assert_eq!(days_of("mon,wed,fri"), Some(vec![Mon, Wed, Fri]));
+        assert_eq!(days_of("sat"), Some(vec![Sat]));
+        assert_eq!(days_of("fri-mon"), Some(vec![Mon, Fri, Sat, Sun]));
+        assert_eq!(days_of("weekdays"), Some(vec![Mon, Tue, Wed, Thu, Fri]));
+        assert_eq!(days_of("weekends"), Some(vec![Sat, Sun]));
+        assert_eq!(days_of("daily").map(|d| d.len()), Some(7));
+        assert_eq!(
+            jot("/jot on 2h 09:00-18:00 -days mon-fri"),
+            Some(JotCommand::On {
+                interval_minutes: Some(120),
+                hours: Some((time(9, 0), time(18, 0))),
+                days: JotDays::parse("mon-fri"),
+            })
+        );
+        for bad in ["", "funday", "mon-", "mon,,fri", "mon-xyz"] {
+            assert!(
+                matches!(
+                    jot(&format!("/jot on -days {bad}")),
+                    Some(JotCommand::Invalid(JotError::BadDays(_)))
+                ),
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn jot_days_say_themselves_back() {
+        let label = |t: &str| JotDays::parse(t).unwrap().label();
+        assert_eq!(label("daily"), "every day");
+        assert_eq!(label("mon-fri"), "Mon–Fri");
+        assert_eq!(label("sat,sun"), "Sat–Sun");
+        assert_eq!(label("mon,wed,fri"), "Mon, Wed, Fri");
+        assert_eq!(JotDays::from_bits(0), None);
+        assert_eq!(JotDays::from_bits(128), None);
+        assert_eq!(JotDays::from_bits(31), JotDays::parse("mon-fri"));
+    }
+
+    #[test]
+    fn jot_pause_for_a_time_or_until_tonight() {
+        let pause = |minutes| Some(JotCommand::Pause(JotPause::For { minutes }));
+        assert_eq!(jot("/jot pause 3h"), pause(180));
+        assert_eq!(jot("/j pause 90m"), pause(90));
+        assert_eq!(jot("/jot PAUSE 1h"), pause(60));
+        assert_eq!(
+            jot("/jot pause today"),
+            Some(JotCommand::Pause(JotPause::Today))
+        );
+        for bad in ["", "3", "h", "0h", "-1h", "soon", "99h", "3h today"] {
+            assert!(
+                matches!(
+                    jot(&format!("/jot pause {bad}")),
+                    Some(JotCommand::Invalid(JotError::BadPause(_)))
+                ),
+                "{bad:?}"
+            );
+        }
     }
 
     #[test]
