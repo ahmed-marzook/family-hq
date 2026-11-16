@@ -313,6 +313,48 @@ pub async fn claim_summary(
     Ok(result.rows_affected() == 1)
 }
 
+/// Whether the end-of-day summary for `day` has already been claimed, so
+/// the loop can skip building it again every minute until it stops being
+/// due.
+pub async fn summary_claimed(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    day: NaiveDate,
+) -> Result<bool, sqlx::Error> {
+    let found = sqlx::query_scalar!(
+        "SELECT 1 FROM jot_summaries WHERE user_id = ? AND day = ?",
+        user_id,
+        day
+    )
+    .fetch_optional(conn)
+    .await?;
+    Ok(found.is_some())
+}
+
+/// The prompts actually sent to someone in `from..to` (UTC), oldest first.
+/// A past day is scored against these, not against today's settings, so
+/// `/jot off` or new hours don't rewrite its totals. A claim WhatsApp never
+/// accepted wasn't seen, so it doesn't count.
+pub async fn prompts_between(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> Result<Vec<DateTime<Utc>>, sqlx::Error> {
+    sqlx::query_scalar!(
+        r#"SELECT slot_at AS "slot_at: DateTime<Utc>"
+           FROM jot_prompts
+           WHERE user_id = ? AND wa_message_id IS NOT NULL
+             AND datetime(slot_at) >= datetime(?) AND datetime(slot_at) < datetime(?)
+           ORDER BY datetime(slot_at)"#,
+        user_id,
+        from,
+        to
+    )
+    .fetch_all(conn)
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -420,6 +462,59 @@ mod tests {
             open_prompt(&mut conn, dm, soon).await.unwrap(),
             None,
             "answered"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_summary_is_claimed_once_per_day() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let now = utc("2026-11-16T18:00:00Z");
+        let family = seed_family(&mut conn, now).await;
+        let user = family.bilal.id;
+        let day = date("2026-11-16");
+
+        assert!(!summary_claimed(&mut conn, user, day).await.unwrap());
+        assert!(claim_summary(&mut conn, user, day, now).await.unwrap());
+        assert!(!claim_summary(&mut conn, user, day, now).await.unwrap());
+        assert!(summary_claimed(&mut conn, user, day).await.unwrap());
+        // The next day is a new summary.
+        let next = date("2026-11-17");
+        assert!(!summary_claimed(&mut conn, user, next).await.unwrap());
+        assert!(claim_summary(&mut conn, user, next, now).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn only_prompts_whatsapp_accepted_count_as_sent() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let now = utc("2026-11-16T08:00:00Z");
+        let family = seed_family(&mut conn, now).await;
+        let (user, dm) = (family.bilal.id, family.dm);
+        let (nine, eleven) = (utc("2026-11-16T09:00:00Z"), utc("2026-11-16T11:00:00Z"));
+
+        claim_prompt(&mut conn, user, dm, nine, nine).await.unwrap();
+        set_prompt_message(&mut conn, user, nine, "P9")
+            .await
+            .unwrap();
+        // Claimed, but the send failed.
+        claim_prompt(&mut conn, user, dm, eleven, eleven)
+            .await
+            .unwrap();
+
+        let day = (utc("2026-11-16T00:00:00Z"), utc("2026-11-17T00:00:00Z"));
+        assert_eq!(
+            prompts_between(&mut conn, user, day.0, day.1)
+                .await
+                .unwrap(),
+            vec![nine]
+        );
+        let next_day = (utc("2026-11-17T00:00:00Z"), utc("2026-11-18T00:00:00Z"));
+        assert!(
+            prompts_between(&mut conn, user, next_day.0, next_day.1)
+                .await
+                .unwrap()
+                .is_empty()
         );
     }
 }
