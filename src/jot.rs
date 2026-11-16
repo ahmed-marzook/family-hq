@@ -906,17 +906,47 @@ pub async fn stats(
     user_id: i64,
     week: Period,
     today: NaiveDate,
+    timezone: Tz,
 ) -> Result<Option<JotStats>, sqlx::Error> {
     if jot::get(conn, user_id).await?.is_none() {
         return Ok(None);
     }
     let since = today - STREAK_LOOKS_BACK;
-    let summaries = jot::summary_days_since(conn, user_id, since).await?;
+    let (from, to) = (day_bounds(since, timezone).0, day_bounds(today, timezone).1);
+    let sent = jot::prompts_between(conn, user_id, from, to).await?;
+    let skipped = jot::skipped_between(conn, user_id, from, to).await?;
+    let all_skipped = all_skipped_days(&sent, &skipped, timezone);
+    // Skipped slots count neither way, so a day where every prompt was
+    // skipped is left out like a day off, rather than breaking the streak.
+    let summaries: Vec<NaiveDate> = jot::summary_days_since(conn, user_id, since)
+        .await?
+        .into_iter()
+        .filter(|day| !all_skipped.contains(day))
+        .collect();
     let full = stored_points::jot_full_days(conn, user_id, since).await?;
     Ok(Some(JotStats {
         logged_this_week: jot::logged_slots_between(conn, user_id, week.first, week.last).await?,
         full_day_streak: full_day_streak(&summaries, &full),
     }))
+}
+
+/// The local days on which prompts were sent and every one of them was
+/// skipped: days with nothing to score. Pure.
+pub fn all_skipped_days(
+    sent: &[DateTime<Utc>],
+    skipped: &[DateTime<Utc>],
+    timezone: Tz,
+) -> Vec<NaiveDate> {
+    let day_of = |at: &DateTime<Utc>| at.with_timezone(&timezone).date_naive();
+    let mut days: Vec<NaiveDate> = sent.iter().map(day_of).collect();
+    days.sort_unstable();
+    days.dedup();
+    days.retain(|day| {
+        sent.iter()
+            .filter(|at| day_of(at) == *day)
+            .all(|at| skipped.contains(at))
+    });
+    days
 }
 
 /// How many fully logged days in a row someone has, counting back from
@@ -2029,6 +2059,35 @@ mod tests {
         // The latest summarised day wasn't full: no streak.
         assert_eq!(full_day_streak(&days(&["2026-11-06"]), &[]), 0);
         assert_eq!(full_day_streak(&[], &[]), 0);
+    }
+
+    #[test]
+    fn a_day_with_every_prompt_skipped_is_left_out_of_the_streak() {
+        let sent = [
+            utc("2026-11-04T09:00:00Z"),
+            utc("2026-11-04T11:00:00Z"),
+            utc("2026-11-05T09:00:00Z"),
+            utc("2026-11-05T11:00:00Z"),
+            utc("2026-11-06T09:00:00Z"),
+        ];
+        // The 5th: both skipped. The 4th: one skipped, one answered.
+        let skipped = [
+            utc("2026-11-04T11:00:00Z"),
+            utc("2026-11-05T09:00:00Z"),
+            utc("2026-11-05T11:00:00Z"),
+        ];
+        let left_out = all_skipped_days(&sent, &skipped, LONDON);
+        assert_eq!(left_out, vec![date("2026-11-05")]);
+
+        // Full on the 4th and 6th, all skipped on the 5th: a streak of 2,
+        // not broken by the 5th.
+        let summaries: Vec<NaiveDate> = ["2026-11-06", "2026-11-05", "2026-11-04"]
+            .iter()
+            .map(|d| date(d))
+            .filter(|d| !left_out.contains(d))
+            .collect();
+        let full = [date("2026-11-06"), date("2026-11-04")];
+        assert_eq!(full_day_streak(&summaries, &full), 2);
     }
 
     #[tokio::test]
