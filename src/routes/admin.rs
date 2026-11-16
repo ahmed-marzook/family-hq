@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Path, State};
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, NaiveDate, Utc};
 use serde::Serialize;
 use sqlx::SqliteConnection;
 use tracing::warn;
@@ -142,6 +142,62 @@ struct JotView {
     /// Entries this week and last (Monday to Sunday on their own clock).
     entries_this_week: i64,
     entries_last_week: i64,
+    /// `None` if they've never turned it on. Kept after `/jot off`.
+    settings: Option<JotSettingsView>,
+    /// After any pause; `None` while it's off.
+    next_prompt: Option<DateTime<Utc>>,
+    /// The last 7 days on their clock, oldest first, as `/jot week`.
+    week: Vec<JotDayView>,
+}
+
+/// Their Jot settings. Clock times are on their own clock (their DM's
+/// timezone), as they set them.
+#[derive(Debug, Serialize)]
+struct JotSettingsView {
+    interval_minutes: u32,
+    /// "09:00".
+    start: String,
+    end: String,
+    /// "every day", "Mon–Fri", "Mon, Wed, Fri".
+    days: String,
+    /// Only while the pause is still on.
+    paused_until: Option<DateTime<Utc>>,
+}
+
+/// One day of their week: prompts answered out of prompts that counted
+/// (sent and not skipped), and entries in all, `+jot` extras included.
+#[derive(Debug, Serialize)]
+struct JotDayView {
+    date: NaiveDate,
+    logged: usize,
+    prompts: usize,
+    entries: usize,
+}
+
+fn jot_view(counts: jot::JotCounts, view: crate::jot::AdminJot, now: DateTime<Utc>) -> JotView {
+    JotView {
+        on: counts.on,
+        entries_this_week: counts.entries_this_week,
+        entries_last_week: counts.entries_last_week,
+        settings: view.settings.map(|s| JotSettingsView {
+            interval_minutes: s.interval_minutes,
+            start: s.start.format("%H:%M").to_string(),
+            end: s.end.format("%H:%M").to_string(),
+            days: s.days.label(),
+            paused_until: s.paused_at(now),
+        }),
+        next_prompt: view.next_prompt,
+        week: view
+            .week
+            .into_iter()
+            .map(|d| JotDayView {
+                date: d.date,
+                logged: d.logged,
+                prompts: d.prompts,
+                entries: d.entries,
+            })
+            .collect(),
+    }
 }
 
 /// Their push notifications (`/push on`). Never their ntfy topic or token:
@@ -331,7 +387,8 @@ pub(crate) async fn detail(
     let push = push::stats(conn, id).await?;
     let this_week = Period::of(Span::Week, today);
     let last_week = Period::of(Span::Week, this_week.first - Duration::days(1));
-    let jot = jot::counts(conn, id, this_week, last_week).await?;
+    let jot_counts = jot::counts(conn, id, this_week, last_week).await?;
+    let jot_more = crate::jot::admin_view(conn, id, defaults, now).await?;
 
     Ok(UserDetail {
         recent_days: RECENT_DAYS,
@@ -344,11 +401,7 @@ pub(crate) async fn detail(
             on: push.on,
             sent: push.sent,
         },
-        jot: JotView {
-            on: jot.on,
-            entries_this_week: jot.entries_this_week,
-            entries_last_week: jot.entries_last_week,
-        },
+        jot: jot_view(jot_counts, jot_more, now),
         chats: chats
             .into_iter()
             .map(|c| chat_view(c, state, now))
@@ -510,6 +563,7 @@ pub(crate) fn settings_view(personal: Option<ChatSettings>, defaults: &Settings)
 
 #[cfg(test)]
 mod tests {
+    use chrono::TimeZone;
     use reqwest::StatusCode;
     use serde_json::Value;
 
@@ -907,6 +961,56 @@ mod tests {
         assert!(!body.contains(text), "{body}");
         assert!(!body.contains("jotted plans"), "{body}");
         assert!(!body.contains("bank"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn jot_settings_and_week_without_entry_text() {
+        let pool = test_pool().await;
+        let (bilal, _, dm) = seed(&pool).await;
+        let text = "answered the first prompt";
+        {
+            let mut conn = pool.acquire().await.unwrap();
+            let now = Utc::now();
+            let today = today_for(&mut conn, &defaults(), bilal, now).await.unwrap();
+            // Two prompts sent today on his London clock, one answered.
+            let midnight = chrono_tz::Europe::London
+                .from_local_datetime(&today.and_hms_opt(0, 0, 0).unwrap())
+                .earliest()
+                .unwrap()
+                .with_timezone(&Utc);
+            let (answered, missed) = (midnight + Duration::hours(1), midnight + Duration::hours(3));
+            for (slot, id) in [(answered, "wa-1"), (missed, "wa-2")] {
+                jot::claim_prompt(&mut conn, bilal, dm, slot, now)
+                    .await
+                    .unwrap();
+                jot::set_prompt_message(&mut conn, bilal, slot, id)
+                    .await
+                    .unwrap();
+            }
+            jot::add_entry(&mut conn, bilal, now, today, Some(answered), text)
+                .await
+                .unwrap();
+        }
+        let server = start_server_with(pool).await;
+
+        let (status, body) = admin_get_text(&server, &format!("/api/users/{bilal}")).await;
+        assert_eq!(status, StatusCode::OK);
+        let detail: Value = serde_json::from_str(&body).unwrap();
+        let jot = &detail["jot"];
+        assert_eq!(jot["settings"]["interval_minutes"], 120);
+        assert_eq!(jot["settings"]["start"], "09:00");
+        assert_eq!(jot["settings"]["end"], "18:00");
+        assert_eq!(jot["settings"]["days"], "every day");
+        assert_eq!(jot["settings"]["paused_until"], Value::Null);
+        assert!(jot["next_prompt"].is_string(), "{body}");
+        let week = jot["week"].as_array().unwrap();
+        assert_eq!(week.len(), 7);
+        // Today: 1 of 2 prompts logged; the seed's `+jot` and this answer.
+        assert_eq!(week[6]["logged"], 1);
+        assert_eq!(week[6]["prompts"], 2);
+        assert_eq!(week[6]["entries"], 2);
+        assert!(!body.contains(text), "{body}");
+        assert!(!body.contains("jotted plans"), "{body}");
     }
 
     #[tokio::test]

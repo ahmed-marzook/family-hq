@@ -5,7 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { Link, useParams } from "react-router";
 
-import { ApiError, getJson, type Chat, type Cleanup, type UserDetail } from "../api";
+import { ApiError, getJson, type Chat, type Cleanup, type JotDay, type UserDetail } from "../api";
 import { GroupStatus, PersonData } from "../components/Clearing";
 import GroupLists from "../components/GroupLists";
 import LoadError from "../components/LoadError";
@@ -15,7 +15,7 @@ import { HeatmapKey, PrayerCalendar, PrayerSummary } from "../components/PrayerS
 import ReportDelivery from "../components/ReportDelivery";
 import SettingsEditor from "../components/SettingsEditor";
 import Switch from "../components/Switch";
-import { count, date, timeAgo } from "../format";
+import { count, date, dateTime, timeAgo } from "../format";
 import { useUserChange, userOwner } from "../useChange";
 
 export default function User() {
@@ -101,6 +101,7 @@ function Detail({ data }: { data: UserDetail }) {
           {data.jot.on ? "On" : "Off"} · {count(data.jot.entries_this_week, "entry", "entries")} this
           week · {count(data.jot.entries_last_week, "entry", "entries")} last week
         </p>
+        <JotDetails jot={data.jot} timeZone={data.settings.timezone.value} />
         <p className="mt-1 text-xs text-stone-500">
           What they jot down is private to their chat with the bot, so only counts are shown. They
           turn Jot on or off themselves with /jot in WhatsApp.
@@ -209,6 +210,58 @@ function GroupCard({ chat, userId, cleanup }: { chat: Chat; userId: number; clea
       <TodoReminders chat={chat} userId={userId} />
       <GroupLists groupId={chat.id} />
       <GroupStatus chat={chat} cleanup={cleanup} />
+    </div>
+  );
+}
+
+/** "2h", "90m": as they'd type it in `/jot on`. */
+function interval(minutes: number): string {
+  return minutes % 60 === 0 ? `${minutes / 60}h` : `${minutes}m`;
+}
+
+/** "Mon" for "2026-11-16". A plain date, so read in UTC: the viewer's
+ * timezone mustn't move it to the day before. */
+function weekday(day: string): string {
+  return new Date(`${day}T12:00:00Z`).toLocaleDateString("en-GB", {
+    weekday: "short",
+    timeZone: "UTC",
+  });
+}
+
+/** As `/jot week` says it: "4/5" logged of the prompts that counted, the
+ * entry count on a day with no prompts, "—" for nothing at all. */
+function dayScore(day: JotDay): string {
+  if (day.prompts > 0) return `${day.logged}/${day.prompts}`;
+  return day.entries > 0 ? String(day.entries) : "—";
+}
+
+/** Their Jot settings, the next prompt and their last 7 days. Counts and
+ * times only; times on their own clock (`timeZone`, their DM's). */
+function JotDetails({ jot, timeZone }: { jot: UserDetail["jot"]; timeZone: string }) {
+  const { settings } = jot;
+  if (!settings) return null;
+  return (
+    <div className="mt-2 space-y-2 text-sm text-stone-600 dark:text-stone-400">
+      <p>
+        Every {interval(settings.interval_minutes)} · {settings.start}–{settings.end} ·{" "}
+        {settings.days}
+        {settings.paused_until && <> · paused until {dateTime(settings.paused_until, timeZone)}</>}
+        {jot.next_prompt && <> · next prompt {dateTime(jot.next_prompt, timeZone)}</>}
+      </p>
+      <ul className="flex flex-wrap gap-1.5" aria-label="Prompts logged, last 7 days">
+        {jot.week.map((day) => (
+          <li
+            key={day.date}
+            className="min-w-12 rounded-md border border-stone-200 px-2 py-1 text-center dark:border-stone-700"
+          >
+            <span className="block text-xs text-stone-500">{weekday(day.date)}</span>
+            <span className="font-medium tabular-nums">{dayScore(day)}</span>
+          </li>
+        ))}
+      </ul>
+      <p className="text-xs text-stone-500">
+        Prompts answered out of prompts sent, the last 7 days. Skipped prompts aren't counted.
+      </p>
     </div>
   );
 }

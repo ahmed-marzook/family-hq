@@ -1062,6 +1062,43 @@ pub fn full_day_streak(summaries: &[NaiveDate], full: &[NaiveDate]) -> usize {
     days.iter().take_while(|day| full.contains(day)).count()
 }
 
+/// What the admin dashboard shows of someone's Jot beyond the entry
+/// counts: their settings, when the next prompt goes, and their last 7
+/// days as `/jot week` counts them. Counts and times only, never what they
+/// wrote.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AdminJot {
+    /// `None` if they've never turned Jot on.
+    pub settings: Option<JotSettings>,
+    /// The next prompt, after any pause. `None` while it's off or if no
+    /// prompt fits their hours.
+    pub next_prompt: Option<DateTime<Utc>>,
+    /// Oldest first, ending today on their clock.
+    pub week: Vec<WeekDay>,
+}
+
+/// `AdminJot` for `user_id`. Uses their DM clock, as their own `/jot week`
+/// does, so the dashboard and the bot never disagree about a day.
+pub async fn admin_view(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    defaults: &Settings,
+    now: DateTime<Utc>,
+) -> Result<AdminJot, AppError> {
+    let mine = dm_settings(conn, user_id, defaults).await?;
+    let settings = jot::get(conn, user_id).await?;
+    let next_prompt = settings.filter(|s| s.enabled).and_then(|s| {
+        let after = s.paused_at(now).map_or(now, |until| until.max(now));
+        next_prompt(after, mine.timezone, &s)
+    });
+    let (week, _) = week_of(conn, user_id, mine.today(now), mine.timezone).await?;
+    Ok(AdminJot {
+        settings,
+        next_prompt,
+        week,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
