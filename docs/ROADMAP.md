@@ -26,9 +26,9 @@ family for at least two weeks**. The admin dashboard is outside this rule.
   [roadmap/points.md](roadmap/points.md)
 - **Habits and group goals (Stage 2.5, H1–H6)**: brought forward at the
   owner's request; planned, H1 first → [roadmap/habits.md](roadmap/habits.md)
-- **Jot (J1–J4)**: brought forward at the owner's request; an opt-in log
+- **Jot (J1–J5)**: brought forward at the owner's request; an opt-in log
   of what you've done, prompted every N hours in a DM. J1 (`/jot on`,
-  `+jot`, prompts and replies), J2 (`/jot today`, `/jot week`, the end-of-day summary), J3 (skip after a recent entry, prayer-aware, `skip`, `-days`, `/jot pause`) and J4 (points, the `/points` Jot line, admin counts only, cleanup; values in [roadmap/points.md](roadmap/points.md)) built; tracked in GitHub Projects, issues
+  `+jot`, prompts and replies), J2 (`/jot today`, `/jot week`, the end-of-day summary), J3 (skip after a recent entry, prayer-aware, `skip`, `-days`, `/jot pause`), J4 (points, the `/points` Jot line, admin counts only, cleanup; values in [roadmap/points.md](roadmap/points.md)) and J5 (share your own `/jot today` or `/jot week` in a group, never anyone else's) built, so J1–J5 are done; tracked in GitHub Projects, issues
   [#47](https://github.com/ahmed-marzook/family-hq/issues/47) onward, no
   file in `roadmap/`
 

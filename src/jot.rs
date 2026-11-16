@@ -1,6 +1,7 @@
 //! Jot: an opt-in log of what someone has done. While it's on, the bot DMs
 //! them every N hours of their active hours, and what they reply is saved
-//! as an entry. DM only.
+//! as an entry. Set up and used in a DM; the only thing a group ever sees
+//! is a day or week its owner chose to share there (`share`).
 //!
 //! Prompts are smart about when they go: not on days the person left out,
 //! not while paused, moved to 15 minutes after a prayer time that they'd
@@ -680,8 +681,146 @@ async fn entries_of(
     Ok(rows.into_iter().map(|(_, e)| e).collect())
 }
 
+/// The last 7 days up to `today`, one `WeekDay` each, and whether any of
+/// them has an entry at all.
+async fn week_of(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    today: NaiveDate,
+    timezone: Tz,
+) -> Result<(Vec<WeekDay>, bool), AppError> {
+    let from = today - Duration::days(6);
+    let all = jot::entries_between(conn, user_id, from, today).await?;
+    let (start, end) = (day_bounds(from, timezone).0, day_bounds(today, timezone).1);
+    let prompts = jot::prompts_between(conn, user_id, start, end).await?;
+    let skipped_all = jot::skipped_between(conn, user_id, start, end).await?;
+    let days = (0..7)
+        .map(|n| {
+            let date = from + Duration::days(n);
+            let entries: Vec<Entry> = all
+                .iter()
+                .filter(|(d, _)| *d == date)
+                .map(|(_, e)| e.clone())
+                .collect();
+            let sent: Vec<DateTime<Utc>> = prompts
+                .iter()
+                .copied()
+                .filter(|p| p.with_timezone(&timezone).date_naive() == date)
+                .collect();
+            let slots = scored_slots(&shown_slots(&sent, &entries), &entries, &skipped_all);
+            WeekDay {
+                date,
+                logged: logged_count(&entries, &slots),
+                prompts: slots.len(),
+                entries: entries.len(),
+            }
+        })
+        .collect();
+    Ok((days, !all.is_empty()))
+}
+
+fn week_text(label: &str, days: &[WeekDay]) -> String {
+    format!(
+        "{PROMPT} {label}\n{}\nSend `/jot mon` (or any day) to see that day.",
+        week_line(days)
+    )
+}
+
+/// The settings of the sender's DM with the bot, wherever they're asking
+/// from: what their own `/jot today` and summaries use. In a group,
+/// `my_settings` would fall back to the group's town and clock for anything
+/// the person never set, which could move their "today" and their times.
+async fn dm_settings(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    defaults: &Settings,
+) -> Result<Settings, AppError> {
+    // A DM's own chat settings are the person's settings (see
+    // `stored::personal`), so the DM layer is empty and only theirs applies.
+    let own = stored::personal(conn, user_id).await?;
+    Ok(crate::settings::layered(
+        defaults,
+        &crate::settings::Overrides::default(),
+        own.as_ref().map(|own| &own.overrides),
+    ))
+}
+
+/// `Bilal's day` for today, `Bilal's Monday` for an earlier day: in a group
+/// the heading has to say whose it is.
+fn shared_day_label(name: &str, date: NaiveDate, today: NaiveDate) -> String {
+    if date == today {
+        format!("{name}'s day")
+    } else {
+        format!("{name}'s {}", date.format("%A"))
+    }
+}
+
+/// What a group sees when the sender has nothing to share: short, and
+/// pointing them to their DM, never an empty timeline.
+fn nothing_to_share(when: &str, jot_on: bool) -> String {
+    if jot_on {
+        format!(
+            "{PROMPT} Nothing jotted {when}. Answer my prompts in our DM, or send me `+jot <text>` there."
+        )
+    } else {
+        format!("{PROMPT} Nothing jotted {when}. Message me directly and send `/jot on` to start.")
+    }
+}
+
+/// What can be shared in a group: a day or the week.
+enum Shared {
+    Day(JotDay),
+    Week,
+}
+
+/// `/jot today` or `/jot week` sent in a group: the sender shows their own
+/// timeline there, by choice, each time. Only `ctx.sender` is ever looked
+/// up, so nobody can see anyone else's jots. Read only: no data changes
+/// and no points. Days and times follow the sender's DM clock, as in their
+/// DM, and nothing else about where they are is said.
+async fn share(
+    conn: &mut SqliteConnection,
+    ctx: &Context,
+    defaults: &Settings,
+    shared: Shared,
+) -> Result<String, AppError> {
+    let user_id = ctx.sender.id;
+    let name = &ctx.sender.display_name;
+    let mine = dm_settings(conn, user_id, defaults).await?;
+    let today = mine.today(ctx.now);
+    let jot_on = jot::get(conn, user_id).await?.is_some_and(|c| c.enabled);
+    Ok(match shared {
+        Shared::Day(day) => {
+            let date = resolve_day(day, today);
+            let (entries, slots, skipped) = day_view(conn, user_id, date, mine.timezone).await?;
+            if entries.is_empty() {
+                let when = if date == today {
+                    "today yet".to_string()
+                } else if date == today - Duration::days(1) {
+                    "yesterday".to_string()
+                } else {
+                    format!("on {}", date.format("%A"))
+                };
+                nothing_to_share(&when, jot_on)
+            } else {
+                let label = shared_day_label(name, date, today);
+                timeline(&label, &entries, &slots, &skipped, &mine)
+            }
+        }
+        Shared::Week => {
+            let (days, any) = week_of(conn, user_id, today, mine.timezone).await?;
+            if any {
+                week_text(&format!("{name}'s week"), &days)
+            } else {
+                nothing_to_share("this week yet", jot_on)
+            }
+        }
+    })
+}
+
 /// `/jot`, `/jot on`, `/jot off`, `+jot` and a reply to a prompt: the
-/// handler for every Jot command. DM only; in a group nothing is stored.
+/// handler for every Jot command. DM only, except that a person can share
+/// their own day or week in a group; anything else there stores nothing.
 pub async fn command(
     conn: &mut SqliteConnection,
     ctx: &Context,
@@ -689,9 +828,13 @@ pub async fn command(
     command: JotCommand,
 ) -> Result<String, AppError> {
     if ctx.is_group {
-        return Ok(format!(
-            "{PROBLEM} Jot only works in a DM with me. Message me directly and send `/jot on`."
-        ));
+        return match command {
+            JotCommand::Day(day) => share(conn, ctx, defaults, Shared::Day(day)).await,
+            JotCommand::Week => share(conn, ctx, defaults, Shared::Week).await,
+            _ => Ok(format!(
+                "{PROBLEM} Jot only works in a DM with me. Message me directly and send `/jot on`."
+            )),
+        };
     }
     let user_id = ctx.sender.id;
     let mine = my_settings(conn, ctx, defaults).await?;
@@ -779,52 +922,11 @@ pub async fn command(
             timeline(&label_of(date, today), &entries, &slots, &skipped, &mine)
         }
         JotCommand::Week => {
-            let today = mine.today(ctx.now);
-            let from = today - Duration::days(6);
-            let all = jot::entries_between(conn, user_id, from, today).await?;
-            let prompts = jot::prompts_between(
-                conn,
-                user_id,
-                day_bounds(from, mine.timezone).0,
-                day_bounds(today, mine.timezone).1,
-            )
-            .await?;
-            let skipped_all = jot::skipped_between(
-                conn,
-                user_id,
-                day_bounds(from, mine.timezone).0,
-                day_bounds(today, mine.timezone).1,
-            )
-            .await?;
-            let days: Vec<WeekDay> = (0..7)
-                .map(|n| {
-                    let date = from + Duration::days(n);
-                    let entries: Vec<Entry> = all
-                        .iter()
-                        .filter(|(d, _)| *d == date)
-                        .map(|(_, e)| e.clone())
-                        .collect();
-                    let sent: Vec<DateTime<Utc>> = prompts
-                        .iter()
-                        .copied()
-                        .filter(|p| p.with_timezone(&mine.timezone).date_naive() == date)
-                        .collect();
-                    let slots = scored_slots(&shown_slots(&sent, &entries), &entries, &skipped_all);
-                    WeekDay {
-                        date,
-                        logged: logged_count(&entries, &slots),
-                        prompts: slots.len(),
-                        entries: entries.len(),
-                    }
-                })
-                .collect();
-            if all.is_empty() {
-                nothing_logged("This week")
+            let (days, any) = week_of(conn, user_id, mine.today(ctx.now), mine.timezone).await?;
+            if any {
+                week_text("This week", &days)
             } else {
-                format!(
-                    "{PROMPT} This week\n{}\nSend `/jot mon` (or any day) to see that day.",
-                    week_line(&days)
-                )
+                nothing_logged("This week")
             }
         }
         JotCommand::Log(text) => {
@@ -1376,14 +1478,288 @@ mod tests {
         let family = seed_family(&mut conn, utc("2026-11-02T08:00:00Z")).await;
         let ctx = ctx(family.group, true, &family.bilal, "2026-11-02T10:00:00Z");
 
-        for text in ["/jot on", "/jot", "+jot hello", "/jot off"] {
-            let said = command(&mut conn, &ctx, &defaults(), command_of(text))
+        let typed = [
+            "/jot on",
+            "/jot on 2h 09:00-18:00",
+            "/jot",
+            "/jot status",
+            "+jot hello",
+            "+j hello",
+            "/jot off",
+            "/jot pause 3h",
+        ]
+        .map(command_of);
+        let slot_at = utc("2026-11-02T09:00:00Z");
+        let replies = [
+            JotCommand::Skip { slot_at },
+            JotCommand::Reply {
+                text: "emails".to_string(),
+                slot_at,
+            },
+        ];
+        for jot_command in typed.into_iter().chain(replies) {
+            let said = command(&mut conn, &ctx, &defaults(), jot_command.clone())
                 .await
                 .unwrap();
-            assert!(said.contains("Jot only works in a DM with me"), "{said}");
+            assert!(
+                said.contains("Jot only works in a DM with me"),
+                "{jot_command:?}: {said}"
+            );
         }
-        assert_eq!(count(&mut conn, "jot_settings").await, 0);
-        assert_eq!(count(&mut conn, "jot_entries").await, 0);
+        for table in ["jot_settings", "jot_entries", "jot_prompts", "points"] {
+            assert_eq!(count(&mut conn, table).await, 0, "{table}");
+        }
+    }
+
+    // ---- J5: sharing your own day in a group ----
+
+    /// Bilal with Jot on and a Monday of entries: two prompts sent, one
+    /// answered, one `+jot` extra.
+    async fn bilals_monday(conn: &mut SqliteConnection, family: &crate::testkit::Family) {
+        let (user, dm) = (family.bilal.id, family.dm);
+        jot::turn_on(
+            conn,
+            user,
+            120,
+            at(9, 0),
+            at(13, 0),
+            utc("2026-11-01T08:00:00Z"),
+        )
+        .await
+        .unwrap();
+        sent_prompt(conn, user, dm, "2026-11-02T09:00:00Z").await;
+        sent_prompt(conn, user, dm, "2026-11-02T11:00:00Z").await;
+        jot::add_entry(
+            conn,
+            user,
+            utc("2026-11-02T09:10:00Z"),
+            date("2026-11-02"),
+            Some(utc("2026-11-02T09:00:00Z")),
+            "secret plans",
+        )
+        .await
+        .unwrap();
+        jot::add_entry(
+            conn,
+            user,
+            utc("2026-11-02T12:30:00Z"),
+            date("2026-11-02"),
+            None,
+            "called the garage",
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn jot_today_in_a_group_shares_the_senders_own_day() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let family = seed_family(&mut conn, utc("2026-11-01T08:00:00Z")).await;
+        bilals_monday(&mut conn, &family).await;
+        let in_group = ctx(family.group, true, &family.bilal, "2026-11-02T13:00:00Z");
+        let in_dm = ctx(family.dm, false, &family.bilal, "2026-11-02T13:00:00Z");
+
+        for typed in ["/jot today", "/j today"] {
+            let shared = command(&mut conn, &in_group, &defaults(), command_of(typed))
+                .await
+                .unwrap();
+            assert_eq!(
+                shared,
+                "✏️ Bilal's day\n09:00 secret plans\n11:00 —\n12:30 (extra) called the garage\n1 of 2 logged"
+            );
+            // The same timeline as in the DM, under their name.
+            let own = command(&mut conn, &in_dm, &defaults(), command_of(typed))
+                .await
+                .unwrap();
+            assert_eq!(shared.replacen("Bilal's day", "Today", 1), own, "{typed}");
+        }
+
+        let tuesday = ctx(family.group, true, &family.bilal, "2026-11-03T10:00:00Z");
+        for typed in ["/jot yesterday", "/jot mon"] {
+            let shared = command(&mut conn, &tuesday, &defaults(), command_of(typed))
+                .await
+                .unwrap();
+            assert!(
+                shared.starts_with("✏️ Bilal's Monday\n09:00 secret plans"),
+                "{shared}"
+            );
+        }
+        let week = command(&mut conn, &tuesday, &defaults(), command_of("/jot week"))
+            .await
+            .unwrap();
+        assert!(
+            week.starts_with(
+                "✏️ Bilal's week\nWed — · Thu — · Fri — · Sat — · Sun — · Mon 1/2 · Tue —"
+            ),
+            "{week}"
+        );
+
+        // Sharing changes nothing and pays nothing.
+        assert_eq!(count(&mut conn, "jot_entries").await, 2);
+        assert_eq!(count(&mut conn, "points").await, 0);
+    }
+
+    #[tokio::test]
+    async fn a_shared_day_is_on_the_senders_own_clock_not_the_groups() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let family = seed_family(&mut conn, utc("2026-11-01T08:00:00Z")).await;
+        bilals_monday(&mut conn, &family).await;
+        // The group is on Colombo time (+05:30): its "today" at 20:00 UTC
+        // is already Tuesday, and its clock would show 09:00 as 14:30.
+        stored::set_timezone(&mut conn, family.group, "Asia/Colombo")
+            .await
+            .unwrap();
+        let in_group = ctx(family.group, true, &family.bilal, "2026-11-02T20:00:00Z");
+        let shared = command(&mut conn, &in_group, &defaults(), command_of("/jot today"))
+            .await
+            .unwrap();
+        assert!(
+            shared.starts_with("✏️ Bilal's day\n09:00 secret plans"),
+            "{shared}"
+        );
+        assert!(
+            !shared.contains("Colombo") && !shared.contains("London"),
+            "{shared}"
+        );
+    }
+
+    #[tokio::test]
+    async fn nobody_can_see_another_members_jots_in_the_group() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let family = seed_family(&mut conn, utc("2026-11-01T08:00:00Z")).await;
+        bilals_monday(&mut conn, &family).await;
+        let khadija = ctx(family.group, true, &family.khadija, "2026-11-02T13:00:00Z");
+
+        // Khadija asking in the same group gets her own (empty) day, and
+        // naming Bilal doesn't parse to anything that could show his.
+        for typed in ["/jot today", "/jot week", "/jot mon"] {
+            let said = command(&mut conn, &khadija, &defaults(), command_of(typed))
+                .await
+                .unwrap();
+            assert!(!said.contains("secret plans"), "{typed}: {said}");
+            assert!(!said.contains("garage"), "{typed}: {said}");
+            assert!(!said.contains("Bilal"), "{typed}: {said}");
+        }
+        for typed in [
+            "/jot @Bilal",
+            "/jot today @Bilal",
+            "/jot week Bilal",
+            "/jot bilal",
+        ] {
+            assert_eq!(parser::parse(typed), None, "{typed}");
+        }
+    }
+
+    #[tokio::test]
+    async fn with_nothing_jotted_the_group_gets_a_short_pointer_to_the_dm() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let family = seed_family(&mut conn, utc("2026-11-01T08:00:00Z")).await;
+        let in_group = ctx(family.group, true, &family.khadija, "2026-11-02T13:00:00Z");
+
+        // Never set up.
+        let today = command(&mut conn, &in_group, &defaults(), command_of("/jot today"))
+            .await
+            .unwrap();
+        assert_eq!(
+            today,
+            "✏️ Nothing jotted today yet. Message me directly and send `/jot on` to start."
+        );
+        let week = command(&mut conn, &in_group, &defaults(), command_of("/jot week"))
+            .await
+            .unwrap();
+        assert!(
+            week.starts_with("✏️ Nothing jotted this week yet."),
+            "{week}"
+        );
+        assert!(!week.contains('·'), "{week}");
+
+        // Jot on, a prompt sent and skipped, nothing written: still short.
+        let (user, dm) = (family.bilal.id, family.dm);
+        jot::turn_on(
+            &mut conn,
+            user,
+            120,
+            at(9, 0),
+            at(13, 0),
+            utc("2026-11-01T08:00:00Z"),
+        )
+        .await
+        .unwrap();
+        sent_prompt(&mut conn, user, dm, "2026-11-02T09:00:00Z").await;
+        let slot_at = utc("2026-11-02T09:00:00Z");
+        assert!(
+            jot::skip_prompt(&mut conn, user, slot_at, slot_at)
+                .await
+                .unwrap()
+        );
+        let bilal = ctx(family.group, true, &family.bilal, "2026-11-02T13:00:00Z");
+        let today = command(&mut conn, &bilal, &defaults(), command_of("/jot today"))
+            .await
+            .unwrap();
+        assert!(today.starts_with("✏️ Nothing jotted today yet."), "{today}");
+        assert!(today.contains("DM"), "{today}");
+        assert!(!today.contains("09:00"), "{today}");
+        let yesterday = command(&mut conn, &bilal, &defaults(), command_of("/jot yesterday"))
+            .await
+            .unwrap();
+        assert!(
+            yesterday.starts_with("✏️ Nothing jotted yesterday."),
+            "{yesterday}"
+        );
+    }
+
+    #[tokio::test]
+    async fn prompts_and_summaries_only_ever_go_to_the_dm() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let family = seed_family(&mut conn, utc("2026-11-01T08:00:00Z")).await;
+        // Both turned on, though Khadija has no DM with the bot (as if it
+        // were left): she gets nothing at all rather than the group.
+        for user in [family.bilal.id, family.khadija.id] {
+            jot::turn_on(
+                &mut conn,
+                user,
+                120,
+                at(9, 0),
+                at(18, 0),
+                utc("2026-11-01T08:00:00Z"),
+            )
+            .await
+            .unwrap();
+        }
+        let subscribers = jot::subscribers(&mut conn).await.unwrap();
+        assert_eq!(subscribers.len(), 1);
+        let subscriber = &subscribers[0];
+        assert_eq!(subscriber.user_id, family.bilal.id);
+        assert_eq!(subscriber.chat_id, family.dm);
+        assert_eq!(subscriber.wa_chat_id, family.bilal.wa_jid);
+
+        let slot = due_slot(
+            utc("2026-11-02T11:00:00Z"),
+            LONDON,
+            &subscriber.settings,
+            &[],
+        )
+        .unwrap();
+        let summary = summary_plan(
+            subscriber,
+            date("2026-11-02"),
+            "Today",
+            &[],
+            &[],
+            &[],
+            &defaults(),
+        );
+        for planned in [plan(subscriber, &slot, &defaults()), summary] {
+            for message in &planned.messages {
+                assert_eq!(message.to, family.bilal.wa_jid);
+                assert_ne!(message.to, crate::testkit::GROUP);
+            }
+        }
     }
 
     #[tokio::test]
