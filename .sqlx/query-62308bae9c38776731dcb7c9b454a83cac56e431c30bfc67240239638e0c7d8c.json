@@ -1,0 +1,62 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT day AS \"day: NaiveDate\", logged_at AS \"logged_at: DateTime<Utc>\",\n                  slot_at AS \"slot_at: DateTime<Utc>\", text\n           FROM jot_entries\n           WHERE user_id = ? AND day >= ? AND day <= ?\n           ORDER BY datetime(logged_at), id",
+  "describe": {
+    "columns": [
+      {
+        "name": "day: NaiveDate",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "jot_entries",
+            "name": "day"
+          }
+        }
+      },
+      {
+        "name": "logged_at: DateTime<Utc>",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "jot_entries",
+            "name": "logged_at"
+          }
+        }
+      },
+      {
+        "name": "slot_at: DateTime<Utc>",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "jot_entries",
+            "name": "slot_at"
+          }
+        }
+      },
+      {
+        "name": "text",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "jot_entries",
+            "name": "text"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "62308bae9c38776731dcb7c9b454a83cac56e431c30bfc67240239638e0c7d8c"
+}
