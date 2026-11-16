@@ -293,8 +293,8 @@ pub async fn skip_prompt(
     user_id: i64,
     slot_at: DateTime<Utc>,
     now: DateTime<Utc>,
-) -> Result<(), sqlx::Error> {
-    sqlx::query!(
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
         "UPDATE jot_prompts SET skipped_at = ?
          WHERE user_id = ? AND slot_at = ?
            AND NOT EXISTS (SELECT 1 FROM jot_entries e
@@ -305,7 +305,7 @@ pub async fn skip_prompt(
     )
     .execute(conn)
     .await?;
-    Ok(())
+    Ok(result.rows_affected() > 0)
 }
 
 /// The sent prompts in `from..to` (UTC) that were skipped and still have no

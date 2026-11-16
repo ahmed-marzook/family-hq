@@ -776,8 +776,16 @@ pub async fn command(
             }
         }
         JotCommand::Skip { slot_at } => {
-            jot::skip_prompt(conn, user_id, slot_at, ctx.now).await?;
-            format!("{SKIP} Skipped {}.", mine.clock(slot_at))
+            // An answered prompt stays answered: `skip` doesn't hide an
+            // entry, so say so rather than claim it was skipped.
+            if jot::skip_prompt(conn, user_id, slot_at, ctx.now).await? {
+                format!("{SKIP} Skipped {}.", mine.clock(slot_at))
+            } else {
+                format!(
+                    "{PROBLEM} {} already has an entry, so I left it.",
+                    mine.clock(slot_at)
+                )
+            }
         }
         JotCommand::Reply { text, slot_at } => {
             jot::add_entry(
@@ -1622,6 +1630,20 @@ mod tests {
             .await
             .unwrap();
         assert!(week.contains("Mon 1/2"), "{week}");
+
+        // Skipping the answered 09:00 changes nothing and says so.
+        let skip_answered = JotCommand::Skip {
+            slot_at: utc("2026-11-02T09:00:00Z"),
+        };
+        let said = command(&mut conn, &later, &defaults(), skip_answered)
+            .await
+            .unwrap();
+        assert_eq!(said, "❓ 09:00 already has an entry, so I left it.");
+        let today = command(&mut conn, &later, &defaults(), command_of("/jot today"))
+            .await
+            .unwrap();
+        assert!(today.contains("09:00 emails\n11:00 skipped"), "{today}");
+        assert!(today.ends_with("1 of 2 logged"), "{today}");
     }
 
     #[test]
