@@ -4,7 +4,7 @@
 //! changes, change its page here. Pure functions, no database.
 
 /// The topics `/help <topic>` knows, and the words that lead to each.
-const TOPICS: [(&str, &[&str]); 8] = [
+const TOPICS: [(&str, &[&str]); 9] = [
     ("shop", &["shop", "shopping", "buy", "got", "list"]),
     ("todo", &["todo", "todos", "task", "tasks"]),
     (
@@ -22,6 +22,7 @@ const TOPICS: [(&str, &[&str]); 8] = [
         "points",
         &["points", "point", "pts", "score", "leaderboard", "history"],
     ),
+    ("jot", &["jot", "j", "journal", "log", "diary"]),
 ];
 
 const OVERVIEW: &str = "🤖 *Family HQ help*
@@ -35,11 +36,12 @@ I keep shared lists for each group I'm in, and private ones when you message me 
 🌤️ *Weather*: `/weather` · `/weather hourly` · `/weather tomorrow` · `/weather week`
 🌙 *Moon*: `/moon`
 🔔 *Push*: `/push on` in your chat with me, for prayer reminders in the ntfy app
+✏️ *Jot*: `/jot on` in a DM with me, and I'll ask what you've done · `+jot wrote the report`
 
-Short forms: `+s` shop · `+g` got · `+t` todo · `+d` done · `+p` prayed · `/s` · `/t` · `/p` · `/w` · `/m` · `/h`
+Short forms: `+s` shop · `+g` got · `+t` todo · `+d` done · `+p` prayed · `+j` jot · `/s` · `/t` · `/p` · `/w` · `/m` · `/h` · `/j`
 
 For the full page on a topic, with examples:
-`/help shop` · `/help todo` · `/help points` · `/help prayers` · `/help settings` · `/help weather` · `/help moon` · `/help push`
+`/help shop` · `/help todo` · `/help points` · `/help prayers` · `/help settings` · `/help weather` · `/help moon` · `/help push` · `/help jot`
 
 I react 👍 to every command I understand. No reaction means I didn't recognise it.
 
@@ -208,6 +210,18 @@ const MOON: &str = "🌙 *Help: moon*
 
 The Islamic date comes from AlAdhan's calculated calendar, so it can be a day off from the moon sighting your mosque follows. A new Islamic month starts once the new crescent is seen, usually a day or two after the new moon.";
 
+const JOT: &str = "✏️ *Help: jot*
+An opt-in log of what you've done, so you can see where your time went. Only in a DM with me.
+
+`/jot on`: every 2 hours between 09:00 and 18:00, on your own clock, I'll ask what you've done since the last prompt.
+`/jot on 90m 08:30-17:00`: your own interval (`1h`, `90m`, `2h`, `3h`: anything from 30m to 4h) and active hours.
+`/jot`: is it on, the interval, the hours and the next prompt.
+`/jot off`: stops the prompts.
+
+*Jotting*
+Reply to a prompt, or just send your answer within 30 minutes of one, and I save it for that slot. Commands still work as normal while a prompt is open.
+`+jot wrote the report` (or `+j ...`) saves a line any time, without a prompt.";
+
 const PUSH: &str = "🔔 *Help: push notifications*
 Get prayer reminders as phone notifications too, through the free *ntfy* app, with a Prayed button that ticks the prayer off without opening WhatsApp. WhatsApp reminders carry on as before.
 
@@ -242,10 +256,11 @@ pub fn page(topic: Option<&str>) -> String {
         Some("moon") => MOON.to_string(),
         Some("push") => PUSH.to_string(),
         Some("points") => POINTS.to_string(),
+        Some("jot") => JOT.to_string(),
         _ => format!(
             "❓ There's no help page for \"{topic}\". Try `/help shop`, `/help todo`, \
-             `/help prayers`, `/help settings`, `/help weather`, `/help moon`, `/help push` \
-             or `/help points`."
+             `/help prayers`, `/help settings`, `/help weather`, `/help moon`, `/help push`, \
+             `/help points` or `/help jot`."
         ),
     }
 }

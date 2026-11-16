@@ -21,6 +21,7 @@ use crate::config::PushConfig;
 use crate::error::AppError;
 use crate::geo::{Coordinates, NearestPlace};
 use crate::help;
+use crate::jot;
 use crate::parser::{BotCommand, Got, PushCommand};
 use crate::points::{self, Finish};
 use crate::prayer::commands::{self, Looked};
@@ -291,6 +292,7 @@ async fn run_plain(
         BotCommand::PrayerReminders(on) => commands::reminders(conn, ctx, defaults, on).await?,
         BotCommand::PrayerSummary(span) => commands::summary(conn, ctx, defaults, span).await?,
         BotCommand::PrayerReports(change) => commands::reports(conn, ctx, change).await?,
+        BotCommand::Jot(command) => jot::command(conn, ctx, defaults, command).await?,
         BotCommand::Points => points::commands::show(conn, ctx, defaults).await?,
         BotCommand::PointsReports(change) => points::commands::reports(conn, ctx, change).await?,
         BotCommand::PointsHistory(which) => {

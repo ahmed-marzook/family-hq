@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO jot_settings (user_id, enabled, interval_minutes, start_local, end_local, updated_at)\n         VALUES (?, 1, ?, ?, ?, ?)\n         ON CONFLICT (user_id) DO UPDATE SET\n             enabled = 1,\n             interval_minutes = excluded.interval_minutes,\n             start_local = excluded.start_local,\n             end_local = excluded.end_local,\n             updated_at = excluded.updated_at",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "8e331d5b259db180ac12918d614d66a141490eb4690924ff34f1f7746ff2eae8"
+}

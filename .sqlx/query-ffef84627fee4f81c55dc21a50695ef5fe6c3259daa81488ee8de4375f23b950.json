@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT slot_at AS \"slot_at: DateTime<Utc>\"\n           FROM jot_prompts WHERE wa_message_id = ? AND chat_id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "slot_at: DateTime<Utc>",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "jot_prompts",
+            "name": "slot_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "ffef84627fee4f81c55dc21a50695ef5fe6c3259daa81488ee8de4375f23b950"
+}

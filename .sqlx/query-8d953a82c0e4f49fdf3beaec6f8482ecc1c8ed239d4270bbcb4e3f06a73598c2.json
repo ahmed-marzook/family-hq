@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM jot_entries WHERE user_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "8d953a82c0e4f49fdf3beaec6f8482ecc1c8ed239d4270bbcb4e3f06a73598c2"
+}

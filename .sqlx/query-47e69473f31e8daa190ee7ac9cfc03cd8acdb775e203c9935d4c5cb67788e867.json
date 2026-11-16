@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE jot_settings SET enabled = 0 WHERE user_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "47e69473f31e8daa190ee7ac9cfc03cd8acdb775e203c9935d4c5cb67788e867"
+}

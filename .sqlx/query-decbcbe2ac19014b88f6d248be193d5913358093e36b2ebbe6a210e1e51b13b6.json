@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT p.slot_at AS \"slot_at: DateTime<Utc>\"\n           FROM jot_prompts p\n           WHERE p.chat_id = ?\n             AND p.wa_message_id IS NOT NULL\n             AND datetime(p.claimed_at) > datetime(?)\n             AND datetime(p.claimed_at) <= datetime(?)\n             AND NOT EXISTS (SELECT 1 FROM jot_entries e\n                             WHERE e.user_id = p.user_id AND e.slot_at = p.slot_at)\n           ORDER BY datetime(p.claimed_at) DESC\n           LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "slot_at: DateTime<Utc>",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "jot_prompts",
+            "name": "slot_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "decbcbe2ac19014b88f6d248be193d5913358093e36b2ebbe6a210e1e51b13b6"
+}

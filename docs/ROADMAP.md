@@ -26,6 +26,11 @@ family for at least two weeks**. The admin dashboard is outside this rule.
   [roadmap/points.md](roadmap/points.md)
 - **Habits and group goals (Stage 2.5, H1–H6)**: brought forward at the
   owner's request; planned, H1 first → [roadmap/habits.md](roadmap/habits.md)
+- **Jot (J1–J4)**: brought forward at the owner's request; an opt-in log
+  of what you've done, prompted every N hours in a DM. J1 (`/jot on`,
+  `+jot`, prompts and replies) built; tracked in GitHub Projects, issues
+  [#47](https://github.com/ahmed-marzook/family-hq/issues/47) onward, no
+  file in `roadmap/`
 
 ## Next
 

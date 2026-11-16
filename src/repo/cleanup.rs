@@ -121,6 +121,16 @@ pub async fn clear(
     sqlx::query!("DELETE FROM todo_reminders WHERE user_id = ?", user_id)
         .execute(&mut *conn)
         .await?;
+    // What they jotted down is private, so it goes with the rest.
+    sqlx::query!("DELETE FROM jot_entries WHERE user_id = ?", user_id)
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query!("DELETE FROM jot_prompts WHERE user_id = ?", user_id)
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query!("DELETE FROM jot_settings WHERE user_id = ?", user_id)
+        .execute(&mut *conn)
+        .await?;
     sqlx::query!("DELETE FROM prayer_log WHERE user_id = ?", user_id)
         .execute(&mut *conn)
         .await?;

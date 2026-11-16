@@ -19,6 +19,7 @@ mod error;
 mod geo;
 mod help;
 mod http;
+mod jot;
 pub mod logging;
 mod metrics;
 mod moon;

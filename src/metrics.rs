@@ -11,8 +11,8 @@ use chrono_tz::Tz;
 
 use crate::help;
 use crate::parser::{
-    BotCommand, Got, PointsHistory, PushCommand, ReplyCommand, SettingsCommand, TodoFilter,
-    TodoView, Toggle,
+    BotCommand, Got, JotCommand, PointsHistory, PushCommand, ReplyCommand, SettingsCommand,
+    TodoFilter, TodoView, Toggle,
 };
 use crate::person::Assignee;
 use crate::repo::messages::ListKind;
@@ -225,6 +225,18 @@ pub fn command(command: &BotCommand) -> Event {
                 PushCommand::On => "on",
                 PushCommand::Off => "off",
                 PushCommand::Test => "test",
+            }),
+        ),
+        // Never the text: it's what someone has been doing.
+        BotCommand::Jot(command) => event(
+            "jot",
+            Some(match command {
+                JotCommand::Status => "status",
+                JotCommand::On { .. } => "on",
+                JotCommand::Off => "off",
+                JotCommand::Log(_) => "log",
+                JotCommand::Reply { .. } => "reply",
+                JotCommand::Invalid(_) => "bad",
             }),
         ),
         BotCommand::SharedLocation { .. } => event("settings.location", None),
