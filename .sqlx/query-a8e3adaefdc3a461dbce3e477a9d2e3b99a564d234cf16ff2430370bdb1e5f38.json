@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE jot_settings SET paused_until = ? WHERE user_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "a8e3adaefdc3a461dbce3e477a9d2e3b99a564d234cf16ff2430370bdb1e5f38"
+}

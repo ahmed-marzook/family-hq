@@ -759,10 +759,16 @@ async fn jot_reply(
         None => jot::open_prompt(conn, chat_id, now).await?,
     };
     Ok(slot_at.map(|slot_at| {
-        Action::Command(BotCommand::Jot(JotCommand::Reply {
-            text: text.to_string(),
-            slot_at,
-        }))
+        // `skip` (or 😴) says no entry is coming for this prompt.
+        let command = if text.eq_ignore_ascii_case("skip") || text == crate::jot::SKIP {
+            JotCommand::Skip { slot_at }
+        } else {
+            JotCommand::Reply {
+                text: text.to_string(),
+                slot_at,
+            }
+        };
+        Action::Command(BotCommand::Jot(command))
     }))
 }
 

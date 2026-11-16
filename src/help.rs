@@ -215,15 +215,19 @@ An opt-in log of what you've done, so you can see where your time went. Only in 
 
 `/jot on`: every 2 hours between 09:00 and 18:00, on your own clock, I'll ask what you've done since the last prompt.
 `/jot on 90m 08:30-17:00`: your own interval (`1h`, `90m`, `2h`, `3h`: anything from 30m to 4h) and active hours.
+`/jot on 2h 09:00-18:00 -days mon-fri`: only on some days (`mon-fri`, `mon,wed,fri`, `weekdays`, `weekends`; the default is every day).
 `/jot`: is it on, the interval, the hours and the next prompt.
+`/jot pause 3h` or `/jot pause today`: no prompts for a while; they start again by themselves.
 `/jot off`: stops the prompts.
 `/jot today`: today as a timeline, with `—` where nothing was logged and `+jot` lines marked (extra). Also `/jot yesterday`, or a day like `/jot mon`.
 `/jot week`: one line per day of the last 7 (`Mon 4/5 · Tue 5/5`).
 After the last prompt of the day I send today's timeline once, in this DM.
+I skip a prompt if you logged something in the last 30 minutes, and a prompt that would land just after a prayer time waits until 15 minutes after it.
 
 *Jotting*
 Reply to a prompt, or just send your answer within 30 minutes of one, and I save it for that slot. Commands still work as normal while a prompt is open.
-`+jot wrote the report` (or `+j ...`) saves a line any time, without a prompt.";
+Reply `skip` (or 😴) to a prompt you don't want to answer: it shows as skipped, not missed.
+`+jot wrote the report` (or `+j ...`) saves a line any time; while a prompt is open it answers that prompt.";
 
 const PUSH: &str = "🔔 *Help: push notifications*
 Get prayer reminders as phone notifications too, through the free *ntfy* app, with a Prayed button that ticks the prayer off without opening WhatsApp. WhatsApp reminders carry on as before.

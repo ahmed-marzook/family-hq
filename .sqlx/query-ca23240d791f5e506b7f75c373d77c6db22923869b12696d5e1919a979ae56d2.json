@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE jot_prompts SET skipped_at = ?\n         WHERE user_id = ? AND slot_at = ?\n           AND NOT EXISTS (SELECT 1 FROM jot_entries e\n                           WHERE e.user_id = jot_prompts.user_id AND e.slot_at = jot_prompts.slot_at)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "ca23240d791f5e506b7f75c373d77c6db22923869b12696d5e1919a979ae56d2"
+}

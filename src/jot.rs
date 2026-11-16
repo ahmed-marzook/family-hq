@@ -2,6 +2,11 @@
 //! them every N hours of their active hours, and what they reply is saved
 //! as an entry. DM only.
 //!
+//! Prompts are smart about when they go: not on days the person left out,
+//! not while paused, moved to 15 minutes after a prayer time that they'd
+//! land just after, and skipped (the entry fills the slot) if something
+//! was logged in the last 30 minutes.
+//!
 //! `slots_on`, `due_slot`, `next_prompt` and `plan` are pure; `check` reads
 //! the database and hands the plans to the reminder engine to claim and
 //! send, called by the reminder loop every minute. Active hours are on the
@@ -17,13 +22,15 @@ use crate::AppState;
 use crate::bot::emoji::{DONE, PROBLEM};
 use crate::bot::{Context, my_settings};
 use crate::error::AppError;
-use crate::parser::{JotCommand, JotDay};
+use crate::parser::{JotCommand, JotDay, JotDays, JotPause};
 use crate::reminders::engine::{self, Claim, OnSent, Outgoing, Planned};
 use crate::repo::jot::{self, Entry, JotSettings, Subscriber};
 use crate::repo::settings as stored;
 use crate::settings::Settings;
 
 const PROMPT: &str = "✏️";
+/// What a reply of `skip` can also be.
+pub const SKIP: &str = "😴";
 
 /// What `/jot on` uses for whatever it isn't told.
 pub const DEFAULT_INTERVAL_MINUTES: u32 = 120;
@@ -65,29 +72,72 @@ pub fn slots_on(
         .collect()
 }
 
-/// A prompt that's due.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DueSlot {
-    pub at: DateTime<Utc>,
-    /// The prompt before it that day, `None` for the day's first.
-    pub previous: Option<DateTime<Utc>>,
-}
-
-/// The prompt due at `now` on the person's clock, if any.
-pub fn due_slot(now: DateTime<Utc>, timezone: Tz, settings: &JotSettings) -> Option<DueSlot> {
-    let today = now.with_timezone(&timezone).date_naive();
-    let slots = slots_on(
-        today,
+/// The prompts of one local day, or none if the person left that weekday
+/// out (`-days mon-fri`).
+fn day_slots(date: NaiveDate, timezone: Tz, settings: &JotSettings) -> Vec<DateTime<Utc>> {
+    if !settings.days.contains(date.weekday()) {
+        return Vec::new();
+    }
+    slots_on(
+        date,
         timezone,
         settings.interval_minutes,
         settings.start,
         settings.end,
-    );
-    let index = slots
+    )
+}
+
+/// A prompt due just after a prayer time waits until this long after it,
+/// so it doesn't land in the middle of someone's prayer.
+const AFTER_PRAYER: Duration = Duration::minutes(15);
+
+/// When the prompt for `slot` is sent: the slot itself, unless a prayer
+/// time started at most 15 minutes before it, then 15 minutes after that
+/// prayer starts. Pure, so it's tested with fixed times.
+pub fn after_prayers(slot: DateTime<Utc>, prayer_starts: &[DateTime<Utc>]) -> DateTime<Utc> {
+    prayer_starts
         .iter()
-        .position(|&at| at <= now && now < at + Duration::minutes(LATE_BY_AT_MOST))?;
+        .find(|&&start| start <= slot && slot < start + AFTER_PRAYER)
+        .map_or(slot, |&start| start + AFTER_PRAYER)
+}
+
+/// How far past a slot its prompt can still be due: a prayer shift of up to
+/// 15 minutes, then `LATE_BY_AT_MOST`.
+fn near(now: DateTime<Utc>, timezone: Tz, settings: &JotSettings) -> bool {
+    let today = now.with_timezone(&timezone).date_naive();
+    day_slots(today, timezone, settings)
+        .iter()
+        .any(|&at| at <= now && now < at + AFTER_PRAYER + Duration::minutes(LATE_BY_AT_MOST))
+}
+
+/// A prompt that's due.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DueSlot {
+    /// The slot, which is what an answer is saved against.
+    pub at: DateTime<Utc>,
+    /// When it's sent: `at`, or later if a prayer time is just before it.
+    pub send_at: DateTime<Utc>,
+    /// The prompt before it that day, `None` for the day's first.
+    pub previous: Option<DateTime<Utc>>,
+}
+
+/// The prompt due at `now` on the person's clock, if any. `prayer_starts`
+/// are the day's prayer times, `&[]` if they're not known.
+pub fn due_slot(
+    now: DateTime<Utc>,
+    timezone: Tz,
+    settings: &JotSettings,
+    prayer_starts: &[DateTime<Utc>],
+) -> Option<DueSlot> {
+    let today = now.with_timezone(&timezone).date_naive();
+    let slots = day_slots(today, timezone, settings);
+    let index = slots.iter().position(|&at| {
+        let send_at = after_prayers(at, prayer_starts);
+        send_at <= now && now < send_at + Duration::minutes(LATE_BY_AT_MOST)
+    })?;
     Some(DueSlot {
         at: slots[index],
+        send_at: after_prayers(slots[index], prayer_starts),
         previous: index.checked_sub(1).map(|i| slots[i]),
     })
 }
@@ -100,18 +150,13 @@ pub fn next_prompt(
     settings: &JotSettings,
 ) -> Option<DateTime<Utc>> {
     let today = now.with_timezone(&timezone).date_naive();
-    // A few days, in case clocks skipping a time empties one.
-    (0..4).find_map(|days| {
+    // A week, for a person who left most days out (and in case clocks
+    // skipping a time empties one).
+    (0..8).find_map(|days| {
         let date = today + Duration::days(days);
-        slots_on(
-            date,
-            timezone,
-            settings.interval_minutes,
-            settings.start,
-            settings.end,
-        )
-        .into_iter()
-        .find(|&at| at > now)
+        day_slots(date, timezone, settings)
+            .into_iter()
+            .find(|&at| at > now)
     })
 }
 
@@ -161,6 +206,7 @@ pub fn summary_plan(
     label: &str,
     entries: &[Entry],
     slots: &[DateTime<Utc>],
+    skipped: &[DateTime<Utc>],
     settings: &Settings,
 ) -> Planned {
     Planned {
@@ -170,7 +216,7 @@ pub fn summary_plan(
         },
         messages: vec![Outgoing {
             to: subscriber.wa_chat_id.clone(),
-            text: timeline(label, entries, slots, settings),
+            text: timeline(label, entries, slots, skipped, settings),
             mentions: Vec::new(),
             quote: None,
             reminder: None,
@@ -229,21 +275,64 @@ async fn plan_subscriber(
         if jot::summary_claimed(&mut conn, subscriber.user_id, day).await? {
             continue;
         }
-        let (entries, slots) =
+        let (entries, slots, skipped) =
             day_view(&mut conn, subscriber.user_id, day, settings.timezone).await?;
         let label = label_of(day, settings.today(now));
         return Ok(Some(summary_plan(
-            subscriber, day, &label, &entries, &slots, &settings,
+            subscriber, day, &label, &entries, &slots, &skipped, &settings,
         )));
     }
-    let Some(slot) = due_slot(now, settings.timezone, &subscriber.settings) else {
+    if subscriber.settings.paused_at(now).is_some()
+        || !near(now, settings.timezone, &subscriber.settings)
+    {
+        return Ok(None);
+    }
+    let prayer_starts = prayer_starts(state, &settings, now).await;
+    let Some(slot) = due_slot(now, settings.timezone, &subscriber.settings, &prayer_starts) else {
         return Ok(None);
     };
     // Turning it on at 11:10 doesn't send the 11:00 prompt.
     if slot.at < subscriber.settings.updated_at {
         return Ok(None);
     }
+    let mut conn = state.db.acquire().await?;
+    // Already sent: the claim keeps it to one send, and an entry logged
+    // since is that prompt's answer, not a reason to skip it.
+    if !jot::prompt_claimed(&mut conn, subscriber.user_id, slot.at).await? {
+        let since = slot.send_at - Duration::minutes(LATE_BY_AT_MOST);
+        if let Some(recent) = jot::recent_entry(&mut conn, subscriber.user_id, since, now).await? {
+            // They've just said what they're doing, so no prompt; a `+jot`
+            // becomes this slot's answer so the timeline shows it there.
+            jot::fill_slot(&mut conn, recent.id, slot.at).await?;
+            return Ok(None);
+        }
+    }
     Ok(Some(plan(subscriber, &slot, &settings)))
+}
+
+/// When today's prayers start where this person is. Empty if they can't be
+/// found: a prompt then goes out at its own time rather than not at all.
+async fn prayer_starts(
+    state: &AppState,
+    settings: &Settings,
+    now: DateTime<Utc>,
+) -> Vec<DateTime<Utc>> {
+    let found = async {
+        let location = state.apis.prayer_location(settings).await?;
+        state
+            .apis
+            .prayer_times
+            .for_date(&location, settings.today(now))
+            .await
+    }
+    .await;
+    match found {
+        Ok(day) => day.windows.iter().map(|w| w.start).collect(),
+        Err(err) => {
+            warn!("jot: no prayer times, sending prompts on time: {err}");
+            Vec::new()
+        }
+    }
 }
 
 /// What a day with nothing logged says: short and kind, never an empty
@@ -262,16 +351,38 @@ pub fn logged_count(entries: &[Entry], slots: &[DateTime<Utc>]) -> usize {
         .count()
 }
 
+/// The slots that count: not the ones skipped with `skip` and never
+/// answered since (a late quoted reply can still answer one). A skipped
+/// slot is neither logged nor missed.
+pub fn scored_slots(
+    slots: &[DateTime<Utc>],
+    entries: &[Entry],
+    skipped: &[DateTime<Utc>],
+) -> Vec<DateTime<Utc>> {
+    slots
+        .iter()
+        .copied()
+        .filter(|slot| !is_skipped(*slot, entries, skipped))
+        .collect()
+}
+
+fn is_skipped(slot: DateTime<Utc>, entries: &[Entry], skipped: &[DateTime<Utc>]) -> bool {
+    skipped.contains(&slot) && !entries.iter().any(|e| e.slot_at == Some(slot))
+}
+
 /// One day as a timeline: every slot in order, `—` where nothing was
-/// logged, then the `+jot` entries as extras, and how many slots were
-/// logged. Pure: entries, slots and the clock settings in, text out.
+/// logged and `skipped` where the prompt was skipped, then the `+jot`
+/// entries as extras, and how many slots were logged. Pure: entries, slots
+/// and the clock settings in, text out.
 pub fn timeline(
     label: &str,
     entries: &[Entry],
     slots: &[DateTime<Utc>],
+    skipped: &[DateTime<Utc>],
     mine: &Settings,
 ) -> String {
-    if entries.is_empty() {
+    let counted = scored_slots(slots, entries, skipped);
+    if entries.is_empty() && counted.len() == slots.len() {
         return nothing_logged(label);
     }
     let mut lines = vec![format!("{PROMPT} {label}")];
@@ -282,7 +393,11 @@ pub fn timeline(
             .map(|e| e.text.as_str())
             .collect();
         let text = if texts.is_empty() {
-            "—".to_string()
+            if is_skipped(*slot, entries, skipped) {
+                "skipped".to_string()
+            } else {
+                "—".to_string()
+            }
         } else {
             texts.join(", ")
         };
@@ -300,11 +415,11 @@ pub fn timeline(
             entry.text
         ));
     }
-    if !slots.is_empty() {
+    if !counted.is_empty() {
         lines.push(format!(
             "{} of {} logged",
-            logged_count(entries, slots),
-            slots.len()
+            logged_count(entries, &counted),
+            counted.len()
         ));
     }
     lines.join("\n")
@@ -375,13 +490,7 @@ pub fn summary_days(now: DateTime<Utc>, timezone: Tz, settings: &JotSettings) ->
     [today - Duration::days(1), today]
         .into_iter()
         .filter(|&day| {
-            let slots = slots_on(
-                day,
-                timezone,
-                settings.interval_minutes,
-                settings.start,
-                settings.end,
-            );
+            let slots = day_slots(day, timezone, settings);
             let Some(&last) = slots.last() else {
                 return false;
             };
@@ -416,18 +525,20 @@ pub fn shown_slots(prompts: &[DateTime<Utc>], entries: &[Entry]) -> Vec<DateTime
     slots
 }
 
-/// One day's entries and the slots to show them against.
+/// One day's entries, the slots to show them against, and which of those
+/// were skipped.
 async fn day_view(
     conn: &mut SqliteConnection,
     user_id: i64,
     date: NaiveDate,
     timezone: Tz,
-) -> Result<(Vec<Entry>, Vec<DateTime<Utc>>), AppError> {
+) -> Result<(Vec<Entry>, Vec<DateTime<Utc>>, Vec<DateTime<Utc>>), AppError> {
     let entries = entries_of(conn, user_id, date, date).await?;
     let (from, to) = day_bounds(date, timezone);
     let prompts = jot::prompts_between(conn, user_id, from, to).await?;
+    let skipped = jot::skipped_between(conn, user_id, from, to).await?;
     let slots = shown_slots(&prompts, &entries);
-    Ok((entries, slots))
+    Ok((entries, slots, skipped))
 }
 
 fn interval_label(minutes: u32) -> String {
@@ -438,16 +549,50 @@ fn interval_label(minutes: u32) -> String {
     }
 }
 
+/// `09:00–18:00`, then the days if they aren't every day.
 fn hours_label(settings: &JotSettings) -> String {
-    format!(
+    let hours = format!(
         "{}–{}",
         settings.start.format("%H:%M"),
         settings.end.format("%H:%M")
-    )
+    );
+    if settings.days == JotDays::EVERY_DAY {
+        hours
+    } else {
+        format!("{hours}, {}", settings.days.label())
+    }
 }
 
+/// `Next prompt: 11:00.`, after a pause if there's one.
 fn next_line(settings: &JotSettings, now: DateTime<Utc>, mine: &Settings) -> String {
-    match next_prompt(now, mine.timezone, settings) {
+    let paused = settings.paused_at(now);
+    let after = paused.map_or(now, |until| until.max(now));
+    let pause = paused.map_or(String::new(), |until| {
+        format!("Paused until {}. ", when_label(until, now, mine))
+    });
+    format!("{pause}{}", next_line_after(settings, after, now, mine))
+}
+
+/// `11:00`, or `Tue 3 Nov 11:00` if it isn't today.
+fn when_label(at: DateTime<Utc>, now: DateTime<Utc>, mine: &Settings) -> String {
+    if mine.today(at) == mine.today(now) {
+        mine.clock(at)
+    } else {
+        format!(
+            "{} {}",
+            at.with_timezone(&mine.timezone).format("%a %-d %b"),
+            mine.clock(at)
+        )
+    }
+}
+
+fn next_line_after(
+    settings: &JotSettings,
+    after: DateTime<Utc>,
+    now: DateTime<Utc>,
+    mine: &Settings,
+) -> String {
+    match next_prompt(after, mine.timezone, settings) {
         Some(at) => {
             let today = mine.today(now);
             let day = if mine.today(at) == today {
@@ -495,6 +640,7 @@ pub async fn command(
         JotCommand::On {
             interval_minutes,
             hours,
+            days,
         } => {
             // What isn't said stays as it was, or is the default.
             let interval_minutes = interval_minutes
@@ -503,13 +649,19 @@ pub async fn command(
             let (start, end) = hours
                 .or(current.map(|c| (c.start, c.end)))
                 .unwrap_or((DEFAULT_START, DEFAULT_END));
+            let days = days
+                .or(current.map(|c| c.days))
+                .unwrap_or(JotDays::EVERY_DAY);
             jot::turn_on(conn, user_id, interval_minutes, start, end, ctx.now).await?;
+            jot::set_days(conn, user_id, days).await?;
             let now_on = JotSettings {
                 enabled: true,
                 interval_minutes,
                 start,
                 end,
                 updated_at: ctx.now,
+                days,
+                paused_until: None,
             };
             format!(
                 "{PROMPT} Jot is on: every {}, {}. {}\nReply to a prompt to log it, or send `+jot <text>` any time. `/jot off` stops it.",
@@ -522,6 +674,32 @@ pub async fn command(
             jot::turn_off(conn, user_id).await?;
             format!("{PROMPT} Jot is off. `/jot on` turns it back on.")
         }
+        JotCommand::Pause(pause) => match current {
+            Some(c) if c.enabled => {
+                let until = match pause {
+                    JotPause::For { minutes } => ctx.now + Duration::minutes(i64::from(minutes)),
+                    // The start of the person's next day, so it resumes by
+                    // itself in the morning.
+                    JotPause::Today => day_bounds(mine.today(ctx.now), mine.timezone).1,
+                };
+                jot::pause_until(conn, user_id, Some(until)).await?;
+                let paused = JotSettings {
+                    paused_until: Some(until),
+                    ..c
+                };
+                let how_long = match pause {
+                    JotPause::Today => "for the rest of today".to_string(),
+                    JotPause::For { .. } => format!("until {}", when_label(until, ctx.now, &mine)),
+                };
+                format!(
+                    "{PROMPT} Jot is paused {how_long}. {}",
+                    next_line_after(&paused, until, ctx.now, &mine)
+                )
+            }
+            _ => {
+                format!("{PROMPT} Jot is off, so there's nothing to pause. `/jot on` turns it on.")
+            }
+        },
         JotCommand::Status => match current {
             Some(c) if c.enabled => format!(
                 "{PROMPT} Jot is on: every {}, {}. {}",
@@ -536,14 +714,21 @@ pub async fn command(
         JotCommand::Day(day) => {
             let today = mine.today(ctx.now);
             let date = resolve_day(day, today);
-            let (entries, slots) = day_view(conn, user_id, date, mine.timezone).await?;
-            timeline(&label_of(date, today), &entries, &slots, &mine)
+            let (entries, slots, skipped) = day_view(conn, user_id, date, mine.timezone).await?;
+            timeline(&label_of(date, today), &entries, &slots, &skipped, &mine)
         }
         JotCommand::Week => {
             let today = mine.today(ctx.now);
             let from = today - Duration::days(6);
             let all = jot::entries_between(conn, user_id, from, today).await?;
             let prompts = jot::prompts_between(
+                conn,
+                user_id,
+                day_bounds(from, mine.timezone).0,
+                day_bounds(today, mine.timezone).1,
+            )
+            .await?;
+            let skipped_all = jot::skipped_between(
                 conn,
                 user_id,
                 day_bounds(from, mine.timezone).0,
@@ -563,7 +748,7 @@ pub async fn command(
                         .copied()
                         .filter(|p| p.with_timezone(&mine.timezone).date_naive() == date)
                         .collect();
-                    let slots = shown_slots(&sent, &entries);
+                    let slots = scored_slots(&shown_slots(&sent, &entries), &entries, &skipped_all);
                     WeekDay {
                         date,
                         logged: logged_count(&entries, &slots),
@@ -582,8 +767,25 @@ pub async fn command(
             }
         }
         JotCommand::Log(text) => {
-            jot::add_entry(conn, user_id, ctx.now, mine.today(ctx.now), None, &text).await?;
-            format!("{DONE} Jotted.")
+            // A prompt that's still open takes it, as if it were a reply.
+            let open = jot::open_prompt(conn, ctx.chat_id, ctx.now).await?;
+            jot::add_entry(conn, user_id, ctx.now, mine.today(ctx.now), open, &text).await?;
+            match open {
+                Some(slot_at) => format!("{DONE} Jotted for {}.", mine.clock(slot_at)),
+                None => format!("{DONE} Jotted."),
+            }
+        }
+        JotCommand::Skip { slot_at } => {
+            // An answered prompt stays answered: `skip` doesn't hide an
+            // entry, so say so rather than claim it was skipped.
+            if jot::skip_prompt(conn, user_id, slot_at, ctx.now).await? {
+                format!("{SKIP} Skipped {}.", mine.clock(slot_at))
+            } else {
+                format!(
+                    "{PROBLEM} {} already has an entry, so I left it.",
+                    mine.clock(slot_at)
+                )
+            }
         }
         JotCommand::Reply { text, slot_at } => {
             jot::add_entry(
@@ -621,6 +823,8 @@ mod tests {
             start: at(9, 0),
             end: at(18, 0),
             updated_at: utc("2026-11-01T00:00:00Z"),
+            days: JotDays::EVERY_DAY,
+            paused_until: None,
         }
     }
 
@@ -661,7 +865,7 @@ mod tests {
 
     #[test]
     fn a_prompt_is_due_for_half_an_hour_and_never_outside_the_hours() {
-        let due = |s: &str| due_slot(utc(s), LONDON, &two_hourly()).map(|d| d.at);
+        let due = |s: &str| due_slot(utc(s), LONDON, &two_hourly(), &[]).map(|d| d.at);
         assert_eq!(
             due("2026-11-02T11:00:00Z"),
             Some(utc("2026-11-02T11:00:00Z"))
@@ -679,27 +883,27 @@ mod tests {
 
     #[test]
     fn the_first_prompt_has_no_previous_and_the_rest_name_the_one_before() {
-        let first = due_slot(utc("2026-11-02T09:00:00Z"), LONDON, &two_hourly()).unwrap();
+        let first = due_slot(utc("2026-11-02T09:00:00Z"), LONDON, &two_hourly(), &[]).unwrap();
         assert_eq!(first.previous, None);
-        let second = due_slot(utc("2026-11-02T11:00:00Z"), LONDON, &two_hourly()).unwrap();
+        let second = due_slot(utc("2026-11-02T11:00:00Z"), LONDON, &two_hourly(), &[]).unwrap();
         assert_eq!(second.previous, Some(utc("2026-11-02T09:00:00Z")));
     }
 
     #[test]
     fn the_prompt_reads_as_in_the_issue() {
         let settings = defaults();
-        let first = due_slot(utc("2026-11-02T09:00:00Z"), LONDON, &two_hourly()).unwrap();
+        let first = due_slot(utc("2026-11-02T09:00:00Z"), LONDON, &two_hourly(), &[]).unwrap();
         assert_eq!(
             prompt_text(&first, &settings),
             "✏️ 09:00 · Jot time: what have you done since you started?"
         );
-        let second = due_slot(utc("2026-11-02T11:00:00Z"), LONDON, &two_hourly()).unwrap();
+        let second = due_slot(utc("2026-11-02T11:00:00Z"), LONDON, &two_hourly(), &[]).unwrap();
         assert_eq!(
             prompt_text(&second, &settings),
             "✏️ 11:00 · Jot time: what have you done since 09:00?"
         );
         // In summer the same local times are an hour earlier in UTC.
-        let summer = due_slot(utc("2026-07-01T10:00:00Z"), LONDON, &two_hourly()).unwrap();
+        let summer = due_slot(utc("2026-07-01T10:00:00Z"), LONDON, &two_hourly(), &[]).unwrap();
         assert_eq!(
             prompt_text(&summer, &settings),
             "✏️ 11:00 · Jot time: what have you done since 09:00?"
@@ -767,14 +971,14 @@ mod tests {
             entry(None, "2026-11-02T14:20:00Z", "Called the garage"),
         ];
         assert_eq!(
-            timeline("Today", &entries, &slots, &defaults()),
+            timeline("Today", &entries, &slots, &[], &defaults()),
             "✏️ Today\n09:00 Emails and planning\n11:00 Finished the report\n13:00 —\n15:00 School run, groceries\n17:00 Cooked\n14:20 (extra) Called the garage\n4 of 5 logged"
         );
     }
 
     #[test]
     fn a_day_with_nothing_logged_is_a_kind_line() {
-        let text = timeline("Today", &[], &slots("2026-11-02"), &defaults());
+        let text = timeline("Today", &[], &slots("2026-11-02"), &[], &defaults());
         assert!(text.contains("nothing logged"), "{text}");
         assert!(!text.contains("13:00"), "{text}");
     }
@@ -889,6 +1093,7 @@ mod tests {
             "Yesterday",
             &entries,
             &slots,
+            &[],
             &defaults(),
         );
         assert!(matches!(
@@ -1033,7 +1238,7 @@ mod tests {
             .await
             .unwrap();
         let subscriber = jot::subscribers(&mut conn).await.unwrap().remove(0);
-        let slot = due_slot(on_at, LONDON, &subscriber.settings).unwrap();
+        let slot = due_slot(on_at, LONDON, &subscriber.settings, &[]).unwrap();
         assert!(slot.at < subscriber.settings.updated_at);
         // `plan_subscriber` skips it for that reason; the plan itself is
         // for the 11:00 slot.
@@ -1168,5 +1373,390 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    // ---- J3: smarter prompts ----
+
+    /// A Monday in November (GMT) whose Dhuhr is pretended to start at
+    /// 10:50, so the 11:00 slot lands just after a prayer time.
+    fn monday_prayers() -> crate::prayer::DayTimes {
+        use crate::prayer::{DayTimes, Prayer, Window};
+        let window = |prayer, start: &str, end: &str| Window {
+            prayer,
+            start: utc(start),
+            end: utc(end),
+        };
+        DayTimes {
+            date: date("2026-11-02"),
+            hijri: None,
+            windows: [
+                window(Prayer::Fajr, "2026-11-02T05:30:00Z", "2026-11-02T07:15:00Z"),
+                window(
+                    Prayer::Dhuhr,
+                    "2026-11-02T10:50:00Z",
+                    "2026-11-02T14:00:00Z",
+                ),
+                window(Prayer::Asr, "2026-11-02T14:00:00Z", "2026-11-02T16:30:00Z"),
+                window(
+                    Prayer::Maghrib,
+                    "2026-11-02T16:30:00Z",
+                    "2026-11-02T18:00:00Z",
+                ),
+                window(Prayer::Isha, "2026-11-02T18:00:00Z", "2026-11-03T00:00:00Z"),
+            ],
+        }
+    }
+
+    /// A state whose prayer times for 2 November are already known.
+    fn state_with_prayers(pool: sqlx::SqlitePool) -> std::sync::Arc<AppState> {
+        let mut state = crate::testkit::test_state(pool, "http://127.0.0.1:9");
+        std::sync::Arc::get_mut(&mut state)
+            .expect("not shared yet")
+            .apis
+            .prayer_times =
+            crate::aladhan::PrayerTimes::with_cached_days(defaults(), vec![monday_prayers()]);
+        state
+    }
+
+    async fn subscriber(conn: &mut SqliteConnection, user: i64) -> Subscriber {
+        jot::turn_on(
+            conn,
+            user,
+            120,
+            at(9, 0),
+            at(18, 0),
+            utc("2026-11-01T08:00:00Z"),
+        )
+        .await
+        .unwrap();
+        jot::subscribers(conn).await.unwrap().remove(0)
+    }
+
+    #[test]
+    fn a_prompt_just_after_a_prayer_moves_to_fifteen_minutes_after_it() {
+        let dhuhr = utc("2026-11-02T10:50:00Z");
+        let eleven = utc("2026-11-02T11:00:00Z");
+        assert_eq!(after_prayers(eleven, &[dhuhr]), utc("2026-11-02T11:05:00Z"));
+        // At the prayer's own start, and one minute before 15 have passed.
+        assert_eq!(after_prayers(dhuhr, &[dhuhr]), utc("2026-11-02T11:05:00Z"));
+        assert_eq!(
+            after_prayers(utc("2026-11-02T11:04:00Z"), &[dhuhr]),
+            utc("2026-11-02T11:05:00Z")
+        );
+        // 15 minutes after, before it, or no prayer times: unchanged.
+        let later = utc("2026-11-02T11:05:00Z");
+        assert_eq!(after_prayers(later, &[dhuhr]), later);
+        assert_eq!(after_prayers(dhuhr, &[eleven]), dhuhr);
+        assert_eq!(after_prayers(eleven, &[]), eleven);
+    }
+
+    #[test]
+    fn a_moved_prompt_is_due_from_its_new_time_for_half_an_hour() {
+        let starts = [utc("2026-11-02T10:50:00Z")];
+        let due = |s: &str| due_slot(utc(s), LONDON, &two_hourly(), &starts);
+        assert_eq!(due("2026-11-02T11:00:00Z"), None);
+        assert_eq!(due("2026-11-02T11:04:00Z"), None);
+        let moved = due("2026-11-02T11:05:00Z").unwrap();
+        assert_eq!(
+            moved.at,
+            utc("2026-11-02T11:00:00Z"),
+            "still the 11:00 slot"
+        );
+        assert_eq!(moved.send_at, utc("2026-11-02T11:05:00Z"));
+        assert!(due("2026-11-02T11:34:00Z").is_some());
+        assert_eq!(due("2026-11-02T11:35:00Z"), None);
+        // Other slots aren't touched.
+        assert!(due("2026-11-02T13:00:00Z").is_some());
+    }
+
+    #[tokio::test]
+    async fn the_loop_holds_a_prompt_back_after_a_prayer_with_a_fake_clock() {
+        let pool = test_pool().await;
+        let state = state_with_prayers(pool.clone());
+        let mut conn = pool.acquire().await.unwrap();
+        let family = seed_family(&mut conn, utc("2026-11-01T08:00:00Z")).await;
+        let subscriber = subscriber(&mut conn, family.bilal.id).await;
+        drop(conn);
+
+        let plan_at = |s: &str| {
+            let state = state.clone();
+            let subscriber = subscriber.clone();
+            let now = utc(s);
+            async move { plan_subscriber(&state, &subscriber, now).await.unwrap() }
+        };
+        assert!(plan_at("2026-11-02T11:00:00Z").await.is_none());
+        assert!(plan_at("2026-11-02T11:04:00Z").await.is_none());
+        let planned = plan_at("2026-11-02T11:05:00Z").await.expect("moved prompt");
+        assert!(planned.messages[0].text.starts_with("✏️ 11:00 · Jot time"));
+        assert!(matches!(
+            planned.claim,
+            Claim::JotPrompt { slot_at, .. } if slot_at == utc("2026-11-02T11:00:00Z")
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_recent_entry_skips_the_prompt_and_fills_the_slot() {
+        let pool = test_pool().await;
+        let state = state_with_prayers(pool.clone());
+        let mut conn = pool.acquire().await.unwrap();
+        let family = seed_family(&mut conn, utc("2026-11-01T08:00:00Z")).await;
+        let user = family.bilal.id;
+        let subscriber = subscriber(&mut conn, user).await;
+        // 13:00 has an entry from 12:20, 40 minutes before: too old.
+        jot::add_entry(
+            &mut conn,
+            user,
+            utc("2026-11-02T12:20:00Z"),
+            date("2026-11-02"),
+            None,
+            "an old one",
+        )
+        .await
+        .unwrap();
+        jot::add_entry(
+            &mut conn,
+            user,
+            utc("2026-11-02T10:45:00Z"),
+            date("2026-11-02"),
+            None,
+            "called the garage",
+        )
+        .await
+        .unwrap();
+        drop(conn);
+
+        // 10:45 is within 30 minutes of the 11:00 slot (sent at 11:05).
+        for now in ["2026-11-02T11:05:00Z", "2026-11-02T11:06:00Z"] {
+            let found = plan_subscriber(&state, &subscriber, utc(now))
+                .await
+                .unwrap();
+            assert!(found.is_none(), "no prompt at {now}");
+        }
+        let mut conn = pool.acquire().await.unwrap();
+        let ctx = ctx(family.dm, false, &family.bilal, "2026-11-02T11:10:00Z");
+        let today = command(&mut conn, &ctx, &defaults(), command_of("/jot today"))
+            .await
+            .unwrap();
+        assert!(today.contains("11:00 called the garage"), "{today}");
+        drop(conn);
+
+        // The 13:00 slot has nothing recent (12:20 is 40 minutes before).
+        let planned = plan_subscriber(&state, &subscriber, utc("2026-11-02T13:00:00Z"))
+            .await
+            .unwrap();
+        assert!(planned.is_some(), "an old entry doesn't skip a prompt");
+    }
+
+    #[tokio::test]
+    async fn plus_jot_answers_an_open_prompt_and_is_an_extra_otherwise() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let family = seed_family(&mut conn, utc("2026-11-02T08:00:00Z")).await;
+        let (user, dm) = (family.bilal.id, family.dm);
+        sent_prompt(&mut conn, user, dm, "2026-11-02T11:00:00Z").await;
+
+        let ctx = ctx(dm, false, &family.bilal, "2026-11-02T11:10:00Z");
+        let said = command(
+            &mut conn,
+            &ctx,
+            &defaults(),
+            command_of("+j wrote the report"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(said, format!("{DONE} Jotted for 11:00."));
+        // The slot is answered now, so the next one is an extra.
+        let said = command(&mut conn, &ctx, &defaults(), command_of("+j and emails"))
+            .await
+            .unwrap();
+        assert_eq!(said, format!("{DONE} Jotted."));
+
+        let slots: Vec<Option<String>> =
+            sqlx::query_scalar("SELECT slot_at FROM jot_entries ORDER BY id")
+                .fetch_all(&mut *conn)
+                .await
+                .unwrap();
+        assert!(slots[0].is_some());
+        assert_eq!(slots[1], None);
+    }
+
+    #[tokio::test]
+    async fn skip_is_shown_as_skipped_and_counts_as_neither_logged_nor_missed() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let family = seed_family(&mut conn, utc("2026-11-02T08:00:00Z")).await;
+        let (user, dm) = (family.bilal.id, family.dm);
+        sent_prompt(&mut conn, user, dm, "2026-11-02T09:00:00Z").await;
+        sent_prompt(&mut conn, user, dm, "2026-11-02T11:00:00Z").await;
+        sent_prompt(&mut conn, user, dm, "2026-11-02T13:00:00Z").await;
+        let nine = ctx(dm, false, &family.bilal, "2026-11-02T09:05:00Z");
+        command(&mut conn, &nine, &defaults(), command_of("/jot")) // warm-up, harmless
+            .await
+            .unwrap();
+        let reply = JotCommand::Reply {
+            text: "emails".to_string(),
+            slot_at: utc("2026-11-02T09:00:00Z"),
+        };
+        command(&mut conn, &nine, &defaults(), reply).await.unwrap();
+
+        let eleven = ctx(dm, false, &family.bilal, "2026-11-02T11:05:00Z");
+        let skip = JotCommand::Skip {
+            slot_at: utc("2026-11-02T11:00:00Z"),
+        };
+        let said = command(&mut conn, &eleven, &defaults(), skip)
+            .await
+            .unwrap();
+        assert_eq!(said, "😴 Skipped 11:00.");
+
+        // A skipped prompt isn't open any more.
+        assert_eq!(
+            jot::open_prompt(&mut conn, dm, utc("2026-11-02T11:06:00Z"))
+                .await
+                .unwrap(),
+            None
+        );
+        let later = ctx(dm, false, &family.bilal, "2026-11-02T13:10:00Z");
+        let today = command(&mut conn, &later, &defaults(), command_of("/jot today"))
+            .await
+            .unwrap();
+        assert!(
+            today.contains("09:00 emails\n11:00 skipped\n13:00 —"),
+            "{today}"
+        );
+        // 2 scored: 09:00 logged, 13:00 missed; the skipped one isn't.
+        assert!(today.ends_with("1 of 2 logged"), "{today}");
+
+        let week = command(&mut conn, &later, &defaults(), command_of("/jot week"))
+            .await
+            .unwrap();
+        assert!(week.contains("Mon 1/2"), "{week}");
+
+        // Skipping the answered 09:00 changes nothing and says so.
+        let skip_answered = JotCommand::Skip {
+            slot_at: utc("2026-11-02T09:00:00Z"),
+        };
+        let said = command(&mut conn, &later, &defaults(), skip_answered)
+            .await
+            .unwrap();
+        assert_eq!(said, "❓ 09:00 already has an entry, so I left it.");
+        let today = command(&mut conn, &later, &defaults(), command_of("/jot today"))
+            .await
+            .unwrap();
+        assert!(today.contains("09:00 emails\n11:00 skipped"), "{today}");
+        assert!(today.ends_with("1 of 2 logged"), "{today}");
+    }
+
+    #[test]
+    fn a_day_of_only_skips_is_not_called_empty() {
+        let slots = [utc("2026-11-02T11:00:00Z")];
+        let text = timeline("Today", &[], &slots, &slots, &defaults());
+        assert_eq!(text, "✏️ Today\n11:00 skipped");
+    }
+
+    #[tokio::test]
+    async fn days_leave_out_the_weekend_and_say_so() {
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let family = seed_family(&mut conn, utc("2026-11-02T08:00:00Z")).await;
+        let ctx = ctx(family.dm, false, &family.bilal, "2026-11-06T17:30:00Z");
+        let on = command(
+            &mut conn,
+            &ctx,
+            &defaults(),
+            command_of("/jot on 2h 09:00-18:00 -days mon-fri"),
+        )
+        .await
+        .unwrap();
+        assert!(on.contains("every 2h, 09:00–18:00, Mon–Fri"), "{on}");
+        // Friday evening: the next prompt is Monday's.
+        assert!(on.contains("Next prompt: 09:00 on Mon 9 Nov."), "{on}");
+        let settings = jot::get(&mut conn, family.bilal.id).await.unwrap().unwrap();
+
+        let due = |s: &str| due_slot(utc(s), LONDON, &settings, &[]);
+        assert!(due("2026-11-06T11:00:00Z").is_some(), "Friday");
+        assert!(due("2026-11-07T11:00:00Z").is_none(), "Saturday");
+        assert!(due("2026-11-08T11:00:00Z").is_none(), "Sunday");
+        assert!(due("2026-11-09T11:00:00Z").is_some(), "Monday");
+        assert!(summary_days(utc("2026-11-07T23:00:00Z"), LONDON, &settings).is_empty());
+
+        // Saying nothing about days later keeps them.
+        command(&mut conn, &ctx, &defaults(), command_of("/jot on 3h"))
+            .await
+            .unwrap();
+        let kept = jot::get(&mut conn, family.bilal.id).await.unwrap().unwrap();
+        assert_eq!(kept.days, settings.days);
+        command(
+            &mut conn,
+            &ctx,
+            &defaults(),
+            command_of("/jot on -days daily"),
+        )
+        .await
+        .unwrap();
+        let all = jot::get(&mut conn, family.bilal.id).await.unwrap().unwrap();
+        assert_eq!(all.days, JotDays::EVERY_DAY);
+    }
+
+    #[tokio::test]
+    async fn a_pause_stops_prompts_and_ends_by_itself() {
+        let pool = test_pool().await;
+        let state = state_with_prayers(pool.clone());
+        let mut conn = pool.acquire().await.unwrap();
+        let family = seed_family(&mut conn, utc("2026-11-01T08:00:00Z")).await;
+        let user = family.bilal.id;
+        let _ = subscriber(&mut conn, user).await;
+        let ctx = ctx(family.dm, false, &family.bilal, "2026-11-02T10:00:00Z");
+
+        let said = command(&mut conn, &ctx, &defaults(), command_of("/jot pause 3h"))
+            .await
+            .unwrap();
+        assert!(said.contains("paused until 13:00"), "{said}");
+        let paused = jot::subscribers(&mut conn).await.unwrap().remove(0);
+        // 11:00 (moved to 11:05) is inside the pause; 13:00 is where it ends.
+        drop(conn);
+        for now in ["2026-11-02T11:05:00Z", "2026-11-02T12:59:00Z"] {
+            assert!(
+                plan_subscriber(&state, &paused, utc(now))
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "paused at {now}"
+            );
+        }
+        let after = plan_subscriber(&state, &paused, utc("2026-11-02T13:00:00Z"))
+            .await
+            .unwrap();
+        assert!(after.is_some(), "the pause is over");
+
+        // `today` runs to the person's midnight, then Tuesday's prompts go.
+        let mut conn = pool.acquire().await.unwrap();
+        let said = command(&mut conn, &ctx, &defaults(), command_of("/jot pause today"))
+            .await
+            .unwrap();
+        assert!(said.contains("paused for the rest of today"), "{said}");
+        assert!(said.contains("Next prompt: 09:00 on Tue 3 Nov."), "{said}");
+        let paused = jot::subscribers(&mut conn).await.unwrap().remove(0);
+        drop(conn);
+        assert!(
+            plan_subscriber(&state, &paused, utc("2026-11-02T15:00:00Z"))
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let _ = pool.acquire().await.unwrap();
+        // Tuesday has no cached prayer times, so prompts go on time.
+        let next_day = plan_subscriber(&state, &paused, utc("2026-11-03T09:00:00Z"))
+            .await
+            .unwrap();
+        assert!(next_day.is_some(), "paused only for today");
+
+        let off = {
+            let mut conn = pool.acquire().await.unwrap();
+            jot::turn_off(&mut conn, user).await.unwrap();
+            command(&mut conn, &ctx, &defaults(), command_of("/jot pause 1h"))
+                .await
+                .unwrap()
+        };
+        assert!(off.contains("nothing to pause"), "{off}");
     }
 }

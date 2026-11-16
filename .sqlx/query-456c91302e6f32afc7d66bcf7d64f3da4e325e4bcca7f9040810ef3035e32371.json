@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT enabled AS \"enabled: bool\", interval_minutes, start_local, end_local,\n                  updated_at AS \"updated_at: DateTime<Utc>\"\n           FROM jot_settings WHERE user_id = ?",
+  "query": "SELECT enabled AS \"enabled: bool\", interval_minutes, start_local, end_local,\n                  updated_at AS \"updated_at: DateTime<Utc>\", days,\n                  paused_until AS \"paused_until: DateTime<Utc>\"\n           FROM jot_settings WHERE user_id = ?",
   "describe": {
     "columns": [
       {
@@ -57,6 +57,28 @@
             "name": "updated_at"
           }
         }
+      },
+      {
+        "name": "days",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "jot_settings",
+            "name": "days"
+          }
+        }
+      },
+      {
+        "name": "paused_until: DateTime<Utc>",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "jot_settings",
+            "name": "paused_until"
+          }
+        }
       }
     ],
     "parameters": {
@@ -67,8 +89,10 @@
       false,
       false,
       false,
-      false
+      false,
+      false,
+      true
     ]
   },
-  "hash": "4d9b190fb2c5ba1fecf76890124891c6b6c0529b05d0fa8754d6b0d1f7a0c5a9"
+  "hash": "456c91302e6f32afc7d66bcf7d64f3da4e325e4bcca7f9040810ef3035e32371"
 }

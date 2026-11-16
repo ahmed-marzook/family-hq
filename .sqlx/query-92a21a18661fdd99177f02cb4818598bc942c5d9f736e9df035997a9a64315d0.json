@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT u.id AS user_id, u.display_name, c.id AS chat_id, c.wa_chat_id,\n                  s.interval_minutes, s.start_local, s.end_local,\n                  s.updated_at AS \"updated_at: DateTime<Utc>\"\n           FROM jot_settings s\n           JOIN users u ON u.id = s.user_id\n           JOIN chats c ON c.dm_user_id = u.id AND c.left_at IS NULL\n           WHERE s.enabled = 1",
+  "query": "SELECT u.id AS user_id, u.display_name, c.id AS chat_id, c.wa_chat_id,\n                  s.interval_minutes, s.start_local, s.end_local,\n                  s.updated_at AS \"updated_at: DateTime<Utc>\", s.days,\n                  s.paused_until AS \"paused_until: DateTime<Utc>\"\n           FROM jot_settings s\n           JOIN users u ON u.id = s.user_id\n           JOIN chats c ON c.dm_user_id = u.id AND c.left_at IS NULL\n           WHERE s.enabled = 1",
   "describe": {
     "columns": [
       {
@@ -90,6 +90,28 @@
             "name": "updated_at"
           }
         }
+      },
+      {
+        "name": "days",
+        "ordinal": 8,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "jot_settings",
+            "name": "days"
+          }
+        }
+      },
+      {
+        "name": "paused_until: DateTime<Utc>",
+        "ordinal": 9,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "jot_settings",
+            "name": "paused_until"
+          }
+        }
       }
     ],
     "parameters": {
@@ -103,8 +125,10 @@
       false,
       false,
       false,
-      false
+      false,
+      false,
+      true
     ]
   },
-  "hash": "3c83e2380084cc0cb9259740fbff18bdaae2c7ae4a7cdd7e5e71356b8de76d3e"
+  "hash": "92a21a18661fdd99177f02cb4818598bc942c5d9f736e9df035997a9a64315d0"
 }

@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, slot_at AS \"slot_at: DateTime<Utc>\"\n           FROM jot_entries\n           WHERE user_id = ? AND datetime(logged_at) > datetime(?) AND datetime(logged_at) <= datetime(?)\n           ORDER BY datetime(logged_at) DESC, id DESC\n           LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "jot_entries",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "slot_at: DateTime<Utc>",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "jot_entries",
+            "name": "slot_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "5ed500a9153f93243b76c66ad5c7a6aebe79de5619b8e304746123924b529ebe"
+}
