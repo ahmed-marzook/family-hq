@@ -122,6 +122,7 @@ pub async fn show(
             (day, points)
         })
         .collect();
+    let jot = crate::jot::stats_line(conn, user, week, today).await?;
     let mine = points::Mine {
         last_7_days,
         this_week: sum(&stored_points::by_day(conn, user, week).await?),
@@ -131,6 +132,7 @@ pub async fn show(
         this_week_by_category: levels::by_category(
             stored_points::by_source(conn, user, week).await?,
         ),
+        jot,
     };
     Ok(points::mine_text(&mine))
 }

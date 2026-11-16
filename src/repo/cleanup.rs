@@ -489,6 +489,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn clearing_deletes_their_jot_data_and_only_theirs() {
+        use crate::repo::jot;
+        use crate::testkit::{date, utc};
+
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let now = utc("2026-11-16T12:00:00Z");
+        let (bilal, khadija, group, dm) = seed(&mut conn, now).await;
+        let (start, end) = (
+            chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap(),
+            chrono::NaiveTime::from_hms_opt(18, 0, 0).unwrap(),
+        );
+        let slot = utc("2026-11-16T09:00:00Z");
+        for user in [bilal, khadija] {
+            jot::turn_on(&mut conn, user, 120, start, end, now)
+                .await
+                .unwrap();
+            jot::add_entry(&mut conn, user, now, date("2026-11-16"), Some(slot), "x")
+                .await
+                .unwrap();
+            jot::claim_summary(&mut conn, user, date("2026-11-16"), now)
+                .await
+                .unwrap();
+        }
+        // Her prompt is in the group chat only to give her a chat to point at.
+        for (user, chat) in [(bilal, dm), (khadija, group)] {
+            jot::claim_prompt(&mut conn, user, chat, slot, now)
+                .await
+                .unwrap();
+        }
+
+        clear(&mut conn, bilal, now).await.unwrap();
+
+        let c = &mut *conn;
+        for table in [
+            "SELECT count(*) FROM jot_settings WHERE user_id = ?",
+            "SELECT count(*) FROM jot_entries WHERE user_id = ?",
+            "SELECT count(*) FROM jot_prompts WHERE user_id = ?",
+            "SELECT count(*) FROM jot_summaries WHERE user_id = ?",
+        ] {
+            assert_eq!(count(c, table, bilal).await, 0, "{table}");
+            assert_eq!(count(c, table, khadija).await, 1, "{table} for Khadija");
+        }
+    }
+
+    #[tokio::test]
     async fn named_in_a_group_list_keeps_only_the_row_until_it_is_not() {
         let pool = test_pool().await;
         let mut conn = pool.acquire().await.unwrap();

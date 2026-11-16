@@ -6,7 +6,7 @@
 
 use std::cmp::Reverse;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use sqlx::SqliteConnection;
 
 /// One person, with how much they use the bot.
@@ -69,6 +69,25 @@ pub async fn users(
     // stable: people with the same time stay A to Z.
     rows.sort_by_key(|u| Reverse(u.last_seen));
     Ok(rows)
+}
+
+/// How many Jot entries someone made on the local days `from..=to`. A
+/// count only: what they jotted is private and is never read here.
+pub async fn jot_entry_count(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    from: NaiveDate,
+    to: NaiveDate,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar!(
+        r#"SELECT count(*) AS "n!: i64" FROM jot_entries
+           WHERE user_id = ? AND day >= ? AND day <= ?"#,
+        user_id,
+        from,
+        to
+    )
+    .fetch_one(conn)
+    .await
 }
 
 /// A chat someone is in, with how much is on its lists.

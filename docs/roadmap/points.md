@@ -2,7 +2,13 @@
 
 > **Goal:** finishing todos and praying earns points, so each person can see how their day and week went, with a leaderboard in each group. Habits will earn points the same way later.
 > **Status:** Brought forward at the owner's request (2026-11-06). P1 (ledger, points for todos, `/points`), P2 (Sunday weekly summary) and P3 (points for prayers) built; waiting on a week of family use. P4 (stats and levels, the weekly game, your history and personal bests, the monthly and yearly DM reviews) done and archived.
-> **Last updated:** 2026-11-13
+> **Last updated:** 2026-11-16
+
+Jot (J4, 2026-11-16): a Jot prompt that gets an entry earns 1 point and a
+fully logged day 2 more (`points::for_jot_slot`, `for_jot_day`), once each
+(`points_once_per_jot`). Extra `+jot` entries earn nothing. Jot has no level
+of its own: its points count in the week's total, and `/points` in a DM
+shows a Jot line (prompts this week, full-day streak).
 
 ## Rules
 

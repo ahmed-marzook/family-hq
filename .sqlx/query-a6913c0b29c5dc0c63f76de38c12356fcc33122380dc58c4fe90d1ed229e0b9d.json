@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO points (user_id, chat_id, source, source_id, reason, points, day, at)\n         VALUES (?, ?, ?, ?, ?, ?, ?, ?)\n         ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 8
+    },
+    "nullable": []
+  },
+  "hash": "a6913c0b29c5dc0c63f76de38c12356fcc33122380dc58c4fe90d1ed229e0b9d"
+}

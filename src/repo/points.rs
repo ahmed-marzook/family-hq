@@ -25,7 +25,7 @@ pub async fn award(
     sqlx::query!(
         "INSERT INTO points (user_id, chat_id, source, source_id, reason, points, day, at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT (source, source_id) WHERE source NOT IN ('prayer', 'overdue') DO NOTHING",
+         ON CONFLICT DO NOTHING",
         user_id,
         chat_id,
         source,
@@ -476,6 +476,39 @@ pub async fn review_dms(
              AND EXISTS (SELECT 1 FROM points p WHERE p.user_id = c.dm_user_id AND p.day >= ?)
            ORDER BY c.id"#,
         since
+    )
+    .fetch_all(conn)
+    .await
+}
+
+/// How many Jot prompts `user_id` logged on the local days in `period`.
+pub async fn jot_slots(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    period: Period,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar!(
+        r#"SELECT count(*) AS "n!: i64" FROM points
+           WHERE user_id = ? AND reason = 'jotted' AND day >= ? AND day <= ?"#,
+        user_id,
+        period.first,
+        period.last
+    )
+    .fetch_one(conn)
+    .await
+}
+
+/// The most recent local days `user_id` logged in full, newest first. A
+/// streak is only ever a few weeks long, so the cap is generous.
+pub async fn jot_full_days(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+) -> Result<Vec<NaiveDate>, sqlx::Error> {
+    sqlx::query_scalar!(
+        r#"SELECT day AS "day: NaiveDate" FROM points
+           WHERE user_id = ? AND reason = 'jot_day'
+           ORDER BY day DESC LIMIT 400"#,
+        user_id
     )
     .fetch_all(conn)
     .await

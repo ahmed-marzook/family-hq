@@ -58,11 +58,10 @@ impl Ledger {
     pub fn from_rows(rows: impl IntoIterator<Item = (NaiveDate, Source, i64)>) -> Ledger {
         let mut days: BTreeMap<NaiveDate, BTreeMap<Category, i64>> = BTreeMap::new();
         for (day, source, points) in rows {
-            *days
-                .entry(day)
-                .or_default()
-                .entry(Category::of(source))
-                .or_default() += points;
+            let day = days.entry(day).or_default();
+            if let Some(category) = Category::of(source) {
+                *day.entry(category).or_default() += points;
+            }
         }
         Ledger { days }
     }

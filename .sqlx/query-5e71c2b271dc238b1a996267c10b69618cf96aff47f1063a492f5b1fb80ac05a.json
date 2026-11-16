@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT day AS \"day: NaiveDate\" FROM points\n           WHERE user_id = ? AND reason = 'jot_day'\n           ORDER BY day DESC LIMIT 400",
+  "describe": {
+    "columns": [
+      {
+        "name": "day: NaiveDate",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "points",
+            "name": "day"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "5e71c2b271dc238b1a996267c10b69618cf96aff47f1063a492f5b1fb80ac05a"
+}

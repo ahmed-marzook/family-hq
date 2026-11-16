@@ -25,7 +25,9 @@ pub fn per_category(
 ) -> Vec<(String, Category, i64)> {
     let mut sums: BTreeMap<(String, Category), i64> = BTreeMap::new();
     for (name, source, points) in rows {
-        *sums.entry((name, Category::of(source))).or_default() += points;
+        if let Some(category) = Category::of(source) {
+            *sums.entry((name, category)).or_default() += points;
+        }
     }
     sums.into_iter()
         .map(|((name, category), points)| (name, category, points))

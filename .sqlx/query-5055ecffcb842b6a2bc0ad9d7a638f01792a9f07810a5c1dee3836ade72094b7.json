@@ -1,0 +1,21 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT count(*) AS \"n!: i64\" FROM points\n           WHERE user_id = ? AND reason = 'jotted' AND day >= ? AND day <= ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "n!: i64",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "5055ecffcb842b6a2bc0ad9d7a638f01792a9f07810a5c1dee3836ade72094b7"
+}

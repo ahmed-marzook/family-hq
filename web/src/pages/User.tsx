@@ -96,6 +96,16 @@ function Detail({ data }: { data: UserDetail }) {
         </p>
       </Section>
 
+      <Section title="Jot">
+        <p className="text-sm text-stone-600 dark:text-stone-400">
+          {data.jot.on ? "On" : "Off"} · {count(data.jot.entries_this_week, "entry", "entries")} in
+          the last 7 days · {count(data.jot.entries_last_week, "entry", "entries")} the 7 before
+        </p>
+        <p className="mt-1 text-xs text-stone-500">
+          Counts only. What they jot is private to their DM.
+        </p>
+      </Section>
+
       <Section title="Data">
         <PersonData user={user} cleanup={data.cleanup} />
       </Section>

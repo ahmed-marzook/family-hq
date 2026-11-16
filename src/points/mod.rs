@@ -63,6 +63,8 @@ pub enum Source {
     /// A day's charge for an open todo past its due date. Separate from
     /// `Todo` because a todo awards once, but is charged once a day.
     Overdue,
+    /// A Jot slot someone logged, or a day they logged in full.
+    Jot,
 }
 
 impl Source {
@@ -72,13 +74,14 @@ impl Source {
             Source::Todo => "todo",
             Source::Prayer => "prayer",
             Source::Overdue => "overdue",
+            Source::Jot => "jot",
         }
     }
 
     /// The other way: `None` for a source this build doesn't award yet
     /// ('habit', 'goal'), so a read can skip it.
     pub fn from_db_str(s: &str) -> Option<Source> {
-        [Source::Todo, Source::Prayer, Source::Overdue]
+        [Source::Todo, Source::Prayer, Source::Overdue, Source::Jot]
             .into_iter()
             .find(|source| source.as_db_str() == s)
     }
@@ -108,6 +111,10 @@ pub enum Reason {
     MadeUp,
     /// A todo still open the day after its due date (and each day after).
     Overdue,
+    /// A Jot prompt that got an entry.
+    Jotted,
+    /// A day where every Jot prompt got one.
+    JotDay,
 }
 
 impl Reason {
@@ -121,6 +128,8 @@ impl Reason {
             Reason::Prayed => "prayed",
             Reason::MadeUp => "made_up",
             Reason::Overdue => "overdue",
+            Reason::Jotted => "jotted",
+            Reason::JotDay => "jot_day",
         }
     }
 }
@@ -205,6 +214,29 @@ pub fn for_prayer(status: Status) -> Option<Award> {
             reason: Reason::MadeUp,
         }),
         Status::Missed => None,
+    }
+}
+
+/// A Jot prompt that got an entry.
+pub const JOTTED_POINTS: i64 = 1;
+/// The bonus for a day where every prompt got one. More than a slot, but
+/// not so much that skipping the odd one in a long day isn't worth it.
+pub const JOT_DAY_POINTS: i64 = 2;
+
+/// What one logged Jot slot is worth. Extra `+jot` entries earn nothing,
+/// so nobody spams entries for points.
+pub fn for_jot_slot() -> Award {
+    Award {
+        points: JOTTED_POINTS,
+        reason: Reason::Jotted,
+    }
+}
+
+/// What a fully logged Jot day is worth, on top of its slots.
+pub fn for_jot_day() -> Award {
+    Award {
+        points: JOT_DAY_POINTS,
+        reason: Reason::JotDay,
     }
 }
 
@@ -408,6 +440,8 @@ pub struct Mine {
     pub stats: levels::Stats,
     /// This week's points in each category (net, like `this_week`).
     pub this_week_by_category: BTreeMap<levels::Category, i64>,
+    /// The Jot line, for someone who has turned Jot on.
+    pub jot: Option<String>,
 }
 
 /// `/points` in a DM: the stats card, then this week's points.
@@ -425,8 +459,9 @@ pub fn mine_text(mine: &Mine) -> String {
     } else {
         String::new()
     };
-    let mut lines = vec![
-        mine.stats.to_string(),
+    let mut lines = vec![mine.stats.to_string()];
+    lines.extend(mine.jot.clone());
+    lines.extend([
         String::new(),
         format!(
             "Today: {} · This week: {}{split} · Last week: {}",
@@ -434,7 +469,7 @@ pub fn mine_text(mine: &Mine) -> String {
             total(mine.this_week),
             total(mine.last_week)
         ),
-    ];
+    ]);
 
     // Each day's bar is in proportion to the best day, so the best is full.
     let best = mine.last_7_days.iter().map(|(_, p)| *p).max().unwrap_or(0);
@@ -836,6 +871,7 @@ mod tests {
             by_chat,
             stats: levels::Stats::from_sources([(Source::Prayer, 650), (Source::Todo, 120)]),
             this_week_by_category: levels::by_category([(Source::Prayer, 12), (Source::Todo, 8)]),
+            jot: None,
         }
     }
 

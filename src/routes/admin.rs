@@ -24,7 +24,7 @@ use crate::cleanup;
 use crate::error::AppError;
 use crate::prayer;
 use crate::repo::settings::{self as stored, ChatSettings};
-use crate::repo::{admin, chats, push, shop, todos};
+use crate::repo::{admin, chats, jot, push, shop, todos};
 use crate::routes::admin_prayers::{PrayerView, prayer_view, today_for};
 use crate::routes::admin_reports::{ReportsView, reports_view};
 use crate::routes::admin_settings::existing_dm;
@@ -128,7 +128,20 @@ pub struct UserDetail {
     /// Their prayers this week and this month (counts, never times).
     prayers: PrayerView,
     push: PushView,
+    jot: JotView,
     chats: Vec<ChatView>,
+}
+
+/// Their Jot use, as counts only. What they jotted is private (it's only
+/// ever shown to them, in their own DM), so there's no text field here to
+/// fill by mistake.
+#[derive(Debug, Serialize)]
+struct JotView {
+    on: bool,
+    /// Entries on the last 7 days, today included.
+    entries_this_week: i64,
+    /// Entries on the 7 days before that.
+    entries_last_week: i64,
 }
 
 /// Their push notifications (`/push on`). Never their ntfy topic or token:
@@ -317,6 +330,19 @@ pub(crate) async fn detail(
     let reports = reports_view(conn, dm).await?;
     let push = push::stats(conn, id).await?;
 
+    let jot = JotView {
+        on: jot::get(conn, id).await?.is_some_and(|j| j.enabled),
+        entries_this_week: admin::jot_entry_count(conn, id, today - Duration::days(6), today)
+            .await?,
+        entries_last_week: admin::jot_entry_count(
+            conn,
+            id,
+            today - Duration::days(13),
+            today - Duration::days(7),
+        )
+        .await?,
+    };
+
     Ok(UserDetail {
         recent_days: RECENT_DAYS,
         cleanup: CleanupView::of(state),
@@ -328,6 +354,7 @@ pub(crate) async fn detail(
             on: push.on,
             sent: push.sent,
         },
+        jot,
         chats: chats
             .into_iter()
             .map(|c| chat_view(c, state, now))
@@ -673,6 +700,44 @@ mod tests {
         let (status, body) = admin_get_text(&server, "/api/users/999").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body, r#"{"error":"not found"}"#);
+    }
+
+    #[tokio::test]
+    async fn jot_shows_counts_and_never_what_was_jotted() {
+        let pool = test_pool().await;
+        let (bilal, _, _) = seed(&pool).await;
+        let now = Utc::now();
+        let today = now.date_naive();
+        {
+            let mut conn = pool.acquire().await.unwrap();
+            let at = chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap();
+            let end = chrono::NaiveTime::from_hms_opt(18, 0, 0).unwrap();
+            jot::turn_on(&mut conn, bilal, 120, at, end, now)
+                .await
+                .unwrap();
+            for (day, text) in [
+                (today, "SECRET call with the doctor"),
+                (today, "SECRET second entry"),
+                (today - Duration::days(8), "SECRET older entry"),
+                (today - Duration::days(30), "SECRET far too old"),
+            ] {
+                jot::add_entry(&mut conn, bilal, now, day, None, text)
+                    .await
+                    .unwrap();
+            }
+        }
+        let server = start_server_with(pool).await;
+
+        let (status, body) = admin_get_text(&server, &format!("/api/users/{bilal}")).await;
+        assert_eq!(status, StatusCode::OK);
+        let detail: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(detail["jot"]["on"], true);
+        assert_eq!(detail["jot"]["entries_this_week"], 2);
+        assert_eq!(detail["jot"]["entries_last_week"], 1);
+        assert!(!body.contains("SECRET"), "{body}");
+        assert!(!body.contains("doctor"), "{body}");
+        let (_, list) = admin_get_text(&server, "/api/users").await;
+        assert!(!list.contains("SECRET"), "{list}");
     }
 
     #[tokio::test]

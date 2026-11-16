@@ -33,13 +33,16 @@ pub enum Category {
 impl Category {
     pub const ALL: [Category; 2] = [Category::Prayers, Category::Todos];
 
-    /// Which category a ledger source's XP counts in.
-    pub fn of(source: Source) -> Category {
+    /// Which category a ledger source's XP counts in. `None` for Jot: its
+    /// points count in the week's total, but it has no level of its own
+    /// (it shows as a line on the stats card instead).
+    pub fn of(source: Source) -> Option<Category> {
         match source {
-            Source::Prayer => Category::Prayers,
+            Source::Prayer => Some(Category::Prayers),
             // Only ever negative, so it lowers the week's todo points but
             // never XP.
-            Source::Todo | Source::Overdue => Category::Todos,
+            Source::Todo | Source::Overdue => Some(Category::Todos),
+            Source::Jot => None,
         }
     }
 
@@ -158,7 +161,9 @@ pub fn overall(levels: impl IntoIterator<Item = Level>) -> i64 {
 pub fn by_category(rows: impl IntoIterator<Item = (Source, i64)>) -> BTreeMap<Category, i64> {
     let mut sums: BTreeMap<Category, i64> = Category::ALL.iter().map(|c| (*c, 0)).collect();
     for (source, points) in rows {
-        *sums.entry(Category::of(source)).or_default() += points;
+        if let Some(category) = Category::of(source) {
+            *sums.entry(category).or_default() += points;
+        }
     }
     sums
 }
