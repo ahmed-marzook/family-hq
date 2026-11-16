@@ -40,6 +40,10 @@ impl Category {
             // Only ever negative, so it lowers the week's todo points but
             // never XP.
             Source::Todo | Source::Overdue => Category::Todos,
+            // Jot is getting things done too. A category of its own would
+            // give everyone an extra Overall level overnight (Overall is
+            // the sum of the category levels).
+            Source::Jot => Category::Todos,
         }
     }
 

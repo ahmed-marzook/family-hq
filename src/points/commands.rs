@@ -73,7 +73,8 @@ pub async fn show(
     ctx: &Context,
     defaults: &Settings,
 ) -> Result<String, AppError> {
-    let today = my_settings(conn, ctx, defaults).await?.today(ctx.now);
+    let mine_settings = my_settings(conn, ctx, defaults).await?;
+    let today = mine_settings.today(ctx.now);
     let week = Period::of(Span::Week, today);
     let just_today = Period {
         first: today,
@@ -131,6 +132,8 @@ pub async fn show(
         this_week_by_category: levels::by_category(
             stored_points::by_source(conn, user, week).await?,
         ),
+        // Only here, in their own DM: a group's `/points` returned above.
+        jot: crate::jot::stats(conn, user, week, today, mine_settings.timezone).await?,
     };
     Ok(points::mine_text(&mine))
 }

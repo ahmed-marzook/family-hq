@@ -176,6 +176,10 @@ export type UserDetail = {
   /** Their push notifications: whether they're on, and how many were sent
    * (from every feature, including while push was on before). */
   push: { on: boolean; sent: number };
+  /** Their Jot log: whether it's on, and how many entries this week and
+   * last (on their own clock). Counts only: the API never sends what they
+   * wrote. */
+  jot: { on: boolean; entries_this_week: number; entries_last_week: number };
   chats: Chat[];
 };
 

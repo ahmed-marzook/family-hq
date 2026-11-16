@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT day AS \"day: NaiveDate\" FROM points\n           WHERE source = 'jot' AND reason = 'jot_full_day' AND user_id = ? AND day >= ?\n           ORDER BY day DESC",
+  "describe": {
+    "columns": [
+      {
+        "name": "day: NaiveDate",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "points",
+            "name": "day"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "0eaf8ed06a37b4eefdc6fe8ed227e8c57294e0f2ee402beae92ef555d505bb12"
+}

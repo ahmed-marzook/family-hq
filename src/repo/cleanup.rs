@@ -2,11 +2,11 @@
 //!
 //! Deleted: their DM and everything in it (todos, shopping, settings,
 //! reminders sent there, list numbers), their group memberships, their todo
-//! reminders anywhere, their prayer log and their usage log. Then their
-//! `users` row, unless a group's todo or shopping list still names them
-//! (group lists are the family's and are never touched); in that case the
-//! row stays with `cleared_at` set, until `delete_if_unnamed` can remove
-//! it.
+//! reminders anywhere, their Jot, their prayer log, their points and their
+//! usage log. Then their `users` row, unless a group's todo or shopping
+//! list still names them (group lists are the family's and are never
+//! touched); in that case the row stays with `cleared_at` set, until
+//! `delete_if_unnamed` can remove it.
 
 use chrono::{DateTime, Utc};
 use sqlx::SqliteConnection;
@@ -486,6 +486,54 @@ mod tests {
             count(c, "SELECT count(*) FROM todos WHERE chat_id = ?", group).await,
             1
         );
+    }
+
+    #[tokio::test]
+    async fn clearing_deletes_their_jot_and_nobody_elses() {
+        use crate::repo::jot;
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let now = Utc::now();
+        let (bilal, khadija, _, dm) = seed(&mut conn, now).await;
+        let khadija_dm =
+            chats::find_or_create(&mut conn, "khadija@s.whatsapp.net", Some(khadija), now)
+                .await
+                .unwrap();
+        let nine = now - chrono::Duration::hours(1);
+        let today = now.date_naive();
+        for (user, chat) in [(bilal, dm), (khadija, khadija_dm)] {
+            let at = chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap();
+            let end = chrono::NaiveTime::from_hms_opt(18, 0, 0).unwrap();
+            jot::turn_on(&mut conn, user, 120, at, end, now)
+                .await
+                .unwrap();
+            jot::claim_prompt(&mut conn, user, chat, nine, now)
+                .await
+                .unwrap();
+            jot::add_entry(&mut conn, user, now, today, Some(nine), "wrote it")
+                .await
+                .unwrap();
+            jot::claim_summary(&mut conn, user, today, now)
+                .await
+                .unwrap();
+            points::award_jot_slot(&mut conn, user, chat, nine, today, now)
+                .await
+                .unwrap();
+        }
+
+        clear(&mut conn, bilal, now).await.unwrap();
+
+        let c = &mut *conn;
+        for table in [
+            "SELECT count(*) FROM jot_settings WHERE user_id = ?",
+            "SELECT count(*) FROM jot_entries WHERE user_id = ?",
+            "SELECT count(*) FROM jot_prompts WHERE user_id = ?",
+            "SELECT count(*) FROM jot_summaries WHERE user_id = ?",
+            "SELECT count(*) FROM points WHERE source = 'jot' AND user_id = ?",
+        ] {
+            assert_eq!(count(c, table, bilal).await, 0, "Bilal: {table}");
+            assert_eq!(count(c, table, khadija).await, 1, "Khadija keeps: {table}");
+        }
     }
 
     #[tokio::test]

@@ -24,6 +24,10 @@
 //! A prayer (`for_prayer`) earns 2 prayed on time and 1 made up; a missed
 //! one earns nothing. Unlike a todo's, its points follow the prayer log:
 //! untick it and they go, correct it and they change.
+//!
+//! A Jot slot answered (`for_jot_slot`) earns 1, for up to
+//! `JOT_SLOTS_A_DAY` slots a day, and a day with every scored slot answered
+//! (`for_jot_day`) 2 more. Jot only earns; a missed slot costs nothing.
 
 use std::collections::BTreeMap;
 
@@ -51,6 +55,7 @@ const GOLD: &str = "🥇";
 const SILVER: &str = "🥈";
 const BRONZE: &str = "🥉";
 const WARNING: &str = "⚠️";
+const JOT: &str = "✏️";
 /// A proper minus sign, which reads better than a hyphen in "−1".
 const MINUS: &str = "−";
 
@@ -63,6 +68,8 @@ pub enum Source {
     /// A day's charge for an open todo past its due date. Separate from
     /// `Todo` because a todo awards once, but is charged once a day.
     Overdue,
+    /// A logged Jot slot, or a fully logged Jot day.
+    Jot,
 }
 
 impl Source {
@@ -72,13 +79,14 @@ impl Source {
             Source::Todo => "todo",
             Source::Prayer => "prayer",
             Source::Overdue => "overdue",
+            Source::Jot => "jot",
         }
     }
 
     /// The other way: `None` for a source this build doesn't award yet
     /// ('habit', 'goal'), so a read can skip it.
     pub fn from_db_str(s: &str) -> Option<Source> {
-        [Source::Todo, Source::Prayer, Source::Overdue]
+        [Source::Todo, Source::Prayer, Source::Overdue, Source::Jot]
             .into_iter()
             .find(|source| source.as_db_str() == s)
     }
@@ -108,6 +116,10 @@ pub enum Reason {
     MadeUp,
     /// A todo still open the day after its due date (and each day after).
     Overdue,
+    /// A Jot slot answered.
+    JotSlot,
+    /// Every scored Jot slot of a day answered.
+    JotFullDay,
 }
 
 impl Reason {
@@ -121,6 +133,8 @@ impl Reason {
             Reason::Prayed => "prayed",
             Reason::MadeUp => "made_up",
             Reason::Overdue => "overdue",
+            Reason::JotSlot => "jot_slot",
+            Reason::JotFullDay => "jot_full_day",
         }
     }
 }
@@ -206,6 +220,34 @@ pub fn for_prayer(status: Status) -> Option<Award> {
         }),
         Status::Missed => None,
     }
+}
+
+/// A logged Jot slot: small next to a prayer or a todo, since answering a
+/// prompt takes a few seconds.
+pub const JOT_SLOT_POINTS: i64 = 1;
+/// At most this many slots pay each day, so a 30-minute interval (up to 18
+/// prompts) can't earn more than the default 2-hourly one.
+pub const JOT_SLOTS_A_DAY: i64 = 3;
+/// A day with every scored slot logged.
+pub const JOT_FULL_DAY_POINTS: i64 = 2;
+
+/// What a logged Jot slot earns. Only a slot pays: an extra `+jot` with no
+/// prompt to answer earns nothing, so entries can't be spammed for points.
+pub fn for_jot_slot() -> Award {
+    Award {
+        points: JOT_SLOT_POINTS,
+        reason: Reason::JotSlot,
+    }
+}
+
+/// The bonus for a Jot day with `scored` slots (skipped ones left out), of
+/// which `logged` were answered: only when there was at least one and
+/// every one was. `None` otherwise.
+pub fn for_jot_day(scored: usize, logged: usize) -> Option<Award> {
+    (scored > 0 && logged >= scored).then_some(Award {
+        points: JOT_FULL_DAY_POINTS,
+        reason: Reason::JotFullDay,
+    })
 }
 
 /// "+4", "−1", "0": a change in points, with its sign.
@@ -326,7 +368,8 @@ pub fn show_period(period: Period) -> String {
 /// help page.
 pub const RULES: &str = "🔴 high 3 · medium 2 · 🟢 low 1, +1 if it's done by its due \
                          date (−1 if after), and a skip costs 1. A prayer: 2 on time, \
-                         1 made up";
+                         1 made up. A Jot slot answered: 1 (up to 3 a day), +2 for a \
+                         day with every slot logged";
 
 /// What `/points` in a group shows. Each list is `(name, points)`, anyone
 /// with no points left out.
@@ -408,6 +451,33 @@ pub struct Mine {
     pub stats: levels::Stats,
     /// This week's points in each category (net, like `this_week`).
     pub this_week_by_category: BTreeMap<levels::Category, i64>,
+    /// Their Jot counts, if they've ever turned Jot on.
+    pub jot: Option<JotStats>,
+}
+
+/// The Jot line of someone's own `/points`: counts only. What they wrote
+/// stays in `/jot`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JotStats {
+    /// Slots answered this week (Monday to Sunday).
+    pub logged_this_week: i64,
+    /// Fully logged days in a row, up to the last day that had a summary.
+    pub full_day_streak: usize,
+}
+
+/// `✏️ Jot: 7 slots logged this week · 3 full days in a row`.
+fn jot_line(jot: JotStats) -> String {
+    let slots = if jot.logged_this_week == 1 {
+        "1 slot".to_string()
+    } else {
+        format!("{} slots", jot.logged_this_week)
+    };
+    let streak = match jot.full_day_streak {
+        0 => String::new(),
+        1 => " · 1 full day".to_string(),
+        n => format!(" · {n} full days in a row"),
+    };
+    format!("{JOT} Jot: {slots} logged this week{streak}")
 }
 
 /// `/points` in a DM: the stats card, then this week's points.
@@ -435,6 +505,9 @@ pub fn mine_text(mine: &Mine) -> String {
             total(mine.last_week)
         ),
     ];
+    if let Some(jot) = mine.jot {
+        lines.push(jot_line(jot));
+    }
 
     // Each day's bar is in proportion to the best day, so the best is full.
     let best = mine.last_7_days.iter().map(|(_, p)| *p).max().unwrap_or(0);
@@ -836,7 +909,45 @@ mod tests {
             by_chat,
             stats: levels::Stats::from_sources([(Source::Prayer, 650), (Source::Todo, 120)]),
             this_week_by_category: levels::by_category([(Source::Prayer, 12), (Source::Todo, 8)]),
+            jot: None,
         }
+    }
+
+    #[test]
+    fn mine_text_has_a_jot_line_only_for_someone_who_uses_it() {
+        let mut with_jot = mine(&[0, 0, 0, 0, 0, 0, 5], vec![]);
+        assert!(!mine_text(&with_jot).contains("✏️ Jot:"));
+        with_jot.jot = Some(JotStats {
+            logged_this_week: 7,
+            full_day_streak: 3,
+        });
+        let text = mine_text(&with_jot);
+        assert!(
+            text.contains(
+                "Last week: 22\n✏️ Jot: 7 slots logged this week · 3 full days in a row\n"
+            ),
+            "{text}"
+        );
+        with_jot.jot = Some(JotStats {
+            logged_this_week: 1,
+            full_day_streak: 0,
+        });
+        assert!(mine_text(&with_jot).contains("✏️ Jot: 1 slot logged this week\n"));
+    }
+
+    #[test]
+    fn a_jot_slot_earns_one_and_a_full_day_needs_every_scored_slot() {
+        assert_eq!(for_jot_slot().points, 1);
+        assert_eq!(
+            for_jot_day(5, 5),
+            Some(Award {
+                points: 2,
+                reason: Reason::JotFullDay
+            })
+        );
+        assert_eq!(for_jot_day(5, 4), None);
+        assert_eq!(for_jot_day(1, 1).map(|a| a.points), Some(2));
+        assert_eq!(for_jot_day(0, 0), None, "nothing scored: no bonus");
     }
 
     #[test]
