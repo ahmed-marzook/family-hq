@@ -179,9 +179,34 @@ export type UserDetail = {
   /** Their Jot log: whether it's on, and how many entries this week and
    * last (on their own clock). Counts only: the API never sends what they
    * wrote. */
-  jot: { on: boolean; entries_this_week: number; entries_last_week: number };
+  jot: {
+    on: boolean;
+    entries_this_week: number;
+    entries_last_week: number;
+    /** `null` if they've never turned it on. Kept after `/jot off`. */
+    settings: JotSettings | null;
+    /** After any pause; `null` while it's off. */
+    next_prompt: string | null;
+    /** The last 7 days on their clock, oldest first, as `/jot week`. */
+    week: JotDay[];
+  };
   chats: Chat[];
 };
+
+export type JotSettings = {
+  interval_minutes: number;
+  /** "09:00", on their own clock. */
+  start: string;
+  end: string;
+  /** "every day", "Mon–Fri", "Mon, Wed, Fri". */
+  days: string;
+  /** Only while the pause is still on. */
+  paused_until: string | null;
+};
+
+/** Prompts answered out of prompts that counted (sent and not skipped),
+ * and entries in all, `+jot` extras included. */
+export type JotDay = { date: string; logged: number; prompts: number; entries: number };
 
 /** A group, as the groups pages show it. */
 export type GroupRow = {
