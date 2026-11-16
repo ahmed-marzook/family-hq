@@ -20,6 +20,10 @@ Points for todos and prayers (P1–P4, `docs/roadmap/points.md`) were
 brought forward as well; P1–P3 are built, and P4 is done (stats,
 levels, the weekly game, the todo penalties, the history and the monthly
 and yearly reviews).
+Jot (J1–J5), an opt-in log of what you've done, prompted every few hours
+in a DM, was brought forward too and is built. It's tracked in GitHub
+Projects (issues #47–#51, label `area:jot`), not in a `docs/roadmap/`
+file; its line in the roadmap index points there.
 The admin dashboard (React, in `web/`) is also
 at the owner's request, and has its own file in the roadmap. It isn't the
 family-facing dashboard in Phase 3, which is still later.
